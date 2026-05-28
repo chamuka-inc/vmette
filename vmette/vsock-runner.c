@@ -1,4 +1,4 @@
-// vsock-runner — guest-side AF_VSOCK command server for vz-spike snapshots.
+// vsock-runner — guest-side AF_VSOCK command server for vmette snapshots.
 //
 // Flow:
 //   1. Connect to CID=host, port=SIGNAL_PORT and send "READY\n".  This is

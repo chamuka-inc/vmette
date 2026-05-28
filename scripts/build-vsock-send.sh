@@ -22,7 +22,7 @@ fi
 mkdir -p "$BIN_DIR"
 
 for name in vsock-send vsock-runner; do
-    SRC="$HERE/vz-spike/${name}.c"
+    SRC="$HERE/vmette/${name}.c"
     DEST="$BIN_DIR/${name}"
     echo "→ compiling $SRC → $DEST"
     "$CC" -static -O2 -s -o "$DEST" "$SRC"

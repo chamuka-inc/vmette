@@ -1,4 +1,4 @@
-// vsock-send — minimal AF_VSOCK SOCK_STREAM client for the vz-spike guest.
+// vsock-send — minimal AF_VSOCK SOCK_STREAM client for the vmette guest.
 //
 // Pipes stdin into a vsock connection to the host, then drains the reply
 // back to stdout until the peer closes. busybox `nc` doesn't speak AF_VSOCK
@@ -7,7 +7,7 @@
 // Build (host, macOS Intel):
 //   x86_64-linux-musl-gcc -static -O2 -s -o vsock-send vsock-send.c
 //
-// Usage (inside the vz-spike guest):
+// Usage (inside the vmette guest):
 //   echo "hello" | vsock-send 1024            # CID defaults to 2 (host)
 //   vsock-send 1024 < some-file
 //

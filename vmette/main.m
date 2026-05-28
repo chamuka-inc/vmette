@@ -1,4 +1,4 @@
-// vz-spike — full-wire Virtualization.framework Linux sandbox driver.
+// vmette — full-wire Virtualization.framework Linux sandbox driver.
 //
 // Wires up:
 //   * direct Linux kernel boot (VZLinuxBootLoader)
@@ -7,8 +7,8 @@
 //   * virtio-fs extra shares (--share TAG=PATH, repeatable)
 //   * virtio-block disks (--disk PATH, repeatable)
 //   * vsock device with a host-side listener (auto-allocated port by default)
-//   * spike.exec=<base64(cmd)> on kernel cmdline → custom /init runs it
-//   * exit-code propagation: guest writes /.vz-spike-exit, host reads it
+//   * vmette.exec=<base64(cmd)> on kernel cmdline → custom /init runs it
+//   * exit-code propagation: guest writes /.vmette-exit, host reads it
 //   * --timeout for bounded runs (exit 124 if guest doesn't poweroff in time)
 //   * --switch-root: cleaner PID-1 environment than chroot
 //
@@ -115,7 +115,7 @@ static volatile sig_atomic_t g_timed_out = 0;
 - (void)guestDidStopVirtualMachine:(VZVirtualMachine *)vm {
     restore_terminal();
     if (g_timed_out) {
-        fprintf(stderr, "\r\n[vz-spike] guest stopped (timeout, exit 124)\r\n");
+        fprintf(stderr, "\r\n[vmette] guest stopped (timeout, exit 124)\r\n");
         exit(124);
     }
     int code = 0;
@@ -128,18 +128,18 @@ static volatile sig_atomic_t g_timed_out = 0;
             NSString *trimmed = [s stringByTrimmingCharactersInSet:
                 [NSCharacterSet whitespaceAndNewlineCharacterSet]];
             code = (int)[trimmed intValue];
-            fprintf(stderr, "\r\n[vz-spike] guest stopped (exit %d)\r\n", code);
+            fprintf(stderr, "\r\n[vmette] guest stopped (exit %d)\r\n", code);
         } else {
-            fprintf(stderr, "\r\n[vz-spike] guest stopped (no exit file; assuming 0)\r\n");
+            fprintf(stderr, "\r\n[vmette] guest stopped (no exit file; assuming 0)\r\n");
         }
     } else {
-        fprintf(stderr, "\r\n[vz-spike] guest stopped\r\n");
+        fprintf(stderr, "\r\n[vmette] guest stopped\r\n");
     }
     exit(code);
 }
 - (void)virtualMachine:(VZVirtualMachine *)vm didStopWithError:(NSError *)error {
     restore_terminal();
-    fprintf(stderr, "\r\n[vz-spike] guest stopped with error: %s\r\n",
+    fprintf(stderr, "\r\n[vmette] guest stopped with error: %s\r\n",
             [[error localizedDescription] UTF8String] ?: "unknown");
     exit(1);
 }
@@ -170,7 +170,7 @@ typedef struct {
 __attribute__((noreturn))
 static void usage(void) {
     fprintf(stderr,
-"vz-spike --kernel PATH --initramfs PATH [options]\n"
+"vmette --kernel PATH --initramfs PATH [options]\n"
 "\n"
 "required:\n"
 "  --kernel           PATH      bzImage on x86_64\n"
@@ -191,7 +191,7 @@ static void usage(void) {
 "  --cmdline          STR       extra kernel cmdline (default 'console=hvc0 quiet')\n"
 "  --vsock-port       N         -1=disable vsock entirely; 0=auto-pick in 50000-59999;\n"
 "                               >0=explicit. The chosen port is exported to the guest\n"
-"                               as SPIKE_VSOCK_PORT.\n"
+"                               as VMETTE_VSOCK_PORT.\n"
 "  --vcpus            N         default 1\n"
 "  --mem-mib          N         default 512\n"
 "\n"
@@ -301,7 +301,7 @@ static void send_and_drain_exit(int fd, NSString *cmd) {
             fflush(stdout);
         }
         restore_terminal();
-        fprintf(stderr, "[vz-spike] resume exit %d\r\n", code);
+        fprintf(stderr, "[vmette] resume exit %d\r\n", code);
         exit(code);
     });
 }
@@ -320,11 +320,11 @@ static NSString *build_cmdline(Args a) {
     if (a.execCmd) {
         NSData *data = [a.execCmd dataUsingEncoding:NSUTF8StringEncoding];
         NSString *b64 = [data base64EncodedStringWithOptions:0];
-        [cl appendFormat:@" spike.exec=%@", b64];
+        [cl appendFormat:@" vmette.exec=%@", b64];
     }
     if (a.rootfsShare) {
-        [cl appendString:@" spike.rootfs=1"];
-        if (a.rootfsShareRO) [cl appendString:@" spike.rootfs_ro=1"];
+        [cl appendString:@" vmette.rootfs=1"];
+        if (a.rootfsShareRO) [cl appendString:@" vmette.rootfs_ro=1"];
     }
     for (NSString *s in a.shares) {
         NSRange eq = [s rangeOfString:@"="];
@@ -333,14 +333,14 @@ static NSString *build_cmdline(Args a) {
             continue;
         }
         NSString *tag = [s substringToIndex:eq.location];
-        [cl appendFormat:@" spike.share=%@", tag];
+        [cl appendFormat:@" vmette.share=%@", tag];
     }
-    if (a.switchRoot)  [cl appendString:@" spike.switch_root=1"];
-    if (a.net)         [cl appendString:@" spike.net=1"];
-    if (a.vsockPort > 0) [cl appendFormat:@" spike.vsock_port=%d", a.vsockPort];
+    if (a.switchRoot)  [cl appendString:@" vmette.switch_root=1"];
+    if (a.net)         [cl appendString:@" vmette.net=1"];
+    if (a.vsockPort > 0) [cl appendFormat:@" vmette.vsock_port=%d", a.vsockPort];
     if (a.buildSnapshot) {
-        [cl appendString:@" spike.snapshot_mode=server"];
-        [cl appendFormat:@" spike.guest_vsock_port=%u", a.guestVsockPort];
+        [cl appendString:@" vmette.snapshot_mode=server"];
+        [cl appendFormat:@" vmette.guest_vsock_port=%u", a.guestVsockPort];
     }
 
     return cl;
@@ -362,23 +362,23 @@ int main(int argc, const char **argv) {
         // Unlink any stale exit-code file so we don't read a previous run's value.
         NSString *exitFile = nil;
         if (args.rootfsShare && !args.rootfsShareRO) {
-            exitFile = [args.rootfsShare stringByAppendingPathComponent:@".vz-spike-exit"];
+            exitFile = [args.rootfsShare stringByAppendingPathComponent:@".vmette-exit"];
             [[NSFileManager defaultManager] removeItemAtPath:exitFile error:nil];
         }
 
         fprintf(stderr,
-            "[vz-spike] kernel       %s\n"
-            "[vz-spike] initramfs    %s\n"
-            "[vz-spike] cmdline      %s\n"
-            "[vz-spike] rootfs-share %s%s\n"
-            "[vz-spike] shares       %lu\n"
-            "[vz-spike] disks        %lu\n"
-            "[vz-spike] exec         %s\n"
-            "[vz-spike] vsock-port   %s%d\n"
-            "[vz-spike] switch-root  %s\n"
-            "[vz-spike] net          %s\n"
-            "[vz-spike] timeout      %ds\n"
-            "[vz-spike] vcpus        %d, memMiB %llu\n\n",
+            "[vmette] kernel       %s\n"
+            "[vmette] initramfs    %s\n"
+            "[vmette] cmdline      %s\n"
+            "[vmette] rootfs-share %s%s\n"
+            "[vmette] shares       %lu\n"
+            "[vmette] disks        %lu\n"
+            "[vmette] exec         %s\n"
+            "[vmette] vsock-port   %s%d\n"
+            "[vmette] switch-root  %s\n"
+            "[vmette] net          %s\n"
+            "[vmette] timeout      %ds\n"
+            "[vmette] vcpus        %d, memMiB %llu\n\n",
             [args.kernel UTF8String],
             [args.initramfs UTF8String],
             [fullCmdline UTF8String],
@@ -504,7 +504,7 @@ int main(int argc, const char **argv) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)args.timeoutSeconds * NSEC_PER_SEC),
                 dispatch_get_main_queue(), ^{
-                    fprintf(stderr, "\r\n[vz-spike] timeout %ds reached, force-stopping\r\n",
+                    fprintf(stderr, "\r\n[vmette] timeout %ds reached, force-stopping\r\n",
                             args.timeoutSeconds);
                     // Flag is checked by VzDelegate.guestDidStop so we win
                     // the race against the normal "guest stopped" exit(0).
@@ -585,7 +585,7 @@ int main(int argc, const char **argv) {
             }
             NSString *snap = args.buildSnapshot;
             vsockDelegate.readyHandler = ^{
-                fprintf(stderr, "[vz-spike] guest READY — pausing + saving snapshot\n");
+                fprintf(stderr, "[vmette] guest READY — pausing + saving snapshot\n");
                 [vm pauseWithCompletionHandler:^(NSError *err) {
                     if (err) {
                         restore_terminal();
@@ -601,7 +601,7 @@ int main(int argc, const char **argv) {
                                     [[err2 localizedDescription] UTF8String] ?: "unknown");
                             exit(1);
                         }
-                        fprintf(stderr, "[vz-spike] snapshot saved to %s\n",
+                        fprintf(stderr, "[vmette] snapshot saved to %s\n",
                                 [snap UTF8String]);
                         exit(0);
                     }];

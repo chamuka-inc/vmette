@@ -1,5 +1,5 @@
 #!/bin/sh
-# vz-spike custom /init (PID 1 inside the alpine initramfs).
+# vmette custom /init (PID 1 inside the alpine initramfs).
 #
 # Runs as PID 1. Two things make this script unusual:
 #
@@ -75,17 +75,17 @@ cmdline_all() {
 }
 
 # Pull out the flags we care about up front.
-ROOTFS_RO="$(cmdline_get spike.rootfs_ro)"
-USE_SWITCH_ROOT="$(cmdline_get spike.switch_root)"
-SPIKE_NET="$(cmdline_get spike.net)"
-SPIKE_VSOCK_PORT="$(cmdline_get spike.vsock_port)"
-SPIKE_SNAPSHOT_MODE="$(cmdline_get spike.snapshot_mode)"
-SPIKE_GUEST_VSOCK_PORT="$(cmdline_get spike.guest_vsock_port)"
-export SPIKE_VSOCK_PORT SPIKE_GUEST_VSOCK_PORT
+ROOTFS_RO="$(cmdline_get vmette.rootfs_ro)"
+USE_SWITCH_ROOT="$(cmdline_get vmette.switch_root)"
+VMETTE_NET="$(cmdline_get vmette.net)"
+VMETTE_VSOCK_PORT="$(cmdline_get vmette.vsock_port)"
+VMETTE_SNAPSHOT_MODE="$(cmdline_get vmette.snapshot_mode)"
+VMETTE_GUEST_VSOCK_PORT="$(cmdline_get vmette.guest_vsock_port)"
+export VMETTE_VSOCK_PORT VMETTE_GUEST_VSOCK_PORT
 
 # ---- step 3: mount rootfs share -----------------------------------------
 
-if [ "$(cmdline_get spike.rootfs)" = "1" ]; then
+if [ "$(cmdline_get vmette.rootfs)" = "1" ]; then
     if [ "$ROOTFS_RO" = "1" ]; then
         mount_opts="-o ro"
     else
@@ -106,7 +106,7 @@ fi
 # ---- step 3b: networking (when --net is set) ----------------------------
 # Bring up the first non-lo interface via DHCP. NAT'd by VZ so we get a
 # 192.168.x.x address. udhcpc takes 1-2 s — only run when asked.
-if [ "$SPIKE_NET" = "1" ]; then
+if [ "$VMETTE_NET" = "1" ]; then
     # Write our own udhcpc script; busybox udhcpc requires one and we
     # can't rely on alpine's being present in the initramfs.
     cat > /tmp/udhcpc.sh <<'UDHCPC_EOF'
@@ -141,7 +141,6 @@ UDHCPC_EOF
         if udhcpc -i "$IFACE" -q -t 3 -n -s /tmp/udhcpc.sh 2>/tmp/udhcpc.err; then
             IPADDR="$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2; exit}')"
             log "network up on $IFACE ($IPADDR)"
-            # Propagate resolv.conf into the chroot/switch_root target.
             if [ -f /etc/resolv.conf ] && [ -d /newroot/etc ]; then
                 cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null
             fi
@@ -156,7 +155,7 @@ fi
 # ---- step 4: mount additional virtio-fs shares --------------------------
 
 mkdir -p /newroot/mnt
-for tag in $(cmdline_all spike.share); do
+for tag in $(cmdline_all vmette.share); do
     mkdir -p "/newroot/mnt/$tag"
     if mount -t virtiofs "$tag" "/newroot/mnt/$tag" 2>/dev/null; then
         log "mounted virtio-fs '$tag' at /mnt/$tag"
@@ -171,13 +170,11 @@ mkdir -p /newroot/tmp
 mount -t tmpfs tmpfs /newroot/tmp 2>/dev/null
 
 if [ "$USE_SWITCH_ROOT" = "1" ]; then
-    # Move (not bind) the pseudo-fs into the new root so they follow us.
     for d in proc sys dev; do
         mkdir -p "/newroot/$d"
         mount --move "/$d" "/newroot/$d" 2>/dev/null
     done
 else
-    # chroot path: bind-mount so both /init and the chroot see them.
     for d in proc sys dev; do
         mkdir -p "/newroot/$d"
         mount --bind "/$d" "/newroot/$d" 2>/dev/null
@@ -190,48 +187,42 @@ fi
 # the host then blocks on accept() for a command. The host pauses + saves
 # the VM at the accept() blocker; on resume, vsock-runner reads the new
 # command, runs it, streams output back, reboots.
-if [ "$SPIKE_SNAPSHOT_MODE" = "server" ]; then
-    if [ -z "$SPIKE_VSOCK_PORT" ] || [ -z "$SPIKE_GUEST_VSOCK_PORT" ]; then
+if [ "$VMETTE_SNAPSHOT_MODE" = "server" ]; then
+    if [ -z "$VMETTE_VSOCK_PORT" ] || [ -z "$VMETTE_GUEST_VSOCK_PORT" ]; then
         log "FATAL: snapshot_mode=server but vsock ports not set"
         sync; poweroff -f; sleep 60
     fi
-    log "snapshot mode: exec vsock-runner $SPIKE_VSOCK_PORT $SPIKE_GUEST_VSOCK_PORT"
+    log "snapshot mode: exec vsock-runner $VMETTE_VSOCK_PORT $VMETTE_GUEST_VSOCK_PORT"
     if [ "$USE_SWITCH_ROOT" = "1" ]; then
-        # Reuse the switch_root machinery (already moved /proc /sys /dev).
-        exec switch_root /newroot /usr/local/bin/vsock-runner "$SPIKE_VSOCK_PORT" "$SPIKE_GUEST_VSOCK_PORT"
+        exec switch_root /newroot /usr/local/bin/vsock-runner "$VMETTE_VSOCK_PORT" "$VMETTE_GUEST_VSOCK_PORT"
     fi
-    exec chroot /newroot /usr/local/bin/vsock-runner "$SPIKE_VSOCK_PORT" "$SPIKE_GUEST_VSOCK_PORT"
+    exec chroot /newroot /usr/local/bin/vsock-runner "$VMETTE_VSOCK_PORT" "$VMETTE_GUEST_VSOCK_PORT"
 fi
 
-B64="$(cmdline_get spike.exec)"
+B64="$(cmdline_get vmette.exec)"
 
-# Decode the user command (if any).
 if [ -n "$B64" ]; then
     USER_CMD="$(printf '%s' "$B64" | base64 -d 2>/dev/null)"
     if [ -z "$USER_CMD" ]; then
-        log "FATAL: spike.exec base64 decode failed"
+        log "FATAL: vmette.exec base64 decode failed"
         sync; poweroff -f; sleep 60
     fi
 fi
 
-# Decide where the exit file lives (skip under RO).
 EXIT_FILE=""
 if [ -z "$ROOTFS_RO" ] || [ "$ROOTFS_RO" != "1" ]; then
-    EXIT_FILE="/.vz-spike-exit"
+    EXIT_FILE="/.vmette-exit"
 fi
 
 if [ "$USE_SWITCH_ROOT" = "1" ]; then
     if [ "$ROOTFS_RO" = "1" ]; then
         log "WARNING: --switch-root with read-only rootfs — exit code won't propagate"
     fi
-    # Write a wrapper script into the rootfs share so the new init has
-    # something to exec. When the rootfs is RO this fails silently and
-    # the user just gets an interactive shell.
-    RUNNER="/newroot/.vz-spike-runner.sh"
+    RUNNER="/newroot/.vmette-runner.sh"
     if [ -n "$USER_CMD" ]; then
         cat > "$RUNNER" 2>/dev/null <<RUNNER_EOF
 #!/bin/sh
-export SPIKE_VSOCK_PORT='$SPIKE_VSOCK_PORT'
+export VMETTE_VSOCK_PORT='$VMETTE_VSOCK_PORT'
 /bin/sh -c '$(printf '%s' "$USER_CMD" | sed "s/'/'\\\\''/g")'
 RC=\$?
 sync
@@ -240,10 +231,9 @@ poweroff -f
 sleep 60
 RUNNER_EOF
         chmod +x "$RUNNER" 2>/dev/null
-        log "switch_root → /.vz-spike-runner.sh"
-        exec switch_root /newroot /.vz-spike-runner.sh
+        log "switch_root → /.vmette-runner.sh"
+        exec switch_root /newroot /.vmette-runner.sh
     fi
-    # No --exec: drop to interactive shell. User can type poweroff -f.
     log "switch_root → interactive shell"
     exec switch_root /newroot /bin/sh
 fi
@@ -251,7 +241,7 @@ fi
 # ---- chroot path (default) ----------------------------------------------
 
 if [ -z "$B64" ]; then
-    log "no spike.exec; dropping to interactive shell in chroot"
+    log "no vmette.exec; dropping to interactive shell in chroot"
     chroot /newroot /bin/sh
     RC=$?
 else
@@ -267,5 +257,4 @@ if [ -n "$EXIT_FILE" ]; then
 fi
 poweroff -f
 
-# Block forever — poweroff returns; we can't fall off PID 1.
 while :; do sleep 60; done

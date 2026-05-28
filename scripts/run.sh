@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# vz-spike orchestrator: ensure assets exist, build + sign vz-spike, then
-# boot a microVM that runs whatever command was passed on the CLI.
+# vmette orchestrator: ensure assets exist, build + sign the host binary,
+# then boot a microVM that runs whatever command was passed on the CLI.
 #
 # Usage:
-#   ./scripts/run-vz.sh                              # default probe command
-#   ./scripts/run-vz.sh 'uname -a; cat /etc/os-release'
-#   SHARE_DIR=/path/to/dir ./scripts/run-vz.sh 'ls /mnt/host'
+#   ./scripts/run.sh                              # default probe command
+#   ./scripts/run.sh 'uname -a; cat /etc/os-release'
+#   SHARE_DIR=/path/to/dir ./scripts/run.sh 'ls /mnt/host'
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASSETS="$HERE/assets/vz"
+ASSETS="$HERE/assets"
 ROOTFS="$HERE/assets/alpine-rootfs"
-SRC="$HERE/vz-spike/main.m"
-BIN="$HERE/vz-spike/vz-spike"
-ENT="$HERE/vz-spike/entitlements.plist"
+SRC="$HERE/vmette/main.m"
+BIN="$HERE/vmette/vmette"
+ENT="$HERE/vmette/entitlements.plist"
 
 # Prereqs
-[[ -s "$ASSETS/vmlinuz-virt"             ]] || bash "$HERE/scripts/fetch-vz-assets.sh"
-[[ -s "$ASSETS/initramfs-virt"           ]] || bash "$HERE/scripts/fetch-vz-assets.sh"
-[[ -s "$ASSETS/initramfs-spike"          ]] || bash "$HERE/scripts/build-initramfs.sh"
+[[ -s "$ASSETS/vmlinuz-virt"             ]] || bash "$HERE/scripts/fetch-assets.sh"
+[[ -s "$ASSETS/initramfs-virt"           ]] || bash "$HERE/scripts/fetch-assets.sh"
+[[ -s "$ASSETS/initramfs-vmette"         ]] || bash "$HERE/scripts/build-initramfs.sh"
 [[ -x "$ROOTFS/bin/sh"                   ]] || bash "$HERE/scripts/fetch-alpine-rootfs.sh"
 [[ -x "$ROOTFS/usr/local/bin/vsock-send" ]] || bash "$HERE/scripts/build-vsock-send.sh"
 
-echo "→ compiling vz-spike"
+echo "→ compiling vmette"
 clang -O2 -fobjc-arc -fmodules \
     -framework Foundation -framework Virtualization \
     -o "$BIN" "$SRC"
@@ -50,7 +50,7 @@ fi
 
 exec "$BIN" \
     --kernel       "$ASSETS/vmlinuz-virt" \
-    --initramfs    "$ASSETS/initramfs-spike" \
+    --initramfs    "$ASSETS/initramfs-vmette" \
     --rootfs-share "$ROOTFS" \
     "${SHARE_ARGS[@]}" \
     --exec         "$CMD" \

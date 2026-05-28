@@ -1,9 +1,9 @@
 /target
 /assets
-/vz-spike/vz-spike
+/vmette/vmette
 *.sock
 *.log
 .DS_Store
-.vz-spike-exit
-.vz-spike-runner.sh
+.vmette-exit
+.vmette-runner.sh
 /tests/fixtures/share/from-guest*

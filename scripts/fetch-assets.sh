@@ -1,35 +1,51 @@
 #!/usr/bin/env bash
-# Fetch a known-good Firecracker kernel + rootfs for x86_64.
+# Fetch the assets vmette needs:
+#   * Alpine netboot initramfs (busybox + base tree source)
+#   * Alpine linux-virt apk     (kernel + complete modules tree, including
+#                                vsock + virtiofs which netboot lacks)
 #
-# Sources are the official Firecracker CI bucket. Pinned versions so the spike
-# is reproducible.
+# Final layout under assets/ :
+#   vmlinuz-virt              ← from the apk (matches its modules)
+#   initramfs-virt            ← from netboot (busybox source for repack)
+#   linux-virt.apk            ← raw apk, kept so we can re-extract on demand
+#   linux-virt-extract/       ← extracted apk tree
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASSETS="$HERE/assets"
-mkdir -p "$ASSETS"
-
+DEST="$HERE/assets"
+SERIES="${ALPINE_SERIES:-3.20}"
 ARCH="${ARCH:-x86_64}"
-BASE="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/${ARCH}"
-KERNEL_NAME="vmlinux-5.10.225"
-ROOTFS_NAME="ubuntu-22.04.ext4"
+APK_NAME="${APK_NAME:-linux-virt-6.6.141-r0.apk}"
+
+NETBOOT_BASE="https://dl-cdn.alpinelinux.org/alpine/v${SERIES}/releases/${ARCH}/netboot"
+MAIN_BASE="https://dl-cdn.alpinelinux.org/alpine/v${SERIES}/main/${ARCH}"
+
+mkdir -p "$DEST"
 
 fetch() {
-  local url="$1" out="$2"
-  if [[ -s "$out" ]]; then
-    echo "✓ $(basename "$out") already present"
-    return
-  fi
-  echo "→ downloading $(basename "$out")"
-  curl -fsSL --retry 3 -o "$out" "$url"
+    local url="$1" out="$2"
+    if [[ -s "$out" ]]; then
+        echo "✓ $(basename "$out") already present"
+        return
+    fi
+    echo "→ downloading $(basename "$out")"
+    curl -fsSL --retry 3 -o "$out" "$url"
 }
 
-fetch "$BASE/$KERNEL_NAME"            "$ASSETS/vmlinux"
-fetch "$BASE/$ROOTFS_NAME"            "$ASSETS/rootfs.ext4"
-fetch "$BASE/$ROOTFS_NAME.id_rsa"     "$ASSETS/rootfs.id_rsa" || true
-chmod 600 "$ASSETS/rootfs.id_rsa" 2>/dev/null || true
+fetch "$NETBOOT_BASE/initramfs-virt"  "$DEST/initramfs-virt"
+fetch "$MAIN_BASE/$APK_NAME"          "$DEST/linux-virt.apk"
 
+if [[ ! -d "$DEST/linux-virt-extract/boot" ]]; then
+    echo "→ extracting linux-virt apk"
+    rm -rf "$DEST/linux-virt-extract"
+    mkdir -p "$DEST/linux-virt-extract"
+    tar -xzf "$DEST/linux-virt.apk" -C "$DEST/linux-virt-extract"
+fi
+
+cp -f "$DEST/linux-virt-extract/boot/vmlinuz-virt" "$DEST/vmlinuz-virt"
+
+KVER="$(ls "$DEST/linux-virt-extract/lib/modules/" 2>/dev/null | head -1)"
 echo
-echo "Assets ready in $ASSETS:"
-ls -lh "$ASSETS"
+echo "Assets ready (kernel $KVER):"
+ls -lh "$DEST"
