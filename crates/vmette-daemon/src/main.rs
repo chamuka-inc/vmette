@@ -230,6 +230,11 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Kill the vmette subprocess (and its VZ microVM) if this handler
+    // is dropped — e.g. client disconnected mid-stream and a write_frame
+    // returned BrokenPipe. Without this, the VM keeps running until its
+    // natural exit (potentially --timeout = hours), leaking VZ state.
+    cmd.kill_on_drop(true);
 
     let mut child = cmd.spawn().context("spawn vmette")?;
     let child_stdout = child.stdout.take().unwrap();
