@@ -25,8 +25,9 @@ run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
 shell: init guest-bin ## Boot guest with no --exec; interactive shell
 	bash scripts/run.sh 'exec /bin/sh -l'
 
-test:          ## Run cargo tests
+test:          ## Run cargo unit tests + end-to-end VM smoke
 	cargo test --workspace
+	bash tests/run.sh
 
 clean:         ## Remove build artifacts and downloaded assets
 	cargo clean
