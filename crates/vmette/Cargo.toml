@@ -1,0 +1,19 @@
+[package]
+name        = "vmette"
+description = "Local Linux microVM sandbox for macOS, built on Apple's Virtualization.framework"
+version     .workspace = true
+edition     .workspace = true
+license     .workspace = true
+repository  .workspace = true
+
+[dependencies]
+objc2                .workspace = true
+objc2-foundation     .workspace = true
+objc2-virtualization .workspace = true
+block2               .workspace = true
+dispatch2            .workspace = true
+base64               .workspace = true
+thiserror            .workspace = true
+nix                  .workspace = true
+libc                 .workspace = true
+rand                 .workspace = true

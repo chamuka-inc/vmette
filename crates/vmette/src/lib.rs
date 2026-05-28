@@ -1,0 +1,100 @@
+//! vmette — local Linux microVM sandbox for macOS via Virtualization.framework.
+//!
+//! This crate is the host-side library. It wraps Apple's Virtualization
+//! framework via `objc2-virtualization` and exposes a Rust API for booting
+//! a Linux guest with virtio-fs shares, virtio-blk disks, virtio-net,
+//! vsock, and a base64-encoded shell command delivered via the kernel
+//! cmdline.
+//!
+//! See [`Config`] for the configurable surface and [`run`] for the
+//! synchronous entry point.
+
+use std::path::PathBuf;
+
+pub mod error;
+pub use error::Error;
+
+mod cmdline;
+mod lifecycle;
+mod terminal;
+mod vz;
+
+pub use lifecycle::{run, RunOutput};
+
+/// Per-invocation host vsock port policy.
+#[derive(Debug, Clone, Copy)]
+pub enum VsockPort {
+    /// Don't attach a vsock device at all.
+    Disabled,
+    /// Pick a random free port in 50000..60000 per invocation.
+    Auto,
+    /// Use the specified port.
+    Fixed(u32),
+}
+
+impl Default for VsockPort {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Host directory exposed as the guest's `/`.
+#[derive(Debug, Clone)]
+pub struct RootfsShare {
+    pub path: PathBuf,
+    pub read_only: bool,
+}
+
+/// Extra host directory mounted at `/mnt/<tag>` in the guest.
+#[derive(Debug, Clone)]
+pub struct ShareMount {
+    pub tag: String,
+    pub path: PathBuf,
+}
+
+/// One-shot VM configuration. Build with [`Config::new`], populate
+/// public fields, then pass to [`run`].
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub kernel: PathBuf,
+    pub initramfs: PathBuf,
+    pub cmdline: String,
+    pub rootfs_share: Option<RootfsShare>,
+    pub shares: Vec<ShareMount>,
+    pub disks: Vec<PathBuf>,
+    pub exec_cmd: Option<String>,
+    pub switch_root: bool,
+    pub net: bool,
+    pub vsock_port: VsockPort,
+    pub guest_vsock_port: u32,
+    pub timeout_seconds: Option<u32>,
+    pub vcpus: u8,
+    pub mem_mib: u64,
+    pub build_snapshot: Option<PathBuf>,
+    pub resume_snapshot: Option<PathBuf>,
+}
+
+impl Config {
+    /// Construct a config with the minimum required fields. All other
+    /// fields take sensible defaults.
+    pub fn new(kernel: impl Into<PathBuf>, initramfs: impl Into<PathBuf>) -> Self {
+        Self {
+            kernel: kernel.into(),
+            initramfs: initramfs.into(),
+            cmdline: "console=hvc0 quiet".into(),
+            rootfs_share: None,
+            shares: Vec::new(),
+            disks: Vec::new(),
+            exec_cmd: None,
+            switch_root: false,
+            net: false,
+            vsock_port: VsockPort::Auto,
+            guest_vsock_port: 1025,
+            timeout_seconds: None,
+            vcpus: 1,
+            mem_mib: 512,
+            build_snapshot: None,
+            resume_snapshot: None,
+        }
+    }
+}

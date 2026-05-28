@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# vmette orchestrator: ensure assets exist, build + sign the host binary,
-# then boot a microVM that runs whatever command was passed on the CLI.
+# vmette orchestrator: ensure assets exist, build + sign the host binary
+# (via cargo), then boot a microVM that runs whatever command was passed
+# on the CLI.
 #
 # Usage:
 #   ./scripts/run.sh                              # default probe command
@@ -12,9 +13,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ASSETS="$HERE/assets"
 ROOTFS="$HERE/assets/alpine-rootfs"
-SRC="$HERE/vmette/main.m"
-BIN="$HERE/vmette/vmette"
-ENT="$HERE/vmette/entitlements.plist"
+BIN="$HERE/target/release/vmette"
+ENT="$HERE/entitlements.plist"
 
 # Prereqs
 [[ -s "$ASSETS/vmlinuz-virt"             ]] || bash "$HERE/scripts/fetch-assets.sh"
@@ -23,10 +23,8 @@ ENT="$HERE/vmette/entitlements.plist"
 [[ -x "$ROOTFS/bin/sh"                   ]] || bash "$HERE/scripts/fetch-alpine-rootfs.sh"
 [[ -x "$ROOTFS/usr/local/bin/vsock-send" ]] || bash "$HERE/scripts/build-vsock-send.sh"
 
-echo "→ compiling vmette"
-clang -O2 -fobjc-arc -fmodules \
-    -framework Foundation -framework Virtualization \
-    -o "$BIN" "$SRC"
+echo "→ cargo build --release"
+( cd "$HERE" && cargo build --release -p vmette-cli )
 
 echo "→ codesigning"
 codesign --sign - --force --entitlements "$ENT" --options=runtime "$BIN" >/dev/null
@@ -52,7 +50,7 @@ exec "$BIN" \
     --kernel       "$ASSETS/vmlinuz-virt" \
     --initramfs    "$ASSETS/initramfs-vmette" \
     --rootfs-share "$ROOTFS" \
-    "${SHARE_ARGS[@]}" \
+    ${SHARE_ARGS[@]+"${SHARE_ARGS[@]}"} \
     --exec         "$CMD" \
     --vcpus        1 \
     --mem-mib      512

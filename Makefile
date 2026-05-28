@@ -1,9 +1,13 @@
 SHELL := /bin/bash
 
-.PHONY: help assets init guest-bin run shell clean
+.PHONY: help build assets init guest-bin run shell test clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+build:         ## cargo build the workspace + codesign vmette
+	cargo build --release
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette
 
 assets:        ## Download alpine vmlinuz + initramfs + minirootfs
 	bash scripts/fetch-assets.sh
@@ -21,6 +25,10 @@ run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
 shell: init guest-bin ## Boot guest with no --exec; interactive shell
 	bash scripts/run.sh 'exec /bin/sh -l'
 
+test:          ## Run cargo tests
+	cargo test --workspace
+
 clean:         ## Remove build artifacts and downloaded assets
-	rm -rf target assets vmette/vmette
+	cargo clean
+	rm -rf assets
 	rm -f tests/fixtures/share/from-guest*
