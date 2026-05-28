@@ -5,9 +5,29 @@ SHELL := /bin/bash
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-build:         ## cargo build the workspace + codesign vmette
+build:         ## cargo build the workspace + codesign vmette (host arch)
 	cargo build --release
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette
+
+universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
+	@rustup target add x86_64-apple-darwin aarch64-apple-darwin
+	cargo build --release --target x86_64-apple-darwin  --workspace
+	cargo build --release --target aarch64-apple-darwin --workspace
+	mkdir -p target/universal/release
+	lipo -create -output target/universal/release/vmette \
+	    target/x86_64-apple-darwin/release/vmette \
+	    target/aarch64-apple-darwin/release/vmette
+	lipo -create -output target/universal/release/vmetted \
+	    target/x86_64-apple-darwin/release/vmetted \
+	    target/aarch64-apple-darwin/release/vmetted
+	lipo -create -output target/universal/release/libvmette.dylib \
+	    target/x86_64-apple-darwin/release/libvmette.dylib \
+	    target/aarch64-apple-darwin/release/libvmette.dylib
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
+	    target/universal/release/vmette
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
+	    target/universal/release/vmetted
+	@lipo -info target/universal/release/vmette target/universal/release/vmetted target/universal/release/libvmette.dylib
 
 assets:        ## Download alpine vmlinuz + initramfs + minirootfs
 	bash scripts/fetch-assets.sh
