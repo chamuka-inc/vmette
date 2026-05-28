@@ -60,6 +60,11 @@ define_class!(
             );
             queue.exec_async(move || {
                 let mut ready = ready_taken;
+                // Sliding tail across reads so a READY split across two
+                // libc::read calls is still detected.
+                let needle = b"READY\n";
+                let mut prev_tail: Vec<u8> = Vec::with_capacity(needle.len() - 1);
+
                 let mut buf = [0u8; 4096];
                 loop {
                     let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
@@ -69,15 +74,23 @@ define_class!(
                     let slice = &buf[..n as usize];
 
                     // READY detection (one-shot, for snapshot build mode).
-                    if let Some(h) = ready.take() {
-                        if memchr_seq(slice, b"READY\n") {
-                            // Dispatch on main so VM ops happen on the VM's queue.
-                            DispatchQueue::main().exec_async(move || h());
+                    // Only consume the handler if READY is actually seen —
+                    // arbitrary log bytes from the guest must NOT drop it.
+                    if ready.is_some() {
+                        let mut window: Vec<u8> = Vec::with_capacity(prev_tail.len() + slice.len());
+                        window.extend_from_slice(&prev_tail);
+                        window.extend_from_slice(slice);
+                        if memchr_seq(&window, needle) {
+                            if let Some(h) = ready.take() {
+                                DispatchQueue::main().exec_async(move || h());
+                            }
+                        } else {
+                            // Keep enough of the tail to catch a split needle next read.
+                            let keep = needle.len().saturating_sub(1);
+                            prev_tail.clear();
+                            let start = window.len().saturating_sub(keep);
+                            prev_tail.extend_from_slice(&window[start..]);
                         }
-                        // (a miss leaves us without a handler; that's
-                        // OK — the next connection's first read will
-                        // re-take None and skip, which is the intended
-                        // one-shot semantics.)
                     }
 
                     // Log to host stderr.

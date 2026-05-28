@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vmette::{Config, RootfsShare, ShareMount, VsockPort};
+use vmette_image::PullOptions;
 
 fn usage() -> ! {
     eprintln!(
@@ -20,6 +21,7 @@ fn usage() -> ! {
          workload:\n\
            --image            REF       pull an OCI image (e.g. alpine:3.20) and use\n\
                                         as the rootfs share. Mutex with --rootfs-share.\n\
+           --image-offline              never hit the registry; fail if not cached.\n\
            --rootfs-share     PATH      host dir mounted as guest /  (virtio-fs tag 'rootfs')\n\
            --ro-rootfs-share            mount rootfs share read-only\n\
            --share            TAG=PATH  extra virtio-fs mount at /mnt/<TAG> (repeatable)\n\
@@ -46,6 +48,10 @@ fn usage() -> ! {
 struct ParsedArgs {
     config: Config,
     image_ref: Option<String>,
+    /// The user's --ro-rootfs-share intent, kept separately so the --image
+    /// branch (which builds a RootfsShare itself) can honor it.
+    rootfs_ro: bool,
+    image_offline: bool,
 }
 
 fn parse_args() -> ParsedArgs {
@@ -56,6 +62,7 @@ fn parse_args() -> ParsedArgs {
     let mut rootfs_share: Option<PathBuf> = None;
     let mut rootfs_ro = false;
     let mut image_ref: Option<String> = None;
+    let mut image_offline = false;
     let mut shares: Vec<ShareMount> = Vec::new();
     let mut disks: Vec<PathBuf> = Vec::new();
     let mut exec_cmd: Option<String> = None;
@@ -83,6 +90,7 @@ fn parse_args() -> ParsedArgs {
             "--rootfs-share"      => { rootfs_share = Some(take_next().into()); i += 2; }
             "--ro-rootfs-share"   => { rootfs_ro = true; i += 1; }
             "--image"             => { image_ref = Some(take_next()); i += 2; }
+            "--image-offline"     => { image_offline = true; i += 1; }
             "--share"             => {
                 let s = take_next();
                 let (tag, path) = s.split_once('=').unwrap_or_else(|| {
@@ -131,6 +139,19 @@ fn parse_args() -> ParsedArgs {
         eprintln!("error: --image and --rootfs-share are mutually exclusive");
         usage();
     }
+    // --switch-root + --ro-rootfs-share + --exec is a panic combo at the
+    // guest: /init can't write the runner script onto the RO rootfs and
+    // switch_root execs a nonexistent file → PID 1 dies → kernel panic.
+    // Reject at parse time; users with this need can either drop one
+    // flag or pre-bake their workload into the image as the actual init.
+    if switch_root && rootfs_ro && exec_cmd.is_some() {
+        eprintln!(
+            "error: --switch-root + --ro-rootfs-share + --exec would panic the guest \
+             (no writable place for /init's runner script). Drop --ro-rootfs-share \
+             or --switch-root, or bake the workload into the image as PID 1."
+        );
+        usage();
+    }
 
     let mut c = Config::new(kernel, initramfs);
     if let Some(s) = cfg_cmdline { c.cmdline = s; }
@@ -149,7 +170,7 @@ fn parse_args() -> ParsedArgs {
     c.mem_mib = mem_mib;
     c.build_snapshot = build_snapshot;
     c.resume_snapshot = resume_snapshot;
-    ParsedArgs { config: c, image_ref }
+    ParsedArgs { config: c, image_ref, rootfs_ro, image_offline }
 }
 
 fn cache_root() -> PathBuf {
@@ -206,7 +227,11 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        let rootfs = match rt.block_on(vmette_image::pull(&image_ref, &cache)) {
+        let opts = PullOptions {
+            offline: parsed.image_offline,
+            ..PullOptions::default()
+        };
+        let rootfs = match rt.block_on(vmette_image::pull_with_options(&image_ref, &cache, &opts)) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("[vmette] image pull failed: {}", e);
@@ -222,7 +247,7 @@ fn main() -> ExitCode {
         }
         config.rootfs_share = Some(vmette::RootfsShare {
             path: rootfs,
-            read_only: false,
+            read_only: parsed.rootfs_ro,
         });
     }
 

@@ -65,10 +65,44 @@ run() {
     rm -f "$log"
 }
 
+# Variant that asserts on captured guest output instead of exit code.
+# Use this when exit-code propagation is disabled (e.g. --ro-rootfs-share)
+# so the test can still detect a regression.
+run_output() {
+    # run_output NAME EXPECT_REGEX [vmette extra args...] -- COMMAND
+    local name="$1" expect="$2"; shift 2
+    local -a extra=()
+    while [[ "$1" != "--" ]]; do extra+=("$1"); shift; done
+    shift
+    local cmd="$*"
+
+    printf "  %-40s " "$name"
+    local log; log=$(mktemp)
+    "$BIN" \
+        --kernel       "$ASSETS/vmlinuz-virt" \
+        --initramfs    "$ASSETS/initramfs-vmette" \
+        --rootfs-share "$ROOTFS" \
+        "${extra[@]+"${extra[@]}"}" \
+        --exec         "$cmd" </dev/null >"$log" 2>&1
+    if grep -qE "$expect" "$log"; then
+        echo "PASS"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL  (expected output matching /$expect/)"
+        FAIL=$((FAIL + 1))
+        FAILED+=("$name")
+        echo "    --- log tail ---"
+        tail -8 "$log" | sed 's/^/    /'
+    fi
+    rm -f "$log"
+}
+
 # Variant that uses --image instead of --rootfs-share.
+# Supports optional extra args between image and -- (e.g. --image-offline).
 run_image() {
     local name="$1" want="$2" image="$3"; shift 3
-    while [[ "$1" != "--" ]]; do shift; done
+    local -a extra=()
+    while [[ "$1" != "--" ]]; do extra+=("$1"); shift; done
     shift
     local cmd="$*"
 
@@ -79,6 +113,7 @@ run_image() {
         --kernel    "$ASSETS/vmlinuz-virt" \
         --initramfs "$ASSETS/initramfs-vmette" \
         --image     "$image" \
+        "${extra[@]+"${extra[@]}"}" \
         --exec      "$cmd" </dev/null >"$log" 2>&1
     got=$?
     if [[ "$got" == "$want" ]]; then
@@ -107,7 +142,7 @@ run "vsock roundtrip" 0 -- 'echo ping | vsock-send $VMETTE_VSOCK_PORT > /tmp/out
 
 run "switch-root pid 1" 0 --switch-root -- 'cat /proc/1/comm | grep -q vmette-runner'
 
-run "ro-rootfs writes fail" 0 --ro-rootfs-share -- 'touch /foo 2>&1 | grep -q "Read-only"'
+run_output "ro-rootfs writes fail" "Read-only" --ro-rootfs-share -- 'touch /foo 2>&1; true'
 
 run "timeout exits 124" 124 --timeout 3 -- 'sleep 30'
 
@@ -117,6 +152,13 @@ run "snapshot --build-snapshot arch guard" 1 --build-snapshot /tmp/foo.snap -- '
 
 # --image: pulls from Docker Hub on first run (~30s), cached after (~3s).
 run_image "--image alpine:3.20 (network required)" 0 alpine:3.20 -- 'grep -q "^3.20" /etc/alpine-release'
+
+# --image-offline: assumes the alpine:3.20 cache is warm from the previous gate.
+run_image "--image-offline (cache hit)" 0 alpine:3.20 --image-offline -- 'true'
+
+# Parse-time rejection of impossible combo (switch-root + ro + exec → guest panic).
+# Expected: vmette exits 2 from the arg parser; never reaches the VM.
+run "--switch-root+--ro-rootfs-share rejected" 2 --switch-root --ro-rootfs-share -- 'true'
 
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="

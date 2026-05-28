@@ -15,7 +15,8 @@ vmette --kernel PATH --initramfs PATH [options]
 
 | Flag | Argument | Description |
 |------|----------|-------------|
-| `--image` | REF | Pull an OCI/Docker image (e.g. `alpine:3.20`, `python:3.12-alpine`, `ghcr.io/org/img:tag`) and use as the rootfs. Cached by manifest digest at `~/Library/Caches/vmette/images/`. Anonymous auth only in v0.1. Mutually exclusive with `--rootfs-share`. |
+| `--image` | REF | Pull an OCI/Docker image (e.g. `alpine:3.20`, `python:3.12-alpine`, `ghcr.io/org/img:tag`) and use as the rootfs. Cached by manifest digest at `~/Library/Caches/vmette/images/`. Default 1-hour TTL skips the registry on warm hits. Anonymous auth only in v0.1. Mutually exclusive with `--rootfs-share`. |
+| `--image-offline` | — | Never contact the registry; use the cached rootfs if present, fail otherwise. Useful on flaky networks or in air-gapped environments. |
 | `--rootfs-share` | PATH | Host directory mounted as guest `/` via virtio-fs (tag `rootfs`). |
 | `--ro-rootfs-share` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). |
 | `--share` | TAG=PATH | Extra virtio-fs mount at `/mnt/<TAG>` in the guest. Repeatable. |
@@ -53,6 +54,11 @@ On Intel, snapshot flags exit 1 with a clear error pointing at Apple's
 | 1 | Library/runtime error (config invalid, VM start failed, snapshot unsupported, etc). |
 | 2 | CLI usage error. |
 | 124 | `--timeout` reached. |
+
+Note: `--switch-root --ro-rootfs-share --exec CMD` is rejected at parse
+time (exit 2). The combination would panic the guest — there's no
+writable place for `/init` to stage the wrapper script that
+`switch_root` needs to exec.
 | _N_ | Guest's exit code (1–123 propagated verbatim from the workload). |
 
 ## Guest environment

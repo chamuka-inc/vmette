@@ -23,6 +23,7 @@
 
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use oci_client::{
     client::{linux_amd64_resolver, ClientConfig, ImageData},
@@ -31,6 +32,28 @@ use oci_client::{
 };
 use thiserror::Error;
 use tracing::{debug, info, warn};
+
+/// Pull-time policy. Controls how aggressively we revalidate the cached
+/// manifest digest against the registry.
+#[derive(Debug, Clone)]
+pub struct PullOptions {
+    /// When set, a cached ref younger than this TTL skips the registry
+    /// roundtrip. `None` = always revalidate.
+    pub cache_ttl: Option<Duration>,
+    /// Never hit the network. Cache miss returns
+    /// [`Error::OfflineCacheMiss`].
+    pub offline: bool,
+}
+
+impl Default for PullOptions {
+    /// Production-friendly defaults: 1-hour soft TTL, online.
+    fn default() -> Self {
+        Self {
+            cache_ttl: Some(Duration::from_secs(3600)),
+            offline: false,
+        }
+    }
+}
 
 pub const MEDIA_TYPES: &[&str] = &[
     "application/vnd.oci.image.layer.v1.tar",
@@ -54,16 +77,66 @@ pub enum Error {
     #[error("layer extraction: {0}")]
     Extract(String),
 
+    #[error("offline mode: '{0}' not in cache")]
+    OfflineCacheMiss(String),
+
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// Backwards-compatible entry point. Uses [`PullOptions::default`].
+pub async fn pull(image_ref: &str, cache_root: &Path) -> Result<PathBuf, Error> {
+    pull_with_options(image_ref, cache_root, &PullOptions::default()).await
+}
+
 /// Pull (or look up cached) an OCI image and return the path to its
 /// extracted rootfs.
-pub async fn pull(image_ref: &str, cache_root: &Path) -> Result<PathBuf, Error> {
+///
+/// Cache layout under `cache_root`:
+/// ```text
+/// refs/<sanitized-ref>.digest       digest of the last-fetched manifest
+///                                    for that ref. File mtime = fetched_at.
+/// <sanitized-ref>__<digest>/rootfs   extracted image tree, idempotent
+///                                    via .vmette-image-ready marker.
+/// ```
+pub async fn pull_with_options(
+    image_ref: &str,
+    cache_root: &Path,
+    options: &PullOptions,
+) -> Result<PathBuf, Error> {
     let reference: Reference = image_ref
         .parse()
         .map_err(|e: oci_client::ParseError| Error::InvalidReference(image_ref.into(), e.to_string()))?;
+
+    let refs_dir = cache_root.join("refs");
+    let ref_file = refs_dir.join(format!("{}.digest", sanitize_ref(image_ref)));
+
+    // Fast path: cache hit + within-TTL (or offline) → no network at all.
+    if let Some((digest, age)) = read_ref_entry(&ref_file) {
+        let rootfs = extracted_path(cache_root, image_ref, &digest);
+        let marker = rootfs.join(".vmette-image-ready");
+        if marker.exists() {
+            let fresh_enough = options.offline
+                || options
+                    .cache_ttl
+                    .map(|ttl| age <= ttl)
+                    .unwrap_or(false);
+            if fresh_enough {
+                debug!(
+                    path = %rootfs.display(),
+                    age_s = age.as_secs(),
+                    offline = options.offline,
+                    "cache hit; skipping registry round-trip"
+                );
+                return Ok(rootfs);
+            }
+        }
+    }
+
+    // Offline + no usable cache → fail fast.
+    if options.offline {
+        return Err(Error::OfflineCacheMiss(image_ref.into()));
+    }
 
     info!(image = %image_ref, "resolving image");
 
@@ -78,25 +151,19 @@ pub async fn pull(image_ref: &str, cache_root: &Path) -> Result<PathBuf, Error> 
     let auth = RegistryAuth::Anonymous;
 
     // Resolve manifest digest cheaply — single HEAD/GET, no blob downloads.
-    // This is our cache key; if the upstream tag's manifest list digest
-    // hasn't changed, we already have everything extracted.
-    let manifest_digest = client
-        .fetch_manifest_digest(&reference, &auth)
-        .await?;
+    let manifest_digest = client.fetch_manifest_digest(&reference, &auth).await?;
 
-    let safe_ref = sanitize_ref(image_ref);
-    let dest = cache_root.join(format!("{}__{}", safe_ref, digest_to_dir(&manifest_digest)));
-    let rootfs = dest.join("rootfs");
+    let rootfs = extracted_path(cache_root, image_ref, &manifest_digest);
     let ready_marker = rootfs.join(".vmette-image-ready");
 
     if ready_marker.exists() {
-        debug!(path = %rootfs.display(), "image already in cache");
+        debug!(path = %rootfs.display(), "image already extracted; refreshing ref entry");
+        write_ref_entry(&ref_file, &manifest_digest)?;
         return Ok(rootfs);
     }
 
     info!(digest = %manifest_digest, "cache miss; pulling layers");
 
-    // Cache miss: do the full pull (manifest + config + layer blobs).
     let image: ImageData = client
         .pull(&reference, &auth, MEDIA_TYPES.to_vec())
         .await?;
@@ -107,7 +174,6 @@ pub async fn pull(image_ref: &str, cache_root: &Path) -> Result<PathBuf, Error> 
         "extracting image"
     );
 
-    // Fresh extraction — clear any partial cache dir first.
     if rootfs.exists() {
         std::fs::remove_dir_all(&rootfs)?;
     }
@@ -126,8 +192,36 @@ pub async fn pull(image_ref: &str, cache_root: &Path) -> Result<PathBuf, Error> 
     }
 
     std::fs::write(&ready_marker, format!("{}\n", manifest_digest))?;
+    write_ref_entry(&ref_file, &manifest_digest)?;
     info!(path = %rootfs.display(), "image ready");
     Ok(rootfs)
+}
+
+fn extracted_path(cache_root: &Path, image_ref: &str, digest: &str) -> PathBuf {
+    cache_root
+        .join(format!("{}__{}", sanitize_ref(image_ref), digest_to_dir(digest)))
+        .join("rootfs")
+}
+
+fn read_ref_entry(path: &Path) -> Option<(String, Duration)> {
+    let digest = std::fs::read_to_string(path).ok()?;
+    let digest = digest.trim().to_string();
+    if digest.is_empty() {
+        return None;
+    }
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    let age = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or(Duration::ZERO);
+    Some((digest, age))
+}
+
+fn write_ref_entry(path: &Path, digest: &str) -> Result<(), Error> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("{}\n", digest))?;
+    Ok(())
 }
 
 /// Inject the contents of `src_bin_dir/{vsock-send,vsock-runner}` into

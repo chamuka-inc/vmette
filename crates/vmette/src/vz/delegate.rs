@@ -59,8 +59,35 @@ impl VmetteDelegate {
     }
 }
 
+/// Read the propagated guest exit code.
+///
+/// Semantics:
+/// - `None` path (RO rootfs, no place for /init to write):
+///   we have no signal, so report success (0). The caller knew this
+///   trade-off when they passed --ro-rootfs-share.
+/// - Missing file in writable mode: guest crashed before /init's
+///   writeback. Report 1 with a warning — silent success would mask
+///   the crash.
+/// - File present but unparseable: same — corrupt or truncated write
+///   from a partial crash; warn and return 1.
 fn read_exit_file(path: Option<&std::path::Path>) -> i32 {
     let Some(p) = path else { return 0 };
-    let Ok(s) = std::fs::read_to_string(p) else { return 0 };
-    s.trim().parse().unwrap_or(0)
+    match std::fs::read_to_string(p) {
+        Ok(s) => match s.trim().parse() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!(
+                    "\r\n[vmette] warning: .vmette-exit unparseable ({:?}); reporting 1\r",
+                    s.trim()
+                );
+                1
+            }
+        },
+        Err(_) => {
+            eprintln!(
+                "\r\n[vmette] warning: .vmette-exit missing (guest likely crashed); reporting 1\r"
+            );
+            1
+        }
+    }
 }

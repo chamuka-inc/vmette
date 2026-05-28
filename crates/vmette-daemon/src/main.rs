@@ -246,16 +246,33 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
     while !out_done || !err_done {
         tokio::select! {
             n = out_reader.read_line(&mut out_buf), if !out_done => {
-                let n = n.unwrap_or(0);
-                if n == 0 { out_done = true; continue; }
-                let frame = Frame::Stdout { data: std::mem::take(&mut out_buf) };
-                write_frame(&mut write_half, &frame).await?;
+                match n {
+                    Ok(0) => { out_done = true; }
+                    Ok(_) => {
+                        let frame = Frame::Stdout { data: std::mem::take(&mut out_buf) };
+                        write_frame(&mut write_half, &frame).await?;
+                    }
+                    Err(e) => {
+                        // Real I/O error — surface it instead of pretending EOF.
+                        let frame = Frame::Error { message: format!("stdout: {e}") };
+                        let _ = write_frame(&mut write_half, &frame).await;
+                        out_done = true;
+                    }
+                }
             }
             n = err_reader.read_line(&mut err_buf), if !err_done => {
-                let n = n.unwrap_or(0);
-                if n == 0 { err_done = true; continue; }
-                let frame = Frame::Stderr { data: std::mem::take(&mut err_buf) };
-                write_frame(&mut write_half, &frame).await?;
+                match n {
+                    Ok(0) => { err_done = true; }
+                    Ok(_) => {
+                        let frame = Frame::Stderr { data: std::mem::take(&mut err_buf) };
+                        write_frame(&mut write_half, &frame).await?;
+                    }
+                    Err(e) => {
+                        let frame = Frame::Error { message: format!("stderr: {e}") };
+                        let _ = write_frame(&mut write_half, &frame).await;
+                        err_done = true;
+                    }
+                }
             }
         }
     }

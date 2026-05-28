@@ -215,18 +215,42 @@ pub unsafe extern "C" fn vmette_config_set_timeout(cfg: *mut vmette_config_t, se
     }
 }
 
+/// Note: no clamping. A value VZ rejects (e.g. 0) surfaces as
+/// `InvalidConfig` from `vmette_run` — same path as the Rust API.
 #[no_mangle]
 pub unsafe extern "C" fn vmette_config_set_vcpus(cfg: *mut vmette_config_t, n: u8) {
     if let Some(c) = cfg_mut(cfg) {
-        c.vcpus = n.max(1);
+        c.vcpus = n;
     }
 }
 
+/// Note: no clamping. See `vmette_config_set_vcpus` for the rationale.
 #[no_mangle]
 pub unsafe extern "C" fn vmette_config_set_mem_mib(cfg: *mut vmette_config_t, n: u64) {
     if let Some(c) = cfg_mut(cfg) {
-        c.mem_mib = n.max(64);
+        c.mem_mib = n;
     }
+}
+
+/// Path to a snapshot file to write after the guest signals ready.
+/// Apple Silicon only — see VmetteStatus::SnapshotUnsupported.
+#[no_mangle]
+pub unsafe extern "C" fn vmette_config_set_build_snapshot(
+    cfg: *mut vmette_config_t,
+    path: *const c_char,
+) {
+    let Some(c) = cfg_mut(cfg) else { return };
+    c.build_snapshot = cstr_to_pathbuf(path);
+}
+
+/// Path to a previously-saved snapshot to restore. Apple Silicon only.
+#[no_mangle]
+pub unsafe extern "C" fn vmette_config_set_resume_snapshot(
+    cfg: *mut vmette_config_t,
+    path: *const c_char,
+) {
+    let Some(c) = cfg_mut(cfg) else { return };
+    c.resume_snapshot = cstr_to_pathbuf(path);
 }
 
 // ---- run + output ------------------------------------------------------

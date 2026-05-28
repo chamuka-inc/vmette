@@ -86,6 +86,7 @@ echo "    $BIN_DIR/vmetted → $PREFIX/bin/vmetted"
 echo
 echo "    libvmette.dylib  → $PREFIX/lib/libvmette.dylib"
 echo "    vmette.h         → $PREFIX/include/vmette.h"
+echo "    guest helpers    → $PREFIX/share/vmette/guest/{vsock-send,vsock-runner}"
 echo
 if ! command -v vmette >/dev/null 2>&1; then
     echo "⚠️  $BIN_DIR isn't on your PATH. Add this to your shell init:"

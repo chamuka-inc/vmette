@@ -89,9 +89,27 @@ typedef struct vmette_run_output_t {
 
  void vmette_config_set_timeout(struct vmette_config_t *cfg, uint32_t seconds);
 
+/**
+ * Note: no clamping. A value VZ rejects (e.g. 0) surfaces as
+ * `InvalidConfig` from `vmette_run` — same path as the Rust API.
+ */
  void vmette_config_set_vcpus(struct vmette_config_t *cfg, uint8_t n);
 
+/**
+ * Note: no clamping. See `vmette_config_set_vcpus` for the rationale.
+ */
  void vmette_config_set_mem_mib(struct vmette_config_t *cfg, uint64_t n);
+
+/**
+ * Path to a snapshot file to write after the guest signals ready.
+ * Apple Silicon only — see VmetteStatus::SnapshotUnsupported.
+ */
+ void vmette_config_set_build_snapshot(struct vmette_config_t *cfg, const char *path);
+
+/**
+ * Path to a previously-saved snapshot to restore. Apple Silicon only.
+ */
+ void vmette_config_set_resume_snapshot(struct vmette_config_t *cfg, const char *path);
 
 /**
  * Run a configured guest. Blocks until the guest powers off.
