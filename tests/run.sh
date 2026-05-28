@@ -155,16 +155,23 @@ run_image "--image alpine:3.20 (network required)" 0 alpine:3.20 -- 'grep -q "^3
 
 # --image-offline path: assumes the alpine:3.20 cache is warm from the
 # previous gate. To force the offline-fallback branch (rather than the
-# in-TTL fast-path which would also serve), delete the refs/ entry and
-# rely on the scan_offline_fallback that finds the extracted rootfs by
-# sanitized-ref prefix. Fails loudly if the cache layout we assumed
-# isn't present.
+# in-TTL fast-path which would also serve), wipe the refs/ entry AND
+# any stale alpine_3.20__<old-digest> extraction dirs, then run
+# offline. scan_offline_fallback picks newest-by-marker-mtime so we
+# must ensure exactly one candidate exists.
 CACHE="$HOME/Library/Caches/vmette/images"
-REF_FILE="$CACHE/refs/alpine_3.20.digest"
-if [[ ! -f "$REF_FILE" ]]; then
-    echo "  --image-offline test: SKIP (no warm cache; prior gate must have failed)" >&2
+# Glob avoids hardcoding sanitize_ref's exact output; assert non-empty.
+REF_GLOB=("$CACHE"/refs/*alpine*3.20*.digest)
+DIR_GLOB=("$CACHE"/*alpine*3.20*__*)
+if (( ${#REF_GLOB[@]} == 0 )) || [[ ! -e "${REF_GLOB[0]}" ]]; then
+    printf "  %-40s FAIL (no warm cache from prior alpine:3.20 gate)\n" "--image-offline (fallback scan)"
+    FAIL=$((FAIL + 1)); FAILED+=("--image-offline missing prereq")
 else
-    rm -f "$REF_FILE"
+    rm -f "${REF_GLOB[@]}"
+    # Keep newest alpine_3.20__* dir, prune the rest. With ls -dt we'd
+    # sort newest-first; tail -n +2 drops the first (newest).
+    # shellcheck disable=SC2012
+    ls -dt "${DIR_GLOB[@]}" 2>/dev/null | tail -n +2 | xargs -r rm -rf
     run_image "--image-offline (fallback scan)" 0 alpine:3.20 --image-offline -- 'true'
 fi
 
