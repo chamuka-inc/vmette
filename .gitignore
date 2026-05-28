@@ -1,5 +1,6 @@
 /target
 /assets
+/dist
 /vmette/vmette
 /examples/minimal_c
 *.sock

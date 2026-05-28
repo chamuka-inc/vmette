@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build assets init guest-bin run shell test clean
+.PHONY: help build universal dist assets init guest-bin run shell test clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -48,6 +48,26 @@ shell: init guest-bin ## Boot guest with no --exec; interactive shell
 test:          ## Run cargo unit tests + end-to-end VM smoke
 	cargo test --workspace
 	bash tests/run.sh
+
+VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
+DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
+
+dist: universal ## Produce dist/$(DIST_NAME).tar.gz with binaries + lib + header + LICENSE
+	rm -rf dist
+	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include}
+	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/
+	cp target/universal/release/vmetted    dist/staging/$(DIST_NAME)/bin/
+	cp target/universal/release/libvmette.dylib dist/staging/$(DIST_NAME)/lib/
+	cp crates/vmette/include/vmette.h      dist/staging/$(DIST_NAME)/include/
+	cp entitlements.plist                  dist/staging/$(DIST_NAME)/
+	cp LICENSE                             dist/staging/$(DIST_NAME)/
+	cp README.md                           dist/staging/$(DIST_NAME)/
+	tar -C dist/staging -czf dist/$(DIST_NAME).tar.gz $(DIST_NAME)
+	rm -rf dist/staging
+	cd dist && shasum -a 256 *.tar.gz > SHA256SUMS
+	@echo
+	@echo "✓ dist artifacts:"
+	@ls -lh dist/
 
 clean:         ## Remove build artifacts and downloaded assets
 	cargo clean
