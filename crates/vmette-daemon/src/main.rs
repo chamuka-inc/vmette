@@ -16,7 +16,8 @@
 //!
 //!   client → daemon : one JSON object on a single line:
 //!       { "kernel": "/path", "initramfs": "/path",
-//!         "rootfs_share": {"path": "/p", "read_only": false},
+//!         "rootfs": "/path/to/dir | alpine:3.20 | tar+https://... | oci://...",
+//!         "rootfs_ro": false, "offline": false,
 //!         "shares": [{"tag":"host", "path":"/p"}],
 //!         "exec": "echo hi",
 //!         "net": false, "switch_root": false,
@@ -51,8 +52,13 @@ use tracing::{error, info, warn};
 struct Request {
     kernel: PathBuf,
     initramfs: PathBuf,
+    /// Rootfs spec dispatched through the CLI's provider registry.
+    /// See `vmette providers` for valid forms (path, image ref, tar+...).
+    rootfs: String,
     #[serde(default)]
-    rootfs_share: Option<RootfsShare>,
+    rootfs_ro: bool,
+    #[serde(default)]
+    offline: bool,
     #[serde(default)]
     shares: Vec<ShareMount>,
     #[serde(default)]
@@ -78,13 +84,6 @@ struct Request {
 fn default_guest_vsock_port() -> u32 { 1025 }
 fn default_vcpus() -> u8 { 1 }
 fn default_mem_mib() -> u64 { 512 }
-
-#[derive(Debug, Deserialize)]
-struct RootfsShare {
-    path: PathBuf,
-    #[serde(default)]
-    read_only: bool,
-}
 
 #[derive(Debug, Deserialize)]
 struct ShareMount {
@@ -206,11 +205,12 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
     let mut cmd = Command::new(&vmette_bin);
     cmd.arg("--kernel").arg(&req.kernel);
     cmd.arg("--initramfs").arg(&req.initramfs);
-    if let Some(rs) = &req.rootfs_share {
-        cmd.arg("--rootfs-share").arg(&rs.path);
-        if rs.read_only {
-            cmd.arg("--ro-rootfs-share");
-        }
+    cmd.arg("--rootfs").arg(&req.rootfs);
+    if req.rootfs_ro {
+        cmd.arg("--rootfs-ro");
+    }
+    if req.offline {
+        cmd.arg("--offline");
     }
     for s in &req.shares {
         cmd.arg("--share").arg(format!("{}={}", s.tag, s.path.display()));

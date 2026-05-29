@@ -20,6 +20,7 @@ mod terminal;
 mod vz;
 
 pub mod ffi;
+pub mod provider;
 
 pub use lifecycle::{run, RunOutput};
 

@@ -64,7 +64,7 @@ impl VmetteDelegate {
 /// Semantics:
 /// - `None` path (RO rootfs, no place for /init to write):
 ///   we have no signal, so report success (0). The caller knew this
-///   trade-off when they passed --ro-rootfs-share.
+///   trade-off when they passed --rootfs-ro.
 /// - Missing file in writable mode: guest crashed before /init's
 ///   writeback. Report 1 with a warning — silent success would mask
 ///   the crash.

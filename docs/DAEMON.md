@@ -34,7 +34,9 @@ Line-delimited JSON. One request per connection.
 {
   "kernel": "/abs/path/vmlinuz-virt",
   "initramfs": "/abs/path/initramfs-vmette",
-  "rootfs_share": { "path": "/abs/path/alpine-rootfs", "read_only": false },
+  "rootfs": "/abs/path/alpine-rootfs",
+  "rootfs_ro": false,
+  "offline": false,
   "shares": [
     { "tag": "host", "path": "/abs/path/host_dir" }
   ],
@@ -50,7 +52,13 @@ Line-delimited JSON. One request per connection.
 }
 ```
 
-`rootfs_share`, `shares`, `disks`, `timeout_seconds`, `net`,
+`rootfs` is required and follows the same spec format as the CLI's
+`--rootfs` flag — a path (`/abs/path` or `./rel`), a bare image ref
+(`alpine:3.20`), or a scheme-prefixed URL (`oci://…`, `tar+https://…`,
+`tar+file://…`). See [`CLI.md`](CLI.md#rootfs-providers) for the
+shipped providers.
+
+`rootfs_ro`, `offline`, `shares`, `disks`, `timeout_seconds`, `net`,
 `switch_root` are optional. `vsock_port` is `-1` (disable) / `0`
 (auto) / `>0` (fixed), defaulting to `0`. `vcpus` defaults to 1,
 `mem_mib` to 512.
@@ -83,7 +91,7 @@ s.connect(sock)
 req = {
     "kernel": "/abs/path/vmlinuz-virt",
     "initramfs": "/abs/path/initramfs-vmette",
-    "rootfs_share": {"path": "/abs/path/alpine-rootfs"},
+    "rootfs": "/abs/path/alpine-rootfs",
     "exec": "echo from daemon; exit 17",
 }
 s.sendall((json.dumps(req) + "\n").encode())
@@ -106,7 +114,7 @@ for line in buf.decode().splitlines():
 #### shell + jq + socat
 
 ```sh
-echo '{"kernel":"/k","initramfs":"/i","exec":"true"}' | \
+echo '{"kernel":"/k","initramfs":"/i","rootfs":"/p","exec":"true"}' | \
   socat - UNIX-CONNECT:$HOME/Library/Caches/vmette/vmette.sock | \
   jq -r 'select(.kind == "exit") | "exit \(.code)"'
 ```

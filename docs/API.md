@@ -57,6 +57,36 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
   (which return synchronously). For normal `run()`, the process exits
   before this type is observed.
 
+### Rootfs providers
+
+The lib accepts a host directory path in `Config.rootfs_share`. For
+embedders who want the same `--rootfs SPEC` ergonomics the CLI offers,
+the `vmette::provider` module exposes a trait + registry:
+
+```rust
+use vmette::provider::{Context, DirProvider, Registry};
+use vmette_provider_oci::OciProvider;
+use vmette_provider_tar::TarProvider;
+
+let registry = Registry::new()
+    .with(DirProvider::new())   // claims path-like specs
+    .with(TarProvider::new())   // claims tar+http(s)://, tar+file://
+    .with(OciProvider::new());  // catch-all for bare refs + oci://
+
+let ctx = Context::new("/Users/me/Library/Caches/vmette")
+    .offline(false)
+    .guest_helpers_dir(Some("/usr/local/share/vmette/guest".into()));
+
+let rootfs = registry.resolve("alpine:3.20", &ctx)?;
+cfg.rootfs_share = Some(vmette::RootfsShare { path: rootfs, read_only: false });
+```
+
+`RootfsProvider` is the trait third-party code implements to teach
+vmette about new rootfs sources (S3 buckets, internal artifactories,
+custom build pipelines). See [the tar provider crate]
+(../crates/vmette-provider-tar/src/lib.rs) for a ~150-line reference
+implementation.
+
 ### Snapshot (Apple Silicon only)
 
 ```rust

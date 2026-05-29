@@ -1,7 +1,8 @@
 # vmette CLI reference
 
 ```
-vmette --kernel PATH --initramfs PATH [options]
+vmette --kernel PATH --initramfs PATH --rootfs SPEC [options]
+vmette providers                                # list registered providers
 ```
 
 ## Required
@@ -10,15 +11,19 @@ vmette --kernel PATH --initramfs PATH [options]
 |------|----------|-------------|
 | `--kernel` | PATH | bzImage on x86_64; vmlinuz from alpine `linux-virt` apk. |
 | `--initramfs` | PATH | Initramfs built by `scripts/build-initramfs.sh`. |
+| `--rootfs` | SPEC | Rootfs source. Dispatched to a [provider](#rootfs-providers) by the first matching scheme/prefix. |
+
+## Rootfs
+
+| Flag | Argument | Description |
+|------|----------|-------------|
+| `--rootfs-ro` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). |
+| `--offline` | — | Forbid network access. Cache miss surfaces as an immediate failure; useful on flaky networks or air-gapped environments. Applied to whichever provider resolves the spec. |
 
 ## Workload
 
 | Flag | Argument | Description |
 |------|----------|-------------|
-| `--image` | REF | Pull an OCI/Docker image (e.g. `alpine:3.20`, `python:3.12-alpine`, `ghcr.io/org/img:tag`) and use as the rootfs. Cached by manifest digest at `~/Library/Caches/vmette/images/`. Default 1-hour TTL skips the registry on warm hits. Anonymous auth only in v0.1. Mutually exclusive with `--rootfs-share`. |
-| `--image-offline` | — | Never contact the registry; use the cached rootfs if present, fail otherwise. Useful on flaky networks or in air-gapped environments. |
-| `--rootfs-share` | PATH | Host directory mounted as guest `/` via virtio-fs (tag `rootfs`). |
-| `--ro-rootfs-share` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). |
 | `--share` | TAG=PATH | Extra virtio-fs mount at `/mnt/<TAG>` in the guest. Repeatable. |
 | `--disk` | PATH | Raw block image attached as virtio-blk. Repeatable. |
 | `--exec` | CMD | Shell command to run in the guest, then `poweroff -f`. Encoded as base64 in `vmette.exec=<b64>` on the kernel cmdline (~3000 char limit). |
@@ -46,20 +51,51 @@ vmette --kernel PATH --initramfs PATH [options]
 On Intel, snapshot flags exit 1 with a clear error pointing at Apple's
 `#if defined(__arm64__)` gate.
 
+## Rootfs providers
+
+`--rootfs SPEC` is dispatched to a provider by matching the spec's
+prefix or scheme. Order is registration order, first-match-wins. The
+shipped CLI registers three:
+
+| Provider | Claims | Examples |
+|----------|--------|----------|
+| `dir` | absolute paths, `./`, `../`, `~/` | `--rootfs /path/to/rootfs`<br>`--rootfs ./assets/alpine-rootfs`<br>`--rootfs ~/projects/vmette/rootfs` |
+| `tar` | `tar+http://`, `tar+https://`, `tar+file://` | `--rootfs tar+https://example.com/rootfs.tar.gz`<br>`--rootfs tar+file:///tmp/rootfs.tar` |
+| `oci` | `oci://<ref>`, plus any bare image ref (catch-all) | `--rootfs alpine:3.20`<br>`--rootfs python:3.12-alpine`<br>`--rootfs oci://ghcr.io/foo/bar:tag` |
+
+Run `vmette providers` to print the live registry.
+
+### Provider caches
+
+| Provider | Cache location |
+|----------|----------------|
+| `dir` | none — your directory is used in place |
+| `tar` | `~/Library/Caches/vmette/tar/<sanitized-url>/` |
+| `oci` | `~/Library/Caches/vmette/oci/<sanitized-ref>__<digest>/rootfs/` plus `refs/<sanitized-ref>.digest` |
+
+The OCI provider keeps a 1-hour soft TTL on `refs/<ref>.digest` mtime; a
+fresh ref entry skips the registry roundtrip entirely. `--offline` short-
+circuits that further — no network at all, even for digest verification.
+
+Guest helpers (`vsock-send`, `vsock-runner`) are injected into the
+extracted rootfs at `/usr/local/bin/` automatically by the OCI and tar
+providers, so vsock workflows work uniformly across image sources. The
+DirProvider does not touch your directory.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | Guest exited 0 (or interactive shell ended cleanly). |
-| 1 | Library/runtime error (config invalid, VM start failed, snapshot unsupported, etc). |
+| 1 | Library/runtime error (config invalid, VM start failed, snapshot unsupported, rootfs resolution failed, etc). |
 | 2 | CLI usage error. |
 | 124 | `--timeout` reached. |
-
-Note: `--switch-root --ro-rootfs-share --exec CMD` is rejected at parse
-time (exit 2). The combination would panic the guest — there's no
-writable place for `/init` to stage the wrapper script that
-`switch_root` needs to exec.
 | _N_ | Guest's exit code (1–123 propagated verbatim from the workload). |
+
+Note: `--switch-root --rootfs-ro --exec CMD` is rejected at parse time
+(exit 2). The combination would panic the guest — there's no writable
+place for `/init` to stage the wrapper script that `switch_root` needs
+to exec.
 
 ## Guest environment
 
@@ -76,18 +112,22 @@ The guest's exec environment (passed via `/init`) sets:
 ```sh
 # pull a public OCI image and run a command in it
 vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --image alpine:3.20 --exec 'cat /etc/alpine-release'
-
-# python ergonomics:
-vmette ... --image python:3.12-alpine --exec 'python3 -c "import sys; print(sys.version)"'
+       --rootfs python:3.12-alpine --exec 'python3 -c "import sys; print(sys.version)"'
 
 # basic with a local rootfs
 vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --rootfs-share ./assets/alpine-rootfs --exec 'uname -a; exit 0'
+       --rootfs ./assets/alpine-rootfs --exec 'uname -a; exit 0'
+
+# offline cache hit (no network at all)
+vmette ... --rootfs alpine:3.20 --offline --exec 'cat /etc/alpine-release'
+
+# tarball over HTTPS, gzip auto-detected
+vmette ... --rootfs tar+https://example.com/builds/golden.tar.gz --exec 'make ci'
 
 # extra share + bidirectional file IO
 mkdir -p /tmp/scratch
-vmette ... --share host=/tmp/scratch --exec 'date > /mnt/host/from-guest.txt'
+vmette ... --rootfs ./assets/alpine-rootfs \
+       --share host=/tmp/scratch --exec 'date > /mnt/host/from-guest.txt'
 
 # pinned vsock port + roundtrip
 vmette ... --vsock-port 9000 --exec 'echo hi | vsock-send 9000'
@@ -96,5 +136,13 @@ vmette ... --vsock-port 9000 --exec 'echo hi | vsock-send 9000'
 vmette ... --timeout 30 --exec 'long_command_here'
 
 # read-only host share
-vmette ... --ro-rootfs-share --exec 'mount | grep rootfs'
+vmette ... --rootfs-ro --exec 'mount | grep rootfs'
 ```
+
+## Writing a new provider
+
+The CLI registers Dir/Tar/Oci providers from sibling crates. To add a
+fourth, implement `vmette::provider::RootfsProvider` in a new crate and
+register it before constructing the CLI app — or fork the CLI and add
+your provider to `default_registry()`. See the `vmette-provider-tar`
+crate (~150 LOC) for a minimal example.

@@ -180,7 +180,7 @@ fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
         "[vmette] kernel       {}\n\
          [vmette] initramfs    {}\n\
          [vmette] cmdline      {}\n\
-         [vmette] rootfs-share {}\n\
+         [vmette] rootfs       {}\n\
          [vmette] shares       {}\n\
          [vmette] disks        {}\n\
          [vmette] exec         {}\n\

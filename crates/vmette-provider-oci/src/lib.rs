@@ -1,14 +1,21 @@
-//! Pull OCI / Docker images and extract them as plain directory trees
-//! suitable for vmette's virtio-fs rootfs share.
+//! OCI / Docker image rootfs provider for vmette.
 //!
-//! Public entry point: [`pull`]. Given an image reference (e.g.
-//! `"alpine:3.20"`, `"python:3.12-alpine"`, `"ghcr.io/foo/bar:tag"`)
-//! and a cache root, pulls the manifest + layers, extracts in order
-//! applying OCI whiteouts, and returns the path to the assembled
-//! rootfs. Idempotent — cached by manifest digest.
+//! Implements [`vmette::provider::RootfsProvider`] for image references.
+//! Accepts:
 //!
-//! Authentication: anonymous only in v0.1. Docker Hub's anonymous
-//! token flow is handled by `oci-client` transparently.
+//! * `oci://<ref>` — explicit scheme, never ambiguous
+//! * `<ref>`       — bare image references (e.g. `alpine:3.20`,
+//!                    `ghcr.io/foo/bar:tag`). The OCI provider is the
+//!                    catch-all fallback once path-style and other-scheme
+//!                    providers have declined.
+//!
+//! Pulls the manifest + layers, extracts in order applying OCI whiteouts,
+//! caches by manifest digest, and (when [`Context::guest_helpers`] is
+//! set) injects `vsock-send` and `vsock-runner` into `/usr/local/bin/` so
+//! vsock workflows work uniformly across image sources.
+//!
+//! Authentication: anonymous only in v0.1. Docker Hub's anonymous token
+//! flow is handled by `oci-client` transparently.
 //!
 //! Layer formats supported:
 //!   - application/vnd.oci.image.layer.v1.tar
@@ -32,6 +39,7 @@ use oci_client::{
 };
 use thiserror::Error;
 use tracing::{debug, info, warn};
+use vmette::provider::{inject_guest_helpers, Context, ProviderError, RootfsProvider};
 
 /// Pull-time policy. Controls how aggressively we revalidate the cached
 /// manifest digest against the registry.
@@ -84,10 +92,225 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
-/// Backwards-compatible entry point. Uses [`PullOptions::default`].
-pub async fn pull(image_ref: &str, cache_root: &Path) -> Result<PathBuf, Error> {
-    pull_with_options(image_ref, cache_root, &PullOptions::default()).await
+impl From<Error> for ProviderError {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::OfflineCacheMiss(s) => ProviderError::OfflineCacheMiss(s),
+            Error::InvalidReference(r, msg) => {
+                ProviderError::InvalidSpec(format!("{r}: {msg}"))
+            }
+            Error::Io(io) => ProviderError::Io(io),
+            other => ProviderError::Other(other.to_string()),
+        }
+    }
 }
+
+// ---- Provider impl -------------------------------------------------------
+
+/// OCI / Docker image provider. Wraps [`pull_with_options`] behind the
+/// vmette provider trait. Construct with [`OciProvider::new`] or
+/// [`OciProvider::with_options`] for non-default cache TTL.
+pub struct OciProvider {
+    options: PullOptions,
+}
+
+impl Default for OciProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OciProvider {
+    /// Construct with [`PullOptions::default`] (1-hour cache TTL, online).
+    /// `Context::is_offline()` still overrides `options.offline` on each
+    /// call, so a single provider instance serves both online and offline
+    /// resolutions.
+    pub fn new() -> Self {
+        Self { options: PullOptions::default() }
+    }
+
+    /// Construct with custom pull options. `options.offline` is treated
+    /// as the floor — `Context::is_offline()` can force it on for a
+    /// single call but cannot turn it off.
+    pub fn with_options(options: PullOptions) -> Self {
+        Self { options }
+    }
+}
+
+impl RootfsProvider for OciProvider {
+    fn name(&self) -> &'static str {
+        "oci"
+    }
+
+    fn matches(&self, spec: &str) -> bool {
+        // Explicit scheme.
+        if let Some(rest) = spec.strip_prefix("oci://") {
+            return !rest.is_empty();
+        }
+        // Empty or path-like → not us.
+        if spec.is_empty()
+            || spec.starts_with('/')
+            || spec.starts_with('.')
+            || spec.starts_with('~')
+        {
+            return false;
+        }
+        // Any other URL-like scheme → not us. Use `find` rather than
+        // `contains` so we can verify the scheme is well-formed at the
+        // start — `image:tag@sha256://...` is contrived, but `contains`
+        // would mis-classify any ref with `://` later in the string.
+        if let Some(idx) = spec.find("://") {
+            let scheme = &spec[..idx];
+            // Conservative: a scheme is letters/digits/+/-/. only.
+            if !scheme.is_empty()
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            {
+                return false;
+            }
+        }
+        // Catch-all: looks like a bare image ref.
+        true
+    }
+
+    fn provide(&self, spec: &str, ctx: &Context) -> Result<PathBuf, ProviderError> {
+        let image_ref = spec.strip_prefix("oci://").unwrap_or(spec);
+        if image_ref.is_empty() {
+            return Err(ProviderError::InvalidSpec(
+                "empty image reference".into(),
+            ));
+        }
+        let cache = ctx.provider_cache(self.name())?;
+
+        let opts = PullOptions {
+            cache_ttl: self.options.cache_ttl,
+            offline: self.options.offline || ctx.is_offline(),
+        };
+
+        // Note: the tokio runtime is built lazily INSIDE pull_with_options
+        // — only when a network roundtrip is actually needed. Cache hits
+        // resolve via blocking fs::metadata and pay no runtime cost.
+        let rootfs = pull_with_options_sync(image_ref, &cache, &opts).map_err(|e| {
+            map_oci_error(spec, image_ref, e)
+        })?;
+
+        if let Some(src) = ctx.guest_helpers() {
+            if let Err(e) = inject_guest_helpers(&rootfs, src) {
+                warn!(error = %e, "guest-helper inject failed; vsock workflows may not work in this image");
+            }
+        }
+        Ok(rootfs)
+    }
+}
+
+/// Translate OCI puller errors to ProviderError, with a friendly hint
+/// when an `InvalidReference` looks like the user mistook a local path
+/// for an image ref (e.g. `--rootfs assets/alpine-rootfs` without the
+/// `./` prefix DirProvider needs to claim it).
+fn map_oci_error(spec: &str, image_ref: &str, e: Error) -> ProviderError {
+    if let Error::InvalidReference(_, ref msg) = e {
+        // A typical OCI ref has either a `:` (tag), a `.` in the first
+        // slash-component (registry hostname), or is a single bareword.
+        // None of those → could be a relative path the user forgot to
+        // prefix with `./`. Verify on disk before suggesting the path
+        // form so we don't misfire on legitimately-malformed OCI refs
+        // (e.g. `MyOrg/MyRepo` — uppercase, no path on disk).
+        let shape_pathlike = image_ref.contains('/')
+            && !image_ref.contains(':')
+            && image_ref
+                .split('/')
+                .next()
+                .map(|first| !first.contains('.'))
+                .unwrap_or(false);
+        let exists_on_disk = shape_pathlike
+            && std::fs::metadata(image_ref).map(|m| m.is_dir()).unwrap_or(false);
+        if exists_on_disk {
+            // "may be" leaves room for the rare case where a workspace
+            // coincidentally contains a directory at the same relative
+            // path as a malformed OCI ref (e.g. a vendored mirror at
+            // ./MyOrg/MyRepo when the user actually meant the OCI ref
+            // and just forgot lowercase-ascii). The OCI parse error is
+            // still printed so the user has both leads.
+            return ProviderError::InvalidSpec(format!(
+                "{spec:?} may be a local directory rather than an OCI image reference. \
+                 If so, write `./{image_ref}` so the dir provider claims it. \
+                 (OCI parse error: {msg})"
+            ));
+        }
+    }
+    e.into()
+}
+
+/// Synchronous wrapper around [`pull_with_options`]. Builds the tokio
+/// runtime only when it is actually needed (network branch); cache-hit
+/// fast-paths do blocking fs IO and skip runtime construction entirely.
+fn pull_with_options_sync(
+    image_ref: &str,
+    cache_root: &Path,
+    options: &PullOptions,
+) -> Result<PathBuf, Error> {
+    // Probe the on-disk cache first using blocking fs IO. Sharing the
+    // same `fast_path_lookup` as pull_with_options means the TTL +
+    // offline-precedence rules can't drift between sync and async
+    // entry paths.
+    if let Some(rootfs) = fast_path_lookup(cache_root, image_ref, options) {
+        return Ok(rootfs);
+    }
+    if options.offline {
+        // Offline + no fast-path hit → either the fallback scan finds
+        // something, or we bail. Neither path needs async.
+        if let Some(rootfs) = scan_offline_fallback(cache_root, image_ref) {
+            return Ok(rootfs);
+        }
+        return Err(Error::OfflineCacheMiss(image_ref.into()));
+    }
+    // Network branch — build the runtime now, not earlier. Cache-hit
+    // resolutions skipped this entire block above.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("tokio init: {e}"))))?;
+    rt.block_on(pull_with_options(image_ref, cache_root, options))
+}
+
+/// Blocking-fs equivalent of pull_with_options's cache-hit branch.
+/// Returns Some(rootfs) iff a within-TTL (or offline) ready marker is
+/// present on disk; otherwise None (caller must consult the network
+/// or the offline-fallback scanner).
+fn fast_path_lookup(
+    cache_root: &Path,
+    image_ref: &str,
+    options: &PullOptions,
+) -> Option<PathBuf> {
+    let ref_file = cache_root
+        .join("refs")
+        .join(format!("{}.digest", sanitize_ref(image_ref)));
+    let (digest, age) = read_ref_entry(&ref_file)?;
+    let rootfs = extracted_path(cache_root, image_ref, &digest);
+    let marker = rootfs.join(".vmette-image-ready");
+    if !marker.exists() {
+        return None;
+    }
+    let fresh_enough = options.offline
+        || options
+            .cache_ttl
+            .map(|ttl| age <= ttl)
+            .unwrap_or(false);
+    if fresh_enough {
+        debug!(
+            path = %rootfs.display(),
+            age_s = age.as_secs(),
+            offline = options.offline,
+            "cache hit (sync fast-path); skipping registry round-trip"
+        );
+        Some(rootfs)
+    } else {
+        None
+    }
+}
+
+// ---- pull + extract ------------------------------------------------------
 
 /// Pull (or look up cached) an OCI image and return the path to its
 /// extracted rootfs.
@@ -104,34 +327,21 @@ pub async fn pull_with_options(
     cache_root: &Path,
     options: &PullOptions,
 ) -> Result<PathBuf, Error> {
+    // Cache fast-path is identical to the sync wrapper's probe — share
+    // it via `fast_path_lookup` so the TTL / offline-precedence rules
+    // live in one place. The sync wrapper also calls this; the second
+    // call here is a no-op (returns None immediately) when the sync
+    // wrapper already filtered out the easy case.
+    if let Some(rootfs) = fast_path_lookup(cache_root, image_ref, options) {
+        return Ok(rootfs);
+    }
+
     let reference: Reference = image_ref
         .parse()
         .map_err(|e: oci_client::ParseError| Error::InvalidReference(image_ref.into(), e.to_string()))?;
 
     let refs_dir = cache_root.join("refs");
     let ref_file = refs_dir.join(format!("{}.digest", sanitize_ref(image_ref)));
-
-    // Fast path: cache hit + within-TTL (or offline) → no network at all.
-    if let Some((digest, age)) = read_ref_entry(&ref_file) {
-        let rootfs = extracted_path(cache_root, image_ref, &digest);
-        let marker = rootfs.join(".vmette-image-ready");
-        if marker.exists() {
-            let fresh_enough = options.offline
-                || options
-                    .cache_ttl
-                    .map(|ttl| age <= ttl)
-                    .unwrap_or(false);
-            if fresh_enough {
-                debug!(
-                    path = %rootfs.display(),
-                    age_s = age.as_secs(),
-                    offline = options.offline,
-                    "cache hit; skipping registry round-trip"
-                );
-                return Ok(rootfs);
-            }
-        }
-    }
 
     // Offline + no usable ref entry → scan disk for ANY extracted rootfs
     // matching this image_ref. Salvages caches written by older binaries
@@ -274,45 +484,6 @@ fn scan_offline_fallback(cache_root: &Path, image_ref: &str) -> Option<PathBuf> 
     best.map(|(p, _)| p)
 }
 
-/// Inject the contents of `src_bin_dir/{vsock-send,vsock-runner}` into
-/// the given rootfs at `/usr/local/bin/`. Used after [`pull`] so vmette
-/// guest helpers are available in any pulled image.
-///
-/// Idempotent: skips files that are already present with matching size,
-/// so warm cache hits don't pointlessly rewrite the shared cache (and
-/// don't pollute a `--ro-rootfs-share` user's expectations more than
-/// strictly necessary — the helpers stay, but no fresh writes happen).
-pub fn inject_guest_helpers(rootfs: &Path, src_bin_dir: &Path) -> Result<(), Error> {
-    let target_dir = rootfs.join("usr/local/bin");
-    std::fs::create_dir_all(&target_dir)?;
-    for name in &["vsock-send", "vsock-runner"] {
-        let src = src_bin_dir.join(name);
-        if !src.exists() {
-            warn!(name = name, "guest helper not found in source; skipping");
-            continue;
-        }
-        let dst = target_dir.join(name);
-        // Skip the copy only when dst is at least as new as src and
-        // sizes match. Size alone is unsound — a same-size rebuild
-        // (common for code-only diffs to stripped static binaries)
-        // would silently keep the stale binary. mtime-newer-than-src
-        // is the same heuristic make(1) uses.
-        if let (Ok(s_meta), Ok(d_meta)) = (std::fs::metadata(&src), std::fs::metadata(&dst)) {
-            if s_meta.len() == d_meta.len() {
-                if let (Ok(s_mtime), Ok(d_mtime)) = (s_meta.modified(), d_meta.modified()) {
-                    if d_mtime >= s_mtime {
-                        continue;
-                    }
-                }
-            }
-        }
-        std::fs::copy(&src, &dst)?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755))?;
-    }
-    Ok(())
-}
-
 // -----------------------------------------------------------------------------
 
 fn sanitize_ref(image_ref: &str) -> String {
@@ -445,5 +616,29 @@ mod tests {
         let d = digest_to_dir("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
         assert!(d.starts_with("sha256-"));
         assert!(d.len() <= 24);
+    }
+
+    #[test]
+    fn oci_matches_bare_refs_and_oci_scheme() {
+        let p = OciProvider::new();
+        assert!(p.matches("alpine"));
+        assert!(p.matches("alpine:3.20"));
+        assert!(p.matches("python:3.12-alpine"));
+        assert!(p.matches("ghcr.io/foo/bar:tag"));
+        assert!(p.matches("oci://alpine:3.20"));
+    }
+
+    #[test]
+    fn oci_rejects_paths_and_other_schemes() {
+        let p = OciProvider::new();
+        assert!(!p.matches("/abs/path"));
+        assert!(!p.matches("./rel"));
+        assert!(!p.matches("../up"));
+        assert!(!p.matches("~/home"));
+        assert!(!p.matches("tar+https://example.com/a.tgz"));
+        assert!(!p.matches("tar+file:///tmp/a.tar"));
+        assert!(!p.matches("https://example.com"));
+        assert!(!p.matches(""));
+        assert!(!p.matches("oci://"));
     }
 }

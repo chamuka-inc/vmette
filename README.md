@@ -5,8 +5,10 @@ Local Linux microVM sandbox for macOS, built on Apple's
 dynamic library, and a long-lived daemon.
 
 - Boots a Linux guest in ~1 second
-- **Pulls OCI/Docker images directly** (`vmette --image alpine:3.20 …`)
-  with on-disk cache by manifest digest
+- **Pluggable rootfs providers**: local directories, OCI/Docker images
+  (`alpine:3.20`, `ghcr.io/...`), or tarballs over HTTP/HTTPS/file —
+  dispatched through a single `--rootfs SPEC` flag. Add your own with
+  one trait impl in a sibling crate.
 - virtio-fs for sharing host dirs, virtio-net (NAT), virtio-blk,
   vsock with bidirectional bytes
 - Exit-code propagation, timeout, switch-root, read-only rootfs share
@@ -37,19 +39,24 @@ Easiest path — pull an OCI image and run a command in it:
 
 ```sh
 vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --image python:3.12-alpine \
+       --rootfs python:3.12-alpine \
        --exec 'python3 -c "print(2**32)"; exit 0'
 ```
 
 First run pulls + extracts the image (alpine:3.20 ≈ 30 s); subsequent
 runs are cache hits (~3 s, mostly VM boot + manifest verification).
-Images are cached at `~/Library/Caches/vmette/images/`.
+Images are cached at `~/Library/Caches/vmette/oci/`.
 
-Or supply your own rootfs directory:
+The same flag accepts a local directory, an OCI ref, or a tarball URL —
+each dispatched to a different provider. List them with
+`vmette providers`:
 
 ```sh
-vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --rootfs-share ./assets/alpine-rootfs --exec 'uname -a; exit 0'
+vmette --rootfs ./assets/alpine-rootfs              --exec 'uname -a'
+vmette --rootfs alpine:3.20                         --exec 'cat /etc/alpine-release'
+vmette --rootfs oci://ghcr.io/foo/bar:v1            --exec '/run-tests.sh'
+vmette --rootfs tar+https://h/builds/r.tar.gz       --exec 'make ci'
+vmette --rootfs tar+file:///tmp/local-rootfs.tar    --exec 'ls /'
 ```
 
 The bundled orchestrator script auto-fetches assets on first run and
@@ -61,22 +68,32 @@ bash scripts/run.sh --net 'wget -O - http://example.com'     # network on
 bash scripts/run.sh 'echo hi | vsock-send $VMETTE_VSOCK_PORT'
 bash scripts/run.sh --switch-root 'cat /proc/1/comm'
 bash scripts/run.sh --timeout 3 'sleep 30'                   # → host exit 124
-bash scripts/run.sh --ro-rootfs-share 'mount | head -1'
+bash scripts/run.sh --rootfs-ro 'mount | head -1'
 ```
 
 Full flag list: `vmette --help` or [`docs/CLI.md`](docs/CLI.md).
 
 ## Use it (Rust library)
 
+The library accepts a directory path; resolution from a spec (OCI ref,
+tarball URL, …) goes through the provider registry first.
+
 ```rust
+use vmette::provider::{Context, DirProvider, Registry};
 use vmette::{Config, RootfsShare};
+use vmette_provider_oci::OciProvider;
+use vmette_provider_tar::TarProvider;
 
 fn main() {
+    let registry = Registry::new()
+        .with(DirProvider::new())
+        .with(TarProvider::new())
+        .with(OciProvider::new());
+    let ctx = Context::new(std::env::var_os("HOME").unwrap_or_default());
+    let rootfs = registry.resolve("alpine:3.20", &ctx).unwrap();
+
     let mut cfg = Config::new("./assets/vmlinuz-virt", "./assets/initramfs-vmette");
-    cfg.rootfs_share = Some(RootfsShare {
-        path: "./assets/alpine-rootfs".into(),
-        read_only: false,
-    });
+    cfg.rootfs_share = Some(RootfsShare { path: rootfs, read_only: false });
     cfg.exec_cmd = Some("echo hello from rust; exit 42".into());
 
     // vmette::run() blocks until guest poweroff and process-exits with
@@ -89,7 +106,9 @@ fn main() {
 
 ```toml
 [dependencies]
-vmette = "0.1"
+vmette              = "0.1"
+vmette-provider-oci = "0.1"
+vmette-provider-tar = "0.1"  # optional; drop if you only need oci + dir
 ```
 
 See [`crates/vmette/examples/minimal.rs`](crates/vmette/examples/minimal.rs).
@@ -134,7 +153,7 @@ s.connect("/Users/me/Library/Caches/vmette/vmette.sock")
 s.sendall((json.dumps({
     "kernel": "/abs/path/vmlinuz-virt",
     "initramfs": "/abs/path/initramfs-vmette",
-    "rootfs_share": {"path": "/abs/path/alpine-rootfs"},
+    "rootfs": "/abs/path/alpine-rootfs",   # also accepts alpine:3.20, tar+https://..., etc.
     "exec": "echo from daemon; exit 17",
 }) + "\n").encode())
 s.shutdown(socket.SHUT_WR)
@@ -174,13 +193,16 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 crates/
   vmette/                Rust library (lib + cdylib + staticlib)
     src/lib.rs           public API: Config, run(), VsockPort, RootfsShare, ShareMount
+    src/provider.rs      RootfsProvider trait + Registry + Context + DirProvider
     src/ffi.rs           #[no_mangle] extern "C" shims → cbindgen
     src/vz/              objc2 bindings to VZ (config, delegate, vsock, snapshot)
     src/lifecycle.rs     run() orchestration + timeout + signal handlers
     src/cmdline.rs       base64 vmette.* cmdline assembly
     include/vmette.h     generated header (checked in)
     examples/            minimal.rs + minimal.c
-  vmette-cli/            `vmette` CLI binary (thin wrapper over vmette::run)
+  vmette-provider-oci/   OCI/Docker image provider (alpine:3.20, oci://…)
+  vmette-provider-tar/   Tarball provider (tar+https://, tar+file://)
+  vmette-cli/            `vmette` CLI binary (registers dir/tar/oci providers)
   vmette-daemon/         `vmetted` UNIX-socket dispatcher (tokio + JSON)
 guest/                   C sources cross-compiled for the Linux guest
   vsock-send.c           pipe stdin → AF_VSOCK → host listener

@@ -47,10 +47,10 @@ if [[ -n "${SHARE_DIR:-}" ]]; then
 fi
 
 exec "$BIN" \
-    --kernel       "$ASSETS/vmlinuz-virt" \
-    --initramfs    "$ASSETS/initramfs-vmette" \
-    --rootfs-share "$ROOTFS" \
+    --kernel    "$ASSETS/vmlinuz-virt" \
+    --initramfs "$ASSETS/initramfs-vmette" \
+    --rootfs    "$ROOTFS" \
     ${SHARE_ARGS[@]+"${SHARE_ARGS[@]}"} \
-    --exec         "$CMD" \
-    --vcpus        1 \
-    --mem-mib      512
+    --exec      "$CMD" \
+    --vcpus     1 \
+    --mem-mib   512

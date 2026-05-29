@@ -1,0 +1,16 @@
+[package]
+name        = "vmette-provider-tar"
+description = "Tarball-over-HTTP/file rootfs provider for vmette"
+version     .workspace = true
+edition     .workspace = true
+license     .workspace = true
+repository  .workspace = true
+
+[dependencies]
+vmette    = { path = "../vmette" }
+ureq      = { version = "2", default-features = false, features = ["tls"] }
+tar       = "0.4"
+flate2    = "1"
+zstd      = "0.13"
+thiserror = "1"
+tracing   = "0.1"

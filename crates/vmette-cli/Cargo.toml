@@ -11,7 +11,7 @@ name = "vmette"
 path = "src/main.rs"
 
 [dependencies]
-vmette       = { path = "../vmette" }
-vmette-image = { path = "../vmette-image" }
-tokio        = { version = "1", features = ["rt-multi-thread", "macros"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vmette              = { path = "../vmette" }
+vmette-provider-oci = { path = "../vmette-provider-oci" }
+vmette-provider-tar = { path = "../vmette-provider-tar" }
+tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
