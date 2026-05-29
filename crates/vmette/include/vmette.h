@@ -55,26 +55,61 @@ typedef struct vmette_run_output_t {
 /**
  * Construct a new config with the minimum required fields. Returns NULL
  * on null arguments or invalid UTF-8.
+ *
+ * # Safety
+ * See the module-level safety contract.
  */
  struct vmette_config_t *vmette_config_new(const char *kernel, const char *initramfs);
 
 /**
  * Free a config. No-op on NULL.
+ *
+ * # Safety
+ * See the module-level safety contract. After this call `cfg` is dangling
+ * and must not be reused.
  */
  void vmette_config_free(struct vmette_config_t *cfg);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_cmdline(struct vmette_config_t *cfg, const char *cmdline);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_rootfs_share(struct vmette_config_t *cfg, const char *path, bool read_only);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_add_share(struct vmette_config_t *cfg, const char *tag, const char *path);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_add_disk(struct vmette_config_t *cfg, const char *path);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_exec(struct vmette_config_t *cfg, const char *cmd);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_net(struct vmette_config_t *cfg, bool enable);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_switch_root(struct vmette_config_t *cfg, bool enable);
 
 /**
@@ -82,32 +117,55 @@ typedef struct vmette_run_output_t {
  * `port < 0`  → disable the vsock device entirely.
  * `port == 0` → auto-allocate per invocation (50000..60000).
  * `port > 0`  → use that exact port.
+ *
+ * # Safety
+ * See the module-level safety contract.
  */
  void vmette_config_set_vsock_port(struct vmette_config_t *cfg, int32_t port);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_guest_vsock_port(struct vmette_config_t *cfg, uint32_t port);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  void vmette_config_set_timeout(struct vmette_config_t *cfg, uint32_t seconds);
 
 /**
  * Note: no clamping. A value VZ rejects (e.g. 0) surfaces as
  * `InvalidConfig` from `vmette_run` — same path as the Rust API.
+ *
+ * # Safety
+ * See the module-level safety contract.
  */
  void vmette_config_set_vcpus(struct vmette_config_t *cfg, uint8_t n);
 
 /**
  * Note: no clamping. See `vmette_config_set_vcpus` for the rationale.
+ *
+ * # Safety
+ * See the module-level safety contract.
  */
  void vmette_config_set_mem_mib(struct vmette_config_t *cfg, uint64_t n);
 
 /**
  * Path to a snapshot file to write after the guest signals ready.
  * Apple Silicon only — see VmetteStatus::SnapshotUnsupported.
+ *
+ * # Safety
+ * See the module-level safety contract.
  */
  void vmette_config_set_build_snapshot(struct vmette_config_t *cfg, const char *path);
 
 /**
  * Path to a previously-saved snapshot to restore. Apple Silicon only.
+ *
+ * # Safety
+ * See the module-level safety contract.
  */
  void vmette_config_set_resume_snapshot(struct vmette_config_t *cfg, const char *path);
 
@@ -121,11 +179,24 @@ typedef struct vmette_run_output_t {
  * Note: in the common path this function never returns — the underlying
  * `vmette::run` exits the process via the VM's lifecycle delegate with
  * the guest's exit code.
+ *
+ * # Safety
+ * See the module-level safety contract. `out` must be a valid, writable
+ * pointer to a `*mut vmette_run_output_t`.
  */
  VmetteStatus vmette_run(const struct vmette_config_t *cfg, struct vmette_run_output_t **out);
 
+/**
+ * # Safety
+ * See the module-level safety contract.
+ */
  int32_t vmette_run_output_exit_code(const struct vmette_run_output_t *out);
 
+/**
+ * # Safety
+ * See the module-level safety contract. After this call `out` is dangling
+ * and must not be reused.
+ */
  void vmette_run_output_free(struct vmette_run_output_t *out);
 
 /**
