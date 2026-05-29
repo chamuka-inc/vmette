@@ -81,9 +81,15 @@ struct Request {
     mem_mib: u64,
 }
 
-fn default_guest_vsock_port() -> u32 { 1025 }
-fn default_vcpus() -> u8 { 1 }
-fn default_mem_mib() -> u64 { 512 }
+fn default_guest_vsock_port() -> u32 {
+    1025
+}
+fn default_vcpus() -> u8 {
+    1
+}
+fn default_mem_mib() -> u64 {
+    512
+}
 
 #[derive(Debug, Deserialize)]
 struct ShareMount {
@@ -96,8 +102,8 @@ struct ShareMount {
 enum Frame {
     Stdout { data: String },
     Stderr { data: String },
-    Exit   { code: i32 },
-    Error  { message: String },
+    Exit { code: i32 },
+    Error { message: String },
 }
 
 fn default_socket_path() -> PathBuf {
@@ -129,8 +135,7 @@ fn locate_vmette() -> PathBuf {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .json()
@@ -162,8 +167,8 @@ async fn main() -> Result<()> {
     }
     let _ = std::fs::remove_file(&socket); // tolerate stale leftover
 
-    let listener = UnixListener::bind(&socket)
-        .with_context(|| format!("bind {}", socket.display()))?;
+    let listener =
+        UnixListener::bind(&socket).with_context(|| format!("bind {}", socket.display()))?;
     info!(socket = %socket.display(), vmette = %vmette_bin.display(), "vmetted listening");
 
     let mut sigterm = signal(SignalKind::terminate())?;
@@ -213,17 +218,25 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
         cmd.arg("--offline");
     }
     for s in &req.shares {
-        cmd.arg("--share").arg(format!("{}={}", s.tag, s.path.display()));
+        cmd.arg("--share")
+            .arg(format!("{}={}", s.tag, s.path.display()));
     }
     for d in &req.disks {
         cmd.arg("--disk").arg(d);
     }
     cmd.arg("--exec").arg(&req.exec);
-    if req.net { cmd.arg("--net"); }
-    if req.switch_root { cmd.arg("--switch-root"); }
+    if req.net {
+        cmd.arg("--net");
+    }
+    if req.switch_root {
+        cmd.arg("--switch-root");
+    }
     cmd.arg("--vsock-port").arg(req.vsock_port.to_string());
-    cmd.arg("--guest-vsock-port").arg(req.guest_vsock_port.to_string());
-    if let Some(t) = req.timeout_seconds { cmd.arg("--timeout").arg(t.to_string()); }
+    cmd.arg("--guest-vsock-port")
+        .arg(req.guest_vsock_port.to_string());
+    if let Some(t) = req.timeout_seconds {
+        cmd.arg("--timeout").arg(t.to_string());
+    }
     cmd.arg("--vcpus").arg(req.vcpus.to_string());
     cmd.arg("--mem-mib").arg(req.mem_mib.to_string());
 
@@ -272,7 +285,11 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
                         let data = String::from_utf8_lossy(&buf).into_owned();
                         let _ = tx_out.send(Frame::Stdout { data }).await;
                     }
-                    let _ = tx_out.send(Frame::Error { message: format!("stdout: {e}") }).await;
+                    let _ = tx_out
+                        .send(Frame::Error {
+                            message: format!("stdout: {e}"),
+                        })
+                        .await;
                     break;
                 }
             }
@@ -298,7 +315,11 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
                         let data = String::from_utf8_lossy(&buf).into_owned();
                         let _ = tx_err.send(Frame::Stderr { data }).await;
                     }
-                    let _ = tx_err.send(Frame::Error { message: format!("stderr: {e}") }).await;
+                    let _ = tx_err
+                        .send(Frame::Error {
+                            message: format!("stderr: {e}"),
+                        })
+                        .await;
                     break;
                 }
             }
@@ -324,8 +345,12 @@ async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
     // swallowed via ?-propagation, which would leave the client
     // hanging on a socket with no exit marker.
     let exit_frame = match child.wait().await {
-        Ok(status) => Frame::Exit { code: status.code().unwrap_or(-1) },
-        Err(e) => Frame::Error { message: format!("wait: {e}") },
+        Ok(status) => Frame::Exit {
+            code: status.code().unwrap_or(-1),
+        },
+        Err(e) => Frame::Error {
+            message: format!("wait: {e}"),
+        },
     };
     let _ = write_frame(&mut write_half, &exit_frame).await;
     let _ = write_half.shutdown().await;

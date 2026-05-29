@@ -57,9 +57,9 @@ define_class!(
             // connection that ends without READY does NOT drop the handler.
             let ready_handler = Arc::clone(&self.ivars().ready_handler);
 
-            let queue = DispatchQueue::global_queue(
-                GlobalQueueIdentifier::QualityOfService(DispatchQoS::Utility),
-            );
+            let queue = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
+                DispatchQoS::Utility,
+            ));
             queue.exec_async(move || {
                 // Sliding tail across reads so a READY split across two
                 // libc::read calls is still detected. Fixed-size stack

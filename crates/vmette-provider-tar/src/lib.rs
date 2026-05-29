@@ -126,8 +126,8 @@ impl RootfsProvider for TarProvider {
                 .ok()
                 .and_then(|t| SystemTime::now().duration_since(t).ok())
                 .unwrap_or(Duration::ZERO);
-            let fresh_enough = ctx.is_offline()
-                || self.cache_ttl.map(|ttl| age <= ttl).unwrap_or(false);
+            let fresh_enough =
+                ctx.is_offline() || self.cache_ttl.map(|ttl| age <= ttl).unwrap_or(false);
             if fresh_enough {
                 debug!(path = %dest.display(), age_s = age.as_secs(), "tar cache hit");
                 if let Some(src) = ctx.guest_helpers() {
@@ -298,7 +298,13 @@ fn cache_key(url: &str) -> String {
     const PREFIX_MAX: usize = 80;
     let sanitised: String = url
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let prefix: String = sanitised
         .chars()
@@ -318,10 +324,12 @@ fn fetch(url: &str, timeout: Duration, max_bytes: u64) -> Result<Vec<u8>, Error>
     if let Some(path) = url.strip_prefix("file://") {
         // RFC 8089: `file://localhost/abs` is equivalent to `file:///abs`.
         // Accept both by stripping a leading `localhost/` if present.
-        let path = path.strip_prefix("localhost/").map(|p| format!("/{p}"))
+        let path = path
+            .strip_prefix("localhost/")
+            .map(|p| format!("/{p}"))
             .unwrap_or_else(|| path.to_string());
-        let meta = std::fs::metadata(&path)
-            .map_err(|e| Error::Download(format!("stat {path}: {e}")))?;
+        let meta =
+            std::fs::metadata(&path).map_err(|e| Error::Download(format!("stat {path}: {e}")))?;
         if meta.len() > max_bytes {
             return Err(Error::Download(format!(
                 "{path}: {} bytes exceeds max {max_bytes}",
@@ -468,8 +476,12 @@ mod tests {
     fn cache_key_keeps_filename_in_prefix() {
         // The readable prefix should favour the URL tail (filename)
         // over the scheme, since the scheme is rarely distinguishing.
-        let k = cache_key("https://example.com/builds/2026/05/29/release-channel/alpine-3.20.tar.gz");
-        assert!(k.contains("alpine-3.20.tar.gz"), "filename not preserved: {k}");
+        let k =
+            cache_key("https://example.com/builds/2026/05/29/release-channel/alpine-3.20.tar.gz");
+        assert!(
+            k.contains("alpine-3.20.tar.gz"),
+            "filename not preserved: {k}"
+        );
     }
 
     #[test]

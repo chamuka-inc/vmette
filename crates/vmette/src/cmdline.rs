@@ -46,7 +46,10 @@ pub(crate) fn build(config: &Config, effective_vsock_port: Option<u32>) -> Strin
 
     if config.build_snapshot.is_some() {
         s.push_str(" vmette.snapshot_mode=server");
-        s.push_str(&format!(" vmette.guest_vsock_port={}", config.guest_vsock_port));
+        s.push_str(&format!(
+            " vmette.guest_vsock_port={}",
+            config.guest_vsock_port
+        ));
     }
 
     s
@@ -80,7 +83,10 @@ mod tests {
     #[test]
     fn rootfs_ro_emits_both_keys() {
         let mut c = base();
-        c.rootfs_share = Some(crate::RootfsShare { path: PathBuf::from("/r"), read_only: true });
+        c.rootfs_share = Some(crate::RootfsShare {
+            path: PathBuf::from("/r"),
+            read_only: true,
+        });
         let s = build(&c, None);
         assert!(s.contains("vmette.rootfs=1"));
         assert!(s.contains("vmette.rootfs_ro=1"));

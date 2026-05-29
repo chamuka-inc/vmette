@@ -7,14 +7,13 @@ use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
 use objc2_virtualization::{
     VZDirectorySharingDeviceConfiguration, VZDiskImageStorageDeviceAttachment,
     VZEntropyDeviceConfiguration, VZFileHandleSerialPortAttachment, VZLinuxBootLoader,
-    VZMemoryBalloonDeviceConfiguration, VZNATNetworkDeviceAttachment,
-    VZNetworkDeviceAttachment, VZNetworkDeviceConfiguration, VZSerialPortConfiguration,
-    VZSharedDirectory, VZSingleDirectoryShare, VZSocketDeviceConfiguration,
-    VZStorageDeviceConfiguration, VZVirtioBlockDeviceConfiguration,
-    VZVirtioConsoleDeviceSerialPortConfiguration, VZVirtioEntropyDeviceConfiguration,
-    VZVirtioFileSystemDeviceConfiguration, VZVirtioNetworkDeviceConfiguration,
-    VZVirtioSocketDeviceConfiguration, VZVirtioTraditionalMemoryBalloonDeviceConfiguration,
-    VZVirtualMachineConfiguration,
+    VZMemoryBalloonDeviceConfiguration, VZNATNetworkDeviceAttachment, VZNetworkDeviceAttachment,
+    VZNetworkDeviceConfiguration, VZSerialPortConfiguration, VZSharedDirectory,
+    VZSingleDirectoryShare, VZSocketDeviceConfiguration, VZStorageDeviceConfiguration,
+    VZVirtioBlockDeviceConfiguration, VZVirtioConsoleDeviceSerialPortConfiguration,
+    VZVirtioEntropyDeviceConfiguration, VZVirtioFileSystemDeviceConfiguration,
+    VZVirtioNetworkDeviceConfiguration, VZVirtioSocketDeviceConfiguration,
+    VZVirtioTraditionalMemoryBalloonDeviceConfiguration, VZVirtualMachineConfiguration,
 };
 
 use crate::error::Error;
@@ -61,11 +60,12 @@ pub(crate) fn build(
         cfg.setMemorySize(config.mem_mib * 1024 * 1024);
 
         // Serial port → host stdio
-        let attach = VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
-            VZFileHandleSerialPortAttachment::alloc(),
-            Some(&NSFileHandle::fileHandleWithStandardInput()),
-            Some(&NSFileHandle::fileHandleWithStandardOutput()),
-        );
+        let attach =
+            VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
+                VZFileHandleSerialPortAttachment::alloc(),
+                Some(&NSFileHandle::fileHandleWithStandardInput()),
+                Some(&NSFileHandle::fileHandleWithStandardOutput()),
+            );
         let serial = VZVirtioConsoleDeviceSerialPortConfiguration::new();
         serial.setAttachment(Some(&attach.into_super()));
         let serial_array: Retained<NSArray<VZSerialPortConfiguration>> =
@@ -95,10 +95,8 @@ pub(crate) fn build(
                 &file_url(&rs.path),
                 rs.read_only,
             );
-            let share = VZSingleDirectoryShare::initWithDirectory(
-                VZSingleDirectoryShare::alloc(),
-                &dir,
-            );
+            let share =
+                VZSingleDirectoryShare::initWithDirectory(VZSingleDirectoryShare::alloc(), &dir);
             fs.setShare(Some(&share.into_super()));
             fs_devices.push(fs.into_super());
         }
@@ -112,10 +110,8 @@ pub(crate) fn build(
                 &file_url(&sh.path),
                 false,
             );
-            let share = VZSingleDirectoryShare::initWithDirectory(
-                VZSingleDirectoryShare::alloc(),
-                &dir,
-            );
+            let share =
+                VZSingleDirectoryShare::initWithDirectory(VZSingleDirectoryShare::alloc(), &dir);
             fs.setShare(Some(&share.into_super()));
             fs_devices.push(fs.into_super());
         }
@@ -132,7 +128,13 @@ pub(crate) fn build(
                 &url,
                 false,
             )
-            .map_err(|e| Error::InvalidConfig(format!("disk {}: {}", path.display(), e.localizedDescription())))?;
+            .map_err(|e| {
+                Error::InvalidConfig(format!(
+                    "disk {}: {}",
+                    path.display(),
+                    e.localizedDescription()
+                ))
+            })?;
             let blk = VZVirtioBlockDeviceConfiguration::initWithAttachment(
                 VZVirtioBlockDeviceConfiguration::alloc(),
                 &att.into_super(),
@@ -163,9 +165,8 @@ pub(crate) fn build(
         }
 
         // Validate before returning.
-        cfg.validateWithError().map_err(|e| {
-            Error::InvalidConfig(e.localizedDescription().to_string())
-        })?;
+        cfg.validateWithError()
+            .map_err(|e| Error::InvalidConfig(e.localizedDescription().to_string()))?;
 
         Ok(cfg)
     }

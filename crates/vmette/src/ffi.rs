@@ -98,8 +98,12 @@ pub unsafe extern "C" fn vmette_config_new(
     kernel: *const c_char,
     initramfs: *const c_char,
 ) -> *mut vmette_config_t {
-    let Some(kernel) = cstr_to_pathbuf(kernel) else { return ptr::null_mut() };
-    let Some(initramfs) = cstr_to_pathbuf(initramfs) else { return ptr::null_mut() };
+    let Some(kernel) = cstr_to_pathbuf(kernel) else {
+        return ptr::null_mut();
+    };
+    let Some(initramfs) = cstr_to_pathbuf(initramfs) else {
+        return ptr::null_mut();
+    };
     let cfg = Box::new(Config::new(kernel, initramfs));
     Box::into_raw(cfg) as *mut vmette_config_t
 }
@@ -145,16 +149,17 @@ pub unsafe extern "C" fn vmette_config_add_share(
     path: *const c_char,
 ) {
     let Some(c) = cfg_mut(cfg) else { return };
-    let Some(tag) = cstr_to_string(tag) else { return };
-    let Some(path) = cstr_to_pathbuf(path) else { return };
+    let Some(tag) = cstr_to_string(tag) else {
+        return;
+    };
+    let Some(path) = cstr_to_pathbuf(path) else {
+        return;
+    };
     c.shares.push(ShareMount { tag, path });
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vmette_config_add_disk(
-    cfg: *mut vmette_config_t,
-    path: *const c_char,
-) {
+pub unsafe extern "C" fn vmette_config_add_disk(cfg: *mut vmette_config_t, path: *const c_char) {
     let Some(c) = cfg_mut(cfg) else { return };
     if let Some(p) = cstr_to_pathbuf(path) {
         c.disks.push(p);
@@ -162,10 +167,7 @@ pub unsafe extern "C" fn vmette_config_add_disk(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vmette_config_set_exec(
-    cfg: *mut vmette_config_t,
-    cmd: *const c_char,
-) {
+pub unsafe extern "C" fn vmette_config_set_exec(cfg: *mut vmette_config_t, cmd: *const c_char) {
     let Some(c) = cfg_mut(cfg) else { return };
     c.exec_cmd = cstr_to_string(cmd);
 }
@@ -199,10 +201,7 @@ pub unsafe extern "C" fn vmette_config_set_vsock_port(cfg: *mut vmette_config_t,
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vmette_config_set_guest_vsock_port(
-    cfg: *mut vmette_config_t,
-    port: u32,
-) {
+pub unsafe extern "C" fn vmette_config_set_guest_vsock_port(cfg: *mut vmette_config_t, port: u32) {
     if let Some(c) = cfg_mut(cfg) {
         c.guest_vsock_port = port;
     }
@@ -269,7 +268,9 @@ pub unsafe extern "C" fn vmette_run(
     cfg: *const vmette_config_t,
     out: *mut *mut vmette_run_output_t,
 ) -> VmetteStatus {
-    let Some(c) = cfg_ref(cfg) else { return VmetteStatus::NullArg };
+    let Some(c) = cfg_ref(cfg) else {
+        return VmetteStatus::NullArg;
+    };
     if out.is_null() {
         return VmetteStatus::NullArg;
     }

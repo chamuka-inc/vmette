@@ -174,7 +174,9 @@ pub struct Registry {
 impl Registry {
     /// Construct an empty registry. Use [`Registry::with`] to chain.
     pub fn new() -> Self {
-        Self { providers: Vec::new() }
+        Self {
+            providers: Vec::new(),
+        }
     }
 
     /// Append a provider. Order matters — earlier entries win.
@@ -292,8 +294,9 @@ impl RootfsProvider for DirProvider {
 
     fn provide(&self, spec: &str, _ctx: &Context) -> Result<PathBuf, ProviderError> {
         let path = if let Some(rest) = spec.strip_prefix("~/") {
-            let home = std::env::var_os("HOME")
-                .ok_or_else(|| ProviderError::InvalidSpec("$HOME not set; cannot expand '~/'".into()))?;
+            let home = std::env::var_os("HOME").ok_or_else(|| {
+                ProviderError::InvalidSpec("$HOME not set; cannot expand '~/'".into())
+            })?;
             PathBuf::from(home).join(rest)
         } else {
             PathBuf::from(spec)
@@ -304,9 +307,8 @@ impl RootfsProvider for DirProvider {
         // (the classic /var/www/current → /var/www/releases/<ts> pattern)
         // rely on the original path being preserved end-to-end so the next
         // run picks up the new target without reconfiguration.
-        let meta = std::fs::metadata(&path).map_err(|e| {
-            ProviderError::InvalidSpec(format!("{}: {}", path.display(), e))
-        })?;
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| ProviderError::InvalidSpec(format!("{}: {}", path.display(), e)))?;
         if !meta.is_dir() {
             return Err(ProviderError::InvalidSpec(format!(
                 "{} is not a directory",
@@ -342,7 +344,9 @@ mod tests {
     fn dir_rejects_missing_paths() {
         let ctx = Context::new("/tmp/vmette-test-cache");
         let p = DirProvider;
-        let err = p.provide("/definitely/does/not/exist/vmette", &ctx).unwrap_err();
+        let err = p
+            .provide("/definitely/does/not/exist/vmette", &ctx)
+            .unwrap_err();
         assert!(matches!(err, ProviderError::InvalidSpec(_)));
     }
 
@@ -374,16 +378,24 @@ mod tests {
     fn registry_dispatches_first_match() {
         struct A;
         impl RootfsProvider for A {
-            fn name(&self) -> &'static str { "a" }
-            fn matches(&self, s: &str) -> bool { s.starts_with("a:") }
+            fn name(&self) -> &'static str {
+                "a"
+            }
+            fn matches(&self, s: &str) -> bool {
+                s.starts_with("a:")
+            }
             fn provide(&self, _: &str, _: &Context) -> Result<PathBuf, ProviderError> {
                 Ok(PathBuf::from("/a"))
             }
         }
         struct B;
         impl RootfsProvider for B {
-            fn name(&self) -> &'static str { "b" }
-            fn matches(&self, _: &str) -> bool { true }
+            fn name(&self) -> &'static str {
+                "b"
+            }
+            fn matches(&self, _: &str) -> bool {
+                true
+            }
             fn provide(&self, _: &str, _: &Context) -> Result<PathBuf, ProviderError> {
                 Ok(PathBuf::from("/b"))
             }
@@ -411,10 +423,7 @@ mod tests {
 
     #[test]
     fn context_provider_cache_creates_subdir() {
-        let tmp = std::env::temp_dir().join(format!(
-            "vmette-prov-test-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("vmette-prov-test-{}", std::process::id()));
         let ctx = Context::new(&tmp);
         let sub = ctx.provider_cache("foo").unwrap();
         assert!(sub.is_dir());

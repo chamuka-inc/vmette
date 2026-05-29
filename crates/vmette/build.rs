@@ -13,8 +13,8 @@ fn main() {
     let _ = std::fs::create_dir_all(&include_dir);
     let header_path = include_dir.join("vmette.h");
 
-    let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml"))
-        .expect("read cbindgen.toml");
+    let config =
+        cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).expect("read cbindgen.toml");
 
     match cbindgen::Builder::new()
         .with_crate(&crate_dir)

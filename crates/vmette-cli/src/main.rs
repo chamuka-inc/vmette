@@ -133,65 +133,113 @@ fn parse_args() -> ParsedArgs {
     while i < raw.len() {
         let arg = &raw[i];
         match arg.as_str() {
-            "--kernel"            => { kernel = Some(take(i, "--kernel", false).into()); i += 2; }
-            "--initramfs"         => { initramfs = Some(take(i, "--initramfs", false).into()); i += 2; }
-            "--cmdline"           => { cfg_cmdline = Some(take(i, "--cmdline", true)); i += 2; }
-            "--rootfs"            => { rootfs_spec = Some(take(i, "--rootfs", false)); i += 2; }
-            "--rootfs-ro"         => { rootfs_ro = true; i += 1; }
-            "--offline"           => { offline = true; i += 1; }
-            "--share"             => {
+            "--kernel" => {
+                kernel = Some(take(i, "--kernel", false).into());
+                i += 2;
+            }
+            "--initramfs" => {
+                initramfs = Some(take(i, "--initramfs", false).into());
+                i += 2;
+            }
+            "--cmdline" => {
+                cfg_cmdline = Some(take(i, "--cmdline", true));
+                i += 2;
+            }
+            "--rootfs" => {
+                rootfs_spec = Some(take(i, "--rootfs", false));
+                i += 2;
+            }
+            "--rootfs-ro" => {
+                rootfs_ro = true;
+                i += 1;
+            }
+            "--offline" => {
+                offline = true;
+                i += 1;
+            }
+            "--share" => {
                 let s = take(i, "--share", false);
                 let (tag, path) = s.split_once('=').unwrap_or_else(|| {
                     eprintln!("error: --share expects TAG=PATH, got '{}'", s);
                     usage();
                 });
-                shares.push(ShareMount { tag: tag.into(), path: path.into() });
+                shares.push(ShareMount {
+                    tag: tag.into(),
+                    path: path.into(),
+                });
                 i += 2;
             }
-            "--disk"              => { disks.push(take(i, "--disk", false).into()); i += 2; }
+            "--disk" => {
+                disks.push(take(i, "--disk", false).into());
+                i += 2;
+            }
             // --exec is a shell command; leading `-` is plausible.
-            "--exec"              => { exec_cmd = Some(take(i, "--exec", true)); i += 2; }
-            "--net"               => { net = true; i += 1; }
-            "--switch-root"       => { switch_root = true; i += 1; }
-            "--timeout"           => {
+            "--exec" => {
+                exec_cmd = Some(take(i, "--exec", true));
+                i += 2;
+            }
+            "--net" => {
+                net = true;
+                i += 1;
+            }
+            "--switch-root" => {
+                switch_root = true;
+                i += 1;
+            }
+            "--timeout" => {
                 let v = take(i, "--timeout", false);
                 timeout_seconds = Some(parse_num::<u32>("--timeout", &v));
                 i += 2;
             }
-            "--vsock-port"        => {
+            "--vsock-port" => {
                 let v = take(i, "--vsock-port", false);
                 let n: i64 = parse_num::<i64>("--vsock-port", &v);
                 vsock_port = match n {
                     n if n < 0 => VsockPort::Disabled,
-                    0          => VsockPort::Auto,
-                    n          => VsockPort::Fixed(n as u32),
+                    0 => VsockPort::Auto,
+                    n => VsockPort::Fixed(n as u32),
                 };
                 i += 2;
             }
-            "--guest-vsock-port"  => {
+            "--guest-vsock-port" => {
                 let v = take(i, "--guest-vsock-port", false);
                 guest_vsock_port = parse_num::<u32>("--guest-vsock-port", &v);
                 i += 2;
             }
-            "--vcpus"             => {
+            "--vcpus" => {
                 let v = take(i, "--vcpus", false);
                 vcpus = parse_num::<u8>("--vcpus", &v);
                 i += 2;
             }
-            "--mem-mib"           => {
+            "--mem-mib" => {
                 let v = take(i, "--mem-mib", false);
                 mem_mib = parse_num::<u64>("--mem-mib", &v);
                 i += 2;
             }
-            "--build-snapshot"    => { build_snapshot = Some(take(i, "--build-snapshot", false).into()); i += 2; }
-            "--resume-snapshot"   => { resume_snapshot = Some(take(i, "--resume-snapshot", false).into()); i += 2; }
-            "-h" | "--help"       => usage(),
-            other                 => { eprintln!("unknown arg: {}", other); usage(); }
+            "--build-snapshot" => {
+                build_snapshot = Some(take(i, "--build-snapshot", false).into());
+                i += 2;
+            }
+            "--resume-snapshot" => {
+                resume_snapshot = Some(take(i, "--resume-snapshot", false).into());
+                i += 2;
+            }
+            "-h" | "--help" => usage(),
+            other => {
+                eprintln!("unknown arg: {}", other);
+                usage();
+            }
         }
     }
 
-    let kernel = kernel.unwrap_or_else(|| { eprintln!("error: --kernel required"); usage(); });
-    let initramfs = initramfs.unwrap_or_else(|| { eprintln!("error: --initramfs required"); usage(); });
+    let kernel = kernel.unwrap_or_else(|| {
+        eprintln!("error: --kernel required");
+        usage();
+    });
+    let initramfs = initramfs.unwrap_or_else(|| {
+        eprintln!("error: --initramfs required");
+        usage();
+    });
     let rootfs_spec = rootfs_spec.unwrap_or_else(|| {
         eprintln!("error: --rootfs required (try `vmette providers` for examples)");
         usage();
@@ -220,7 +268,9 @@ fn parse_args() -> ParsedArgs {
     }
 
     let mut c = Config::new(kernel, initramfs);
-    if let Some(s) = cfg_cmdline { c.cmdline = s; }
+    if let Some(s) = cfg_cmdline {
+        c.cmdline = s;
+    }
     c.shares = shares;
     c.disks = disks;
     c.exec_cmd = exec_cmd;
@@ -233,7 +283,12 @@ fn parse_args() -> ParsedArgs {
     c.mem_mib = mem_mib;
     c.build_snapshot = build_snapshot;
     c.resume_snapshot = resume_snapshot;
-    ParsedArgs { config: c, rootfs_spec, rootfs_ro, offline }
+    ParsedArgs {
+        config: c,
+        rootfs_spec,
+        rootfs_ro,
+        offline,
+    }
 }
 
 fn cache_root() -> PathBuf {
@@ -281,7 +336,7 @@ fn print_providers(registry: &Registry) {
             "dir" => "  --rootfs /path/to/dir",
             "tar" => "  --rootfs tar+https://host/rootfs.tar.gz   |   tar+file:///tmp/r.tar",
             "oci" => "  --rootfs alpine:3.20   |   oci://ghcr.io/foo/bar:v1",
-            _     => "  (third-party provider)",
+            _ => "  (third-party provider)",
         };
         println!("  - {name}\n    {example}");
     }

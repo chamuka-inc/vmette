@@ -15,7 +15,9 @@ pub(crate) fn enter_raw_mode() {
     if unsafe { libc::isatty(fd) } == 0 {
         return;
     }
-    let Ok(current) = termios::tcgetattr(unsafe { borrowed(fd) }) else { return };
+    let Ok(current) = termios::tcgetattr(unsafe { borrowed(fd) }) else {
+        return;
+    };
     {
         let mut g = SAVED.lock().unwrap();
         if g.is_none() {

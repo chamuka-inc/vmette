@@ -17,8 +17,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::AllocAnyThread;
 use objc2_foundation::{NSError, NSRunLoop};
 use objc2_virtualization::{
-    VZVirtioSocketDevice, VZVirtioSocketListener, VZVirtualMachine,
-    VZVirtualMachineDelegate,
+    VZVirtioSocketDevice, VZVirtioSocketListener, VZVirtualMachine, VZVirtualMachineDelegate,
 };
 
 use crate::error::Error;
@@ -89,9 +88,7 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
     install_signal_handlers();
     enter_raw_mode();
 
-    let vm = unsafe {
-        VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg)
-    };
+    let vm = unsafe { VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg) };
 
     // Lifecycle delegate
     let timed_out = Arc::new(AtomicBool::new(false));
@@ -114,8 +111,7 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
     if let Some(port) = vsock_port {
         let sock_dev = unsafe { vm.socketDevices() };
         if let Some(dev) = sock_dev.firstObject() {
-            let dev: Retained<VZVirtioSocketDevice> =
-                unsafe { Retained::cast_unchecked(dev) };
+            let dev: Retained<VZVirtioSocketDevice> = unsafe { Retained::cast_unchecked(dev) };
             let logger = VsockLogger::new(ListenerState {
                 port,
                 ready_handler: Arc::new(Mutex::new(None)),
@@ -137,8 +133,8 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
     if let Some(secs) = config.timeout_seconds {
         let vm_for_timer = MainQueueOnly(vm.clone());
         let timed_out_setter = timed_out.clone();
-        let when = DispatchTime::try_from(Duration::from_secs(secs as u64))
-            .unwrap_or(DispatchTime::NOW);
+        let when =
+            DispatchTime::try_from(Duration::from_secs(secs as u64)).unwrap_or(DispatchTime::NOW);
         let _ = DispatchQueue::main().after(when, move || {
             eprintln!("\r\n[vmette] timeout {}s reached, force-stopping\r", secs);
             timed_out_setter.store(true, Ordering::SeqCst);
@@ -170,7 +166,13 @@ fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
     let rootfs = config
         .rootfs_share
         .as_ref()
-        .map(|r| format!("{}{}", r.path.display(), if r.read_only { " (ro)" } else { "" }))
+        .map(|r| {
+            format!(
+                "{}{}",
+                r.path.display(),
+                if r.read_only { " (ro)" } else { "" }
+            )
+        })
         .unwrap_or_else(|| "(none)".into());
     let vsock = match vsock_port {
         None => "(disabled)".into(),
