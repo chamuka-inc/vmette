@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Desktop computer use.** vmette can now run a persistent graphical
+  Linux desktop inside a microVM and drive it via screenshots +
+  synthetic mouse/keyboard — the computer-use agent loop.
+  - **`vmette::Session` primitive** with a `WorkloadStrategy` (OneShot |
+    Agent). The headless one-shot `run()` is now a thin OneShot wrapper
+    over the same primitive; behaviour is unchanged. Agent sessions run
+    on a per-session serial dispatch queue (multiple concurrent VMs) and
+    expose `Send` `SessionClient` / `StopHandle` handles.
+  - **Framed vsock protocol** (`crates/vmette/src/desktop.rs`):
+    `[u32 LE header_len][header JSON][optional payload]`, with an
+    `Action` vocabulary mirroring Anthropic computer use (screenshot,
+    mouse_move, clicks, type, key chords, scroll, exec, …). Screenshots
+    return a PNG payload.
+  - **Guest desktop agent** (`guest/vmette-desktop-agent.c`): XTEST for
+    input, XGetImage + PNG encode for capture, served over vsock. Ships
+    inside a Debian-slim desktop rootfs image (Xvfb + openbox), built by
+    `scripts/build-desktop-image.sh`; `custom-init.sh` gained a
+    `vmette.desktop=1` branch.
+  - **Daemon session registry** (`vmette-daemon`): a stateful subsystem,
+    kept separate from the stateless subprocess dispatch, that holds live
+    sessions across requests with a max-live cap, idle eviction (30 min),
+    and shutdown teardown. New `desktop_start` / `desktop_action` /
+    `desktop_stop` request kinds.
+  - **CLI**: a `vmette desktop` subcommand group (start / screenshot /
+    move / click / type / key / scroll / exec / cursor / stop) talking to
+    `vmetted` for manual end-to-end testing.
+  - **MCP**: `desktop_*` tools routed through the daemon;
+    `desktop_screenshot` returns an MCP image content block. The
+    `execute` / `workspace_*` tools keep their direct-subprocess path.
+  - New [`docs/DESKTOP.md`](docs/DESKTOP.md).
+
 ## [0.1.0] — 2026-05-29
 
 Initial release. Local Linux microVM sandbox for macOS built on

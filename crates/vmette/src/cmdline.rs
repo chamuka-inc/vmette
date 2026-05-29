@@ -5,7 +5,7 @@
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 
-use crate::Config;
+use crate::{Config, WorkloadStrategy};
 
 /// Build the full kernel cmdline string passed to `VZLinuxBootLoader`.
 ///
@@ -52,6 +52,12 @@ pub(crate) fn build(config: &Config, effective_vsock_port: Option<u32>) -> Strin
         ));
     }
 
+    if config.workload == WorkloadStrategy::Agent {
+        let (w, h) = config.display_size;
+        s.push_str(" vmette.desktop=1");
+        s.push_str(&format!(" vmette.display={}x{}", w, h));
+    }
+
     s
 }
 
@@ -90,6 +96,19 @@ mod tests {
         let s = build(&c, None);
         assert!(s.contains("vmette.rootfs=1"));
         assert!(s.contains("vmette.rootfs_ro=1"));
+    }
+
+    #[test]
+    fn desktop_tokens_only_emitted_for_agent() {
+        let s = build(&base(), None);
+        assert!(!s.contains("vmette.desktop"));
+
+        let mut c = base();
+        c.workload = crate::WorkloadStrategy::Agent;
+        c.display_size = (1024, 768);
+        let s = build(&c, None);
+        assert!(s.contains("vmette.desktop=1"));
+        assert!(s.contains("vmette.display=1024x768"));
     }
 
     #[test]

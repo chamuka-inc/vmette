@@ -37,16 +37,30 @@
 //!   --socket  $HOME/Library/Caches/vmette/vmette.sock
 //!   --vmette  $(dirname argv[0])/vmette  (falls back to PATH lookup)
 
+mod registry;
+
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
+
+use registry::{Registry, StartParams, DEFAULT_DESKTOP_IMAGE};
+
+/// How many concurrent desktop VMs the daemon will host. Each is a ~2 GB VM.
+const MAX_DESKTOP_SESSIONS: usize = 8;
+/// Force-stop desktop sessions untouched for this long (orphan/idle eviction).
+const DESKTOP_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
+/// How often the background sweeper checks for idle sessions.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -106,14 +120,98 @@ enum Frame {
     Error { message: String },
 }
 
+// ---- desktop session protocol (stateful path) ---------------------------
+
+/// `kind: "desktop_start"` — boot a persistent desktop VM. The kernel +
+/// initramfs are the ordinary vmette assets; desktop-ness comes from `image`
+/// + the Agent workload.
+#[derive(Debug, Deserialize)]
+struct DesktopStartReq {
+    kernel: PathBuf,
+    initramfs: PathBuf,
+    #[serde(default = "default_desktop_image")]
+    image: String,
+    /// "WIDTHxHEIGHT"; defaults to 1280x800 when absent/unparseable.
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(default)]
+    net: bool,
+    #[serde(default)]
+    offline: bool,
+    #[serde(default = "default_desktop_vcpus")]
+    vcpus: u8,
+    #[serde(default = "default_desktop_mem_mib")]
+    mem_mib: u64,
+}
+
+/// `kind: "desktop_action"` — one computer-use action against a live session.
+#[derive(Debug, Deserialize)]
+struct DesktopActionReq {
+    session_id: String,
+    action: vmette::Action,
+}
+
+/// `kind: "desktop_stop"` — tear a live session down.
+#[derive(Debug, Deserialize)]
+struct DesktopStopReq {
+    session_id: String,
+}
+
+fn default_desktop_image() -> String {
+    DEFAULT_DESKTOP_IMAGE.to_string()
+}
+fn default_desktop_vcpus() -> u8 {
+    2
+}
+fn default_desktop_mem_mib() -> u64 {
+    2048
+}
+
+/// Single-line JSON reply for the desktop kinds.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DesktopReply {
+    Session {
+        session_id: String,
+    },
+    ActionResult {
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        x: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        y: Option<i32>,
+        /// Base64 PNG for `screenshot`; absent otherwise.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        png_base64: Option<String>,
+    },
+    Stopped,
+    Error {
+        message: String,
+    },
+}
+
+/// Parse "WIDTHxHEIGHT" → (w, h); default 1280x800 on absence/parse error.
+fn parse_size(s: Option<&str>) -> (u32, u32) {
+    s.and_then(|s| {
+        let (w, h) = s.split_once(['x', 'X'])?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    })
+    .unwrap_or((1280, 800))
+}
+
 fn default_socket_path() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    let mut p = PathBuf::from(home);
-    p.push("Library");
-    p.push("Caches");
-    p.push("vmette");
+    let mut p = default_cache_root();
     p.push("vmette.sock");
     p
+}
+
+/// Provider cache root — shared with the CLI (`~/Library/Caches/vmette`) so
+/// resolved OCI/tar rootfs trees are reused across both.
+fn default_cache_root() -> PathBuf {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    PathBuf::from(home).join("Library/Caches/vmette")
 }
 
 fn locate_vmette() -> PathBuf {
@@ -171,6 +269,29 @@ async fn main() -> Result<()> {
         UnixListener::bind(&socket).with_context(|| format!("bind {}", socket.display()))?;
     info!(socket = %socket.display(), vmette = %vmette_bin.display(), "vmetted listening");
 
+    // Stateful subsystem: the desktop session registry. Kept entirely
+    // separate from the stateless subprocess dispatch above.
+    let registry = Registry::new(MAX_DESKTOP_SESSIONS, DESKTOP_IDLE_TTL, default_cache_root());
+
+    // Background idle/orphan sweeper. Eviction is blocking (joins teardown),
+    // so it hops off the async thread via spawn_blocking.
+    {
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(SWEEP_INTERVAL);
+            loop {
+                tick.tick().await;
+                let reg = registry.clone();
+                let evicted = tokio::task::spawn_blocking(move || reg.sweep_idle())
+                    .await
+                    .unwrap_or_default();
+                if !evicted.is_empty() {
+                    info!(?evicted, "evicted idle desktop sessions");
+                }
+            }
+        });
+    }
+
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
 
@@ -180,8 +301,9 @@ async fn main() -> Result<()> {
                 match accept {
                     Ok((stream, _)) => {
                         let bin = vmette_bin.clone();
+                        let registry = registry.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle(stream, bin).await {
+                            if let Err(e) = dispatch(stream, bin, registry).await {
                                 warn!(error = %e, "handler failed");
                             }
                         });
@@ -194,18 +316,117 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Tear down every live desktop VM before exiting.
+    let live = registry.len();
+    if live > 0 {
+        info!(live, "stopping live desktop sessions on shutdown");
+        let reg = registry.clone();
+        let _ = tokio::task::spawn_blocking(move || reg.stop_all()).await;
+    }
+
     let _ = std::fs::remove_file(&socket);
     Ok(())
 }
 
-async fn handle(stream: UnixStream, vmette_bin: PathBuf) -> Result<()> {
+/// Per-connection entry point. Reads the single request line, peeks its
+/// `kind`, and routes: desktop kinds to the stateful session registry,
+/// everything else (no kind / `"run"`) to the stateless subprocess path.
+async fn dispatch(stream: UnixStream, vmette_bin: PathBuf, registry: Arc<Registry>) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
     let mut line = String::new();
     reader.read_line(&mut line).await?;
-    let req: Request = serde_json::from_str(line.trim()).context("parse request")?;
+    let line = line.trim().to_string();
 
+    // Peek the kind without committing to a concrete request shape.
+    let kind = serde_json::from_str::<serde_json::Value>(&line)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned));
+
+    match kind.as_deref() {
+        Some("desktop_start") | Some("desktop_action") | Some("desktop_stop") => {
+            let reply = handle_desktop(kind.as_deref().unwrap(), &line, registry).await;
+            let mut json = serde_json::to_vec(&reply)?;
+            json.push(b'\n');
+            let _ = write_half.write_all(&json).await;
+            let _ = write_half.shutdown().await;
+            Ok(())
+        }
+        // None (legacy untagged) or explicit "run": stateless subprocess path.
+        _ => {
+            let req: Request = serde_json::from_str(&line).context("parse run request")?;
+            run_workload(req, write_half, vmette_bin).await
+        }
+    }
+}
+
+/// Route a parsed desktop request to the registry, mapping results/errors to a
+/// single [`DesktopReply`]. Blocking registry calls hop off the async thread
+/// via `spawn_blocking`.
+async fn handle_desktop(kind: &str, line: &str, registry: Arc<Registry>) -> DesktopReply {
+    match desktop_result(kind, line, registry).await {
+        Ok(reply) => reply,
+        Err(e) => DesktopReply::Error {
+            message: format!("{e:#}"),
+        },
+    }
+}
+
+async fn desktop_result(kind: &str, line: &str, registry: Arc<Registry>) -> Result<DesktopReply> {
+    match kind {
+        "desktop_start" => {
+            let req: DesktopStartReq = serde_json::from_str(line).context("parse desktop_start")?;
+            let (width, height) = parse_size(req.size.as_deref());
+            let params = StartParams {
+                kernel: req.kernel,
+                initramfs: req.initramfs,
+                image: req.image,
+                width,
+                height,
+                net: req.net,
+                offline: req.offline,
+                vcpus: req.vcpus,
+                mem_mib: req.mem_mib,
+            };
+            let session_id = tokio::task::spawn_blocking(move || registry.start(params))
+                .await
+                .context("session start task")??;
+            Ok(DesktopReply::Session { session_id })
+        }
+        "desktop_action" => {
+            let req: DesktopActionReq =
+                serde_json::from_str(line).context("parse desktop_action")?;
+            let res =
+                tokio::task::spawn_blocking(move || registry.action(&req.session_id, &req.action))
+                    .await
+                    .context("session action task")??;
+            Ok(DesktopReply::ActionResult {
+                ok: res.ok,
+                error: res.error,
+                x: res.x,
+                y: res.y,
+                png_base64: res
+                    .png
+                    .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            })
+        }
+        "desktop_stop" => {
+            let req: DesktopStopReq = serde_json::from_str(line).context("parse desktop_stop")?;
+            tokio::task::spawn_blocking(move || registry.stop(&req.session_id))
+                .await
+                .context("session stop task")??;
+            Ok(DesktopReply::Stopped)
+        }
+        other => Err(anyhow!("unknown desktop kind: {other}")),
+    }
+}
+
+async fn run_workload(
+    req: Request,
+    mut write_half: tokio::net::unix::OwnedWriteHalf,
+    vmette_bin: PathBuf,
+) -> Result<()> {
     // Translate Request → vmette CLI flags
     let mut cmd = Command::new(&vmette_bin);
     cmd.arg("--kernel").arg(&req.kernel);

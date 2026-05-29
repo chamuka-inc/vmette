@@ -97,6 +97,16 @@ impl Sandbox {
         })
     }
 
+    /// Kernel image path (shared with the daemon client for desktop sessions).
+    pub fn kernel(&self) -> &Path {
+        &self.kernel
+    }
+
+    /// Initramfs path (shared with the daemon client for desktop sessions).
+    pub fn initramfs(&self) -> &Path {
+        &self.initramfs
+    }
+
     /// Run one microVM and return the captured output.
     ///
     /// The vmette CLI's banner + delegate messages go to stderr; the

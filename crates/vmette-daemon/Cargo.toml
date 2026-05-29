@@ -17,3 +17,10 @@ serde_json  = "1"
 tracing     = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow      = "1"
+# In-process desktop sessions: the daemon hosts live vmette::Session VMs
+# (Agent workload) and resolves their rootfs images via the provider crates.
+vmette               = { path = "../vmette" }
+vmette-provider-oci  = { path = "../vmette-provider-oci" }
+vmette-provider-tar  = { path = "../vmette-provider-tar" }
+base64      = "0.22"
+rand        = "0.8"

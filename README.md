@@ -180,14 +180,39 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 }}}
 ```
 
-`vmette-mcp` is a Model Context Protocol server that exposes seven
-tools (`execute`, `fetch_url`, plus a `workspace_*` family) to any
-MCP-aware agent host — Claude Desktop, Cursor, Cline, Zed, Goose, etc.
-Each tool call boots a fresh microVM; the agent never touches your
-real filesystem unless you explicitly shared a directory into it.
+`vmette-mcp` is a Model Context Protocol server that exposes vmette to
+any MCP-aware agent host — Claude Desktop, Cursor, Cline, Zed, Goose,
+etc. It ships an `execute` tool, `fetch_url`, a `workspace_*` family
+(each call boots a fresh microVM), and a `desktop_*` family for
+computer use. The agent never touches your real filesystem unless you
+explicitly shared a directory into it.
 
 See [`docs/MCP.md`](docs/MCP.md) for the full tool reference, security
 model, and client configs.
+
+## Use it (desktop computer use)
+
+Drive a **persistent** graphical Linux desktop inside a microVM —
+screenshot, click, type — the way a computer-use agent expects. A
+headless X server (Xvfb) + window manager run in the guest, driven by an
+in-guest agent over vsock; no Apple graphics window is involved.
+
+```sh
+vmetted &                                    # sessions live in the daemon
+bash scripts/build-desktop-image.sh          # build the desktop rootfs image
+
+SID=$(vmette desktop start)
+vmette desktop screenshot "$SID" --out shot.png && open shot.png
+vmette desktop exec "$SID" 'xterm &'
+vmette desktop click "$SID" 640 400
+vmette desktop type  "$SID" 'echo hello'
+vmette desktop stop  "$SID"
+```
+
+The same capability is exposed to agents through the MCP `desktop_*`
+tools (`desktop_screenshot` returns a PNG image block). See
+[`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol,
+action reference, and image build.
 
 ## How it works
 
@@ -217,6 +242,8 @@ crates/
     src/ffi.rs           #[no_mangle] extern "C" shims → cbindgen
     src/vz/              objc2 bindings to VZ (config, delegate, vsock, snapshot)
     src/lifecycle.rs     run() orchestration + timeout + signal handlers
+    src/session.rs       Session primitive (OneShot + Agent workloads) + Send handles
+    src/desktop.rs       desktop computer-use protocol (framed wire format + actions)
     src/cmdline.rs       base64 vmette.* cmdline assembly
     include/vmette.h     generated header (checked in)
     examples/            minimal.rs + minimal.c
@@ -224,16 +251,22 @@ crates/
   vmette-provider-tar/   Tarball provider (tar+https://, tar+file://)
   vmette-cli/            `vmette` CLI binary (registers dir/tar/oci providers)
   vmette-daemon/         `vmetted` UNIX-socket dispatcher (tokio + JSON)
+                         + desktop session registry (stateful, in-process VMs)
   vmette-mcp/            `vmette-mcp` Model Context Protocol server for AI agents
 guest/                   C sources cross-compiled for the Linux guest
   vsock-send.c           pipe stdin → AF_VSOCK → host listener
   vsock-runner.c         snapshot-mode cmd server
+  vmette-desktop-agent.c desktop agent: XTEST input + XGetImage capture over vsock
+images/
+  vmette-desktop/        Dockerfile + entrypoint for the desktop rootfs OCI image
 entitlements.plist       com.apple.security.virtualization + .hypervisor
 scripts/
   fetch-assets.sh        alpine netboot initramfs + linux-virt apk
   fetch-alpine-rootfs.sh alpine-minirootfs → assets/alpine-rootfs/
   build-initramfs.sh     repack initramfs: busybox + apk modules + /init
   build-vsock-send.sh    cross-compile guest helpers via musl-cross
+  build-desktop-agent.sh compile vmette-desktop-agent against the image libc
+  build-desktop-image.sh build/push the desktop rootfs OCI image
   custom-init.sh         PID-1 inside the guest
   run.sh                 dev wrapper: ensures assets, builds, runs vmette
   install.sh             curl-pipe end-user installer
@@ -261,6 +294,11 @@ Makefile                 help | build | universal | dist | test | run | shell | 
   `linux-virt-aarch64.apk` + `aarch64-linux-musl-gcc` install. Plumbing
   is documented in [`docs/HACKING.md`](docs/HACKING.md); verification
   awaits arm64 hardware.
+- **Desktop sessions are software-rendered and live in the daemon.**
+  Desktop computer use uses headless Xvfb (no GPU) and requires `vmetted`
+  to hold the persistent VM; each session is a ~2 GB VM, capped and
+  idle-evicted. Fine for agentic GUI control and UI testing, not for
+  video / WebGL / 3D. See [`docs/DESKTOP.md`](docs/DESKTOP.md).
 
 ## Docs
 
@@ -268,6 +306,7 @@ Makefile                 help | build | universal | dist | test | run | shell | 
 - [`docs/API.md`](docs/API.md) — Rust + C library API
 - [`docs/DAEMON.md`](docs/DAEMON.md) — vmetted protocol spec
 - [`docs/MCP.md`](docs/MCP.md) — vmette-mcp server tool reference + client configs
+- [`docs/DESKTOP.md`](docs/DESKTOP.md) — desktop computer use: sessions, protocol, image build
 - [`docs/HACKING.md`](docs/HACKING.md) — build, test, debug
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 

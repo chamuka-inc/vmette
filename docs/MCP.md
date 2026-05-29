@@ -1,9 +1,10 @@
 # vmette-mcp — Model Context Protocol server
 
 `vmette-mcp` exposes vmette as an MCP server: any MCP-aware agent host
-(Claude Desktop, Cursor, Cline, Zed, Goose, custom clients) gets seven
-tools that run inside a fresh Linux microVM per call. The agent sees a
-sandbox; nothing it does can touch your real filesystem unless you
+(Claude Desktop, Cursor, Cline, Zed, Goose, custom clients) gets a set of
+tools that run inside a Linux microVM. Most boot a fresh VM per call; the
+`desktop_*` family drives a persistent graphical desktop session. The agent
+sees a sandbox; nothing it does can touch your real filesystem unless you
 explicitly shared a directory into it.
 
 Each tool call boots a fresh kernel via Apple's `Virtualization.framework`
@@ -91,6 +92,7 @@ binary path as `command` and the flags as `args`.
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `~/.local/share/vmette/assets/vmlinuz-virt`. |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `~/.local/share/vmette/assets/initramfs-vmette`. |
 | `--vmette PATH` | autodiscovered | Override `vmette` binary path. Default: `$PATH` lookup or sibling-of-this-binary. |
+| `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket used by the `desktop_*` tools. Those tools require the daemon to be running. |
 
 `vmette-mcp` writes structured logs (tracing) to **stderr**. `stdout`
 is reserved for MCP frames; anything written there desyncs the client.
@@ -172,6 +174,28 @@ directory is mounted **read-write** at `/mnt/work` and is the initial
 
 Remove the workspace's on-disk directory and forget the ID. Idempotent.
 
+### desktop computer-use tools
+
+A separate family that drives a **persistent** graphical desktop session
+(Xvfb + window manager) instead of a one-shot VM. These route through
+`vmetted` (the session must outlive a single tool call), so the daemon must be
+running. `desktop_start` returns a `session_id` to pass to the rest;
+`desktop_screenshot` returns a PNG **image content block** for the agent to
+look at. Full reference, protocol, and image build in
+[`DESKTOP.md`](DESKTOP.md).
+
+| Tool | Input | Returns |
+|------|-------|---------|
+| `desktop_start` | `image?`, `size?`, `network?` | session id |
+| `desktop_screenshot` | `session_id` | PNG image block |
+| `desktop_cursor_position` | `session_id` | `"x y"` |
+| `desktop_move` / `desktop_click` / `desktop_double_click` / `desktop_right_click` | `session_id`, `x`, `y` | status |
+| `desktop_type` | `session_id`, `text` | status |
+| `desktop_key` | `session_id`, `keys` (e.g. `ctrl+c`) | status |
+| `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
+| `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status |
+| `desktop_stop` | `session_id` | status |
+
 ## Security model
 
 What the server **does** isolate:
@@ -240,3 +264,5 @@ What the server **does not** isolate:
 | Every tool call returns exit 1 with `start failed` | Codesigning lost. Re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime $(which vmette)`. |
 | `fetch_url` returns "this MCP server was started without --allow-network" | Add `--allow-network` to your client config and restart the host. |
 | `workspace_create` returns "workspace cap reached" | Destroy idle workspaces or raise `--workspace-cap`. |
+| `desktop_*` tools fail with "connect … failed (is vmetted running?)" | Start the daemon (`vmetted &`); the desktop tools route through it. |
+| `desktop_start` returns "session cap reached" | Stop an idle desktop session, or wait for idle eviction (30 min). |

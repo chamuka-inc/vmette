@@ -1273,7 +1273,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags",
+ "block2",
  "dispatch2",
+ "libc",
  "objc2",
 ]
 
@@ -2629,9 +2631,12 @@ dependencies = [
  "libc",
  "nix",
  "objc2",
+ "objc2-core-foundation",
  "objc2-foundation",
  "objc2-virtualization",
  "rand 0.8.6",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
 ]
@@ -2640,6 +2645,8 @@ dependencies = [
 name = "vmette-cli"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "serde_json",
  "tracing-subscriber",
  "vmette",
  "vmette-provider-oci",
@@ -2651,11 +2658,16 @@ name = "vmette-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vmette",
+ "vmette-provider-oci",
+ "vmette-provider-tar",
 ]
 
 [[package]]

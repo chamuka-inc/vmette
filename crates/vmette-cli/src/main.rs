@@ -5,6 +5,8 @@
 //! `--rootfs SPEC` flag dispatched to a [`Registry`] of providers; see
 //! `vmette providers` for the active list.
 
+mod desktop;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -17,6 +19,7 @@ fn usage() -> ! {
     eprintln!(
         "vmette --kernel PATH --initramfs PATH --rootfs SPEC [options]\n\
          vmette providers                                  # list registered providers\n\
+         vmette desktop <command> [options]                # desktop computer use (via vmetted)\n\
          \n\
          required:\n\
            --kernel           PATH      bzImage on x86_64\n\
@@ -360,6 +363,9 @@ fn main() -> ExitCode {
         if first == "providers" {
             print_providers(&default_registry());
             return ExitCode::SUCCESS;
+        }
+        if first == "desktop" {
+            return desktop::run(argv.collect());
         }
     }
 

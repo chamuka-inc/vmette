@@ -18,8 +18,9 @@ repository = "https://github.com/chamuka-inc/vmette"
 
 [workspace.dependencies]
 objc2                = "0.6"
+objc2-core-foundation = { version = "0.3", features = ["CFRunLoop"] }
 objc2-foundation     = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSFileHandle", "NSRunLoop", "NSDate", "NSArray"] }
-objc2-virtualization = { version = "0.3", features = ["VZVirtualMachine", "VZVirtualMachineConfiguration", "VZBootLoader", "VZLinuxBootLoader", "VZSerialPortConfiguration", "VZVirtioConsoleDeviceSerialPortConfiguration", "VZSerialPortAttachment", "VZFileHandleSerialPortAttachment", "VZEntropyDeviceConfiguration", "VZVirtioEntropyDeviceConfiguration", "VZMemoryBalloonDeviceConfiguration", "VZVirtioTraditionalMemoryBalloonDeviceConfiguration", "VZDirectorySharingDeviceConfiguration", "VZVirtioFileSystemDeviceConfiguration", "VZDirectoryShare", "VZSingleDirectoryShare", "VZSharedDirectory", "VZStorageDeviceConfiguration", "VZVirtioBlockDeviceConfiguration", "VZStorageDeviceAttachment", "VZDiskImageStorageDeviceAttachment", "VZNetworkDeviceConfiguration", "VZVirtioNetworkDeviceConfiguration", "VZNetworkDeviceAttachment", "VZNATNetworkDeviceAttachment", "VZSocketDeviceConfiguration", "VZVirtioSocketDeviceConfiguration", "VZSocketDevice", "VZVirtioSocketDevice", "VZVirtioSocketListener", "VZVirtioSocketConnection", "block2"] }
+objc2-virtualization = { version = "0.3", features = ["VZVirtualMachine", "VZVirtualMachineConfiguration", "VZBootLoader", "VZLinuxBootLoader", "VZSerialPortConfiguration", "VZVirtioConsoleDeviceSerialPortConfiguration", "VZSerialPortAttachment", "VZFileHandleSerialPortAttachment", "VZEntropyDeviceConfiguration", "VZVirtioEntropyDeviceConfiguration", "VZMemoryBalloonDeviceConfiguration", "VZVirtioTraditionalMemoryBalloonDeviceConfiguration", "VZDirectorySharingDeviceConfiguration", "VZVirtioFileSystemDeviceConfiguration", "VZDirectoryShare", "VZSingleDirectoryShare", "VZSharedDirectory", "VZStorageDeviceConfiguration", "VZVirtioBlockDeviceConfiguration", "VZStorageDeviceAttachment", "VZDiskImageStorageDeviceAttachment", "VZNetworkDeviceConfiguration", "VZVirtioNetworkDeviceConfiguration", "VZNetworkDeviceAttachment", "VZNATNetworkDeviceAttachment", "VZSocketDeviceConfiguration", "VZVirtioSocketDeviceConfiguration", "VZSocketDevice", "VZVirtioSocketDevice", "VZVirtioSocketListener", "VZVirtioSocketConnection", "block2", "dispatch2"] }
 block2               = "0.6"
 dispatch2            = "0.3"
 base64               = "0.22"
@@ -27,6 +28,8 @@ thiserror            = "1"
 nix                  = { version = "0.29", features = ["term", "signal"] }
 libc                 = "0.2"
 rand                 = "0.8"
+serde                = { version = "1", features = ["derive"] }
+serde_json           = "1"
 
 [profile.release]
 lto = "thin"

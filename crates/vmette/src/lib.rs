@@ -16,13 +16,35 @@ pub use error::Error;
 
 mod cmdline;
 mod lifecycle;
+mod session;
 mod terminal;
 mod vz;
 
+pub mod desktop;
 pub mod ffi;
 pub mod provider;
 
+pub use desktop::{Action, ResponseHeader, ScrollDirection};
 pub use lifecycle::{run, RunOutput};
+pub use session::{Session, SessionClient, SessionEnd, StopHandle};
+
+/// Selects what the guest does once booted, and therefore which terminal
+/// event ends the [`Session`].
+///
+/// - [`OneShot`](WorkloadStrategy::OneShot): the guest runs the
+///   `vmette.exec` command and powers off, writing its code to
+///   `.vmette-exit`. The session ends on the lifecycle-delegate poweroff.
+///   This is the headless default and the only path the CLI/FFI use.
+/// - [`Agent`](WorkloadStrategy::Agent): the guest starts a desktop
+///   (Xvfb + WM + `vmette-desktop-agent`) and serves the framed
+///   [`crate::desktop`] protocol over vsock. The session stays alive until
+///   an explicit [`Session::stop`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkloadStrategy {
+    #[default]
+    OneShot,
+    Agent,
+}
 
 /// Per-invocation host vsock port policy.
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +97,13 @@ pub struct Config {
     pub mem_mib: u64,
     pub build_snapshot: Option<PathBuf>,
     pub resume_snapshot: Option<PathBuf>,
+    /// Guest workload selection. Defaults to
+    /// [`WorkloadStrategy::OneShot`]; set to
+    /// [`WorkloadStrategy::Agent`] for a persistent desktop session.
+    pub workload: WorkloadStrategy,
+    /// Xvfb framebuffer size `(width, height)` for the desktop, emitted on
+    /// the cmdline only when `workload` is [`WorkloadStrategy::Agent`].
+    pub display_size: (u32, u32),
 }
 
 impl Config {
@@ -98,6 +127,8 @@ impl Config {
             mem_mib: 512,
             build_snapshot: None,
             resume_snapshot: None,
+            workload: WorkloadStrategy::OneShot,
+            display_size: (1280, 800),
         }
     }
 }

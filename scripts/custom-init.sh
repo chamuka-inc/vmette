@@ -81,6 +81,8 @@ VMETTE_NET="$(cmdline_get vmette.net)"
 VMETTE_VSOCK_PORT="$(cmdline_get vmette.vsock_port)"
 VMETTE_SNAPSHOT_MODE="$(cmdline_get vmette.snapshot_mode)"
 VMETTE_GUEST_VSOCK_PORT="$(cmdline_get vmette.guest_vsock_port)"
+VMETTE_DESKTOP="$(cmdline_get vmette.desktop)"
+VMETTE_DISPLAY="$(cmdline_get vmette.display)"
 export VMETTE_VSOCK_PORT VMETTE_GUEST_VSOCK_PORT
 
 # ---- step 3: mount rootfs share -----------------------------------------
@@ -197,6 +199,30 @@ if [ "$VMETTE_SNAPSHOT_MODE" = "server" ]; then
         exec switch_root /newroot /usr/local/bin/vsock-runner "$VMETTE_VSOCK_PORT" "$VMETTE_GUEST_VSOCK_PORT"
     fi
     exec chroot /newroot /usr/local/bin/vsock-runner "$VMETTE_VSOCK_PORT" "$VMETTE_GUEST_VSOCK_PORT"
+fi
+
+# Desktop (Agent) mode: chroot/switch_root into the desktop rootfs and exec
+# its entrypoint, which starts Xvfb + a WM + vmette-desktop-agent. The agent
+# connects out to the host on vmette.vsock_port and serves the framed
+# screenshot/input protocol; it is long-lived (the host ends the session via
+# an explicit stop), so we do NOT poweroff here — we exec the entrypoint and
+# let it own PID 1.
+if [ "$VMETTE_DESKTOP" = "1" ]; then
+    if [ -z "$VMETTE_VSOCK_PORT" ]; then
+        log "FATAL: desktop mode but vmette.vsock_port not set"
+        sync; poweroff -f; sleep 60
+    fi
+    SIZE="${VMETTE_DISPLAY:-1280x800}"
+    ENTRY=/usr/local/bin/vmette-desktop-entrypoint.sh
+    if [ ! -x "/newroot$ENTRY" ]; then
+        log "FATAL: $ENTRY missing in rootfs (is this the vmette-desktop image?)"
+        sync; poweroff -f; sleep 60
+    fi
+    log "desktop mode: exec $ENTRY (port $VMETTE_VSOCK_PORT, display $SIZE)"
+    if [ "$USE_SWITCH_ROOT" = "1" ]; then
+        exec switch_root /newroot "$ENTRY" "$VMETTE_VSOCK_PORT" "$SIZE"
+    fi
+    exec chroot /newroot "$ENTRY" "$VMETTE_VSOCK_PORT" "$SIZE"
 fi
 
 B64="$(cmdline_get vmette.exec)"

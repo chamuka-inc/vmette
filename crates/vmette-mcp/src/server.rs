@@ -1,19 +1,26 @@
 //! The MCP tool-router for vmette.
 //!
-//! Exposes seven tools:
+//! Two families of tools:
 //!
-//! * `execute`           — one-shot `python` / `node` / `shell` code
-//! * `fetch_url`         — HTTPS GET with byte cap, returns body
-//! * `workspace_create`  — allocate a scratch dir + per-call image
-//! * `workspace_write`   — write a file inside a workspace
-//! * `workspace_read`    — read a file from a workspace
-//! * `workspace_run`     — shell command inside a microVM, workspace mounted at /mnt/work
-//! * `workspace_destroy` — tear down a workspace
+//! * one-shot / workspace (each call boots a fresh microVM, direct subprocess):
+//!   * `execute`           — one-shot `python` / `node` / `shell` code
+//!   * `fetch_url`         — HTTPS GET with byte cap, returns body
+//!   * `workspace_create`  — allocate a scratch dir + per-call image
+//!   * `workspace_write`   — write a file inside a workspace
+//!   * `workspace_read`    — read a file from a workspace
+//!   * `workspace_run`     — shell command inside a microVM, workspace mounted at /mnt/work
+//!   * `workspace_destroy` — tear down a workspace
+//! * desktop computer use (persistent session, routed through `vmetted`):
+//!   * `desktop_start` / `desktop_stop` — lifecycle
+//!   * `desktop_screenshot` — capture (returns a PNG image content block)
+//!   * `desktop_move` / `desktop_click` / `desktop_double_click` /
+//!     `desktop_right_click` / `desktop_cursor_position` — pointer
+//!   * `desktop_type` / `desktop_key` / `desktop_scroll` / `desktop_exec` — input
 //!
-//! All tools return their result as a single plain-text MCP content
-//! block. Structured JSON-result returns are also possible via the
-//! rmcp `Json` wrapper but plain text is what most agent UIs render
-//! sensibly today.
+//! Most tools return their result as a single plain-text MCP content
+//! block (`desktop_screenshot` returns an image block). Structured
+//! JSON-result returns are also possible via the rmcp `Json` wrapper but
+//! plain text is what most agent UIs render sensibly today.
 
 use std::sync::Arc;
 
@@ -23,8 +30,10 @@ use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tracing::warn;
 
+use crate::daemon_client::{ActionReply, DaemonClient};
 use crate::sandbox::{RunReply, RunRequest, Sandbox, Share};
 use crate::workspace::{open_for_read, open_for_write, WorkspaceState};
 
@@ -103,6 +112,70 @@ pub struct WorkspaceDestroyArgs {
     pub workspace_id: String,
 }
 
+// --- desktop computer-use tool inputs ------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopStartArgs {
+    /// OCI ref for the desktop rootfs image. Defaults to the baked-in
+    /// vmette-desktop image. Must be x86_64 and ship the desktop agent.
+    pub image: Option<String>,
+    /// Display size as "WIDTHxHEIGHT" (default: 1280x800).
+    pub size: Option<String>,
+    /// Allow outbound network from the desktop VM (default: false).
+    /// Subject to the server's --allow-network policy.
+    #[serde(default)]
+    pub network: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopSessionArgs {
+    /// Session id returned by desktop_start.
+    pub session_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopPointArgs {
+    pub session_id: String,
+    /// X coordinate in pixels from the left edge.
+    pub x: i32,
+    /// Y coordinate in pixels from the top edge.
+    pub y: i32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopTypeArgs {
+    pub session_id: String,
+    /// UTF-8 text to type at the current focus.
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopKeyArgs {
+    pub session_id: String,
+    /// Key chord, e.g. "ctrl+c", "Return", "alt+Tab".
+    pub keys: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopScrollArgs {
+    pub session_id: String,
+    /// X coordinate to scroll at.
+    pub x: i32,
+    /// Y coordinate to scroll at.
+    pub y: i32,
+    /// Scroll direction: "up", "down", "left", or "right".
+    pub direction: String,
+    /// Number of scroll clicks.
+    pub amount: i32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopExecArgs {
+    pub session_id: String,
+    /// Shell command launched inside the guest, e.g. "xterm &".
+    pub command: String,
+}
+
 // --- structured returns for the workspace_create tool --------------------
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -118,6 +191,7 @@ pub struct WorkspaceCreateResult {
 pub struct VmetteServer {
     sandbox: Arc<Sandbox>,
     workspaces: Arc<WorkspaceState>,
+    daemon: Arc<DaemonClient>,
     default_image: String,
     allow_network: bool,
     /// Populated by `Self::tool_router()` from the `#[tool_router]`
@@ -131,12 +205,14 @@ impl VmetteServer {
     pub fn new(
         sandbox: Sandbox,
         workspaces: WorkspaceState,
+        daemon: DaemonClient,
         default_image: String,
         allow_network: bool,
     ) -> Self {
         Self {
             sandbox: Arc::new(sandbox),
             workspaces: Arc::new(workspaces),
+            daemon: Arc::new(daemon),
             default_image,
             allow_network,
             tool_router: Self::tool_router(),
@@ -359,6 +435,225 @@ impl VmetteServer {
             args.workspace_id
         ))]))
     }
+
+    // --- desktop computer-use tools (routed through vmetted) -------------
+
+    #[tool(
+        description = "Start a persistent graphical Linux desktop session (Xvfb + window manager) inside a microVM, driven via screenshots and synthetic mouse/keyboard. Returns a session_id to pass to the other desktop_* tools. The session outlives individual tool calls and must be torn down with desktop_stop (idle sessions are evicted after 30 min). Requires the vmette daemon (vmetted) to be running."
+    )]
+    async fn desktop_start(
+        &self,
+        Parameters(args): Parameters<DesktopStartArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let net = self.gate_network(args.network)?;
+        // `offline: false` always: pulling the rootfs image is a host-side
+        // operation (like the one-shot/workspace tools, which never run
+        // offline), independent of whether the guest VM gets network. Tying
+        // offline to `net` would make the default (network=false) unable to
+        // fetch the baked-in desktop image on first use.
+        let session_id = self
+            .daemon
+            .start(args.image, args.size, net, false)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(session_id)]))
+    }
+
+    #[tool(
+        description = "Capture the desktop framebuffer and return it as a PNG image content block. This is the agent's primary way to see the desktop state before deciding on the next action."
+    )]
+    async fn desktop_screenshot(
+        &self,
+        Parameters(args): Parameters<DesktopSessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reply = self
+            .action(&args.session_id, json!({ "action": "screenshot" }))
+            .await?;
+        let png = reply.png_base64.ok_or_else(|| {
+            ErrorData::internal_error("screenshot reply had no PNG payload".to_string(), None)
+        })?;
+        Ok(CallToolResult::success(vec![Content::image(
+            png,
+            "image/png".to_string(),
+        )]))
+    }
+
+    #[tool(description = "Report the current pointer position as 'x y'.")]
+    async fn desktop_cursor_position(
+        &self,
+        Parameters(args): Parameters<DesktopSessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reply = self
+            .action(&args.session_id, json!({ "action": "cursor_position" }))
+            .await?;
+        let x = reply.x.unwrap_or(0);
+        let y = reply.y.unwrap_or(0);
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{x} {y}"
+        ))]))
+    }
+
+    #[tool(description = "Move the pointer to (x, y) without clicking.")]
+    async fn desktop_move(
+        &self,
+        Parameters(args): Parameters<DesktopPointArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(
+            &args.session_id,
+            json!({ "action": "mouse_move", "x": args.x, "y": args.y }),
+        )
+        .await?;
+        Ok(ok_text(format!("moved to {} {}", args.x, args.y)))
+    }
+
+    #[tool(description = "Left-click at (x, y).")]
+    async fn desktop_click(
+        &self,
+        Parameters(args): Parameters<DesktopPointArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.click_at(&args.session_id, args.x, args.y, "left_click")
+            .await
+    }
+
+    #[tool(description = "Double left-click at (x, y).")]
+    async fn desktop_double_click(
+        &self,
+        Parameters(args): Parameters<DesktopPointArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.click_at(&args.session_id, args.x, args.y, "double_click")
+            .await
+    }
+
+    #[tool(description = "Right-click at (x, y).")]
+    async fn desktop_right_click(
+        &self,
+        Parameters(args): Parameters<DesktopPointArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.click_at(&args.session_id, args.x, args.y, "right_click")
+            .await
+    }
+
+    #[tool(description = "Type a UTF-8 string at the current keyboard focus.")]
+    async fn desktop_type(
+        &self,
+        Parameters(args): Parameters<DesktopTypeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(
+            &args.session_id,
+            json!({ "action": "type", "text": args.text }),
+        )
+        .await?;
+        Ok(ok_text("typed".to_string()))
+    }
+
+    #[tool(
+        description = "Press a key chord such as 'ctrl+c', 'Return', or 'alt+Tab'. Use desktop_type for ordinary text."
+    )]
+    async fn desktop_key(
+        &self,
+        Parameters(args): Parameters<DesktopKeyArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(
+            &args.session_id,
+            json!({ "action": "key", "keys": args.keys }),
+        )
+        .await?;
+        Ok(ok_text("key sent".to_string()))
+    }
+
+    #[tool(description = "Scroll at (x, y). direction is up|down|left|right; amount is clicks.")]
+    async fn desktop_scroll(
+        &self,
+        Parameters(args): Parameters<DesktopScrollArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match args.direction.as_str() {
+            "up" | "down" | "left" | "right" => {}
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("direction must be up|down|left|right, got {other:?}"),
+                    None,
+                ));
+            }
+        }
+        self.action(
+            &args.session_id,
+            json!({
+                "action": "scroll",
+                "x": args.x,
+                "y": args.y,
+                "direction": args.direction,
+                "amount": args.amount,
+            }),
+        )
+        .await?;
+        Ok(ok_text("scrolled".to_string()))
+    }
+
+    #[tool(
+        description = "Launch a shell command inside the desktop guest, e.g. 'xterm &' or 'chromium &'. Use trailing '&' for GUI apps so the call returns immediately."
+    )]
+    async fn desktop_exec(
+        &self,
+        Parameters(args): Parameters<DesktopExecArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(
+            &args.session_id,
+            json!({ "action": "exec", "command": args.command }),
+        )
+        .await?;
+        Ok(ok_text("launched".to_string()))
+    }
+
+    #[tool(
+        description = "Stop a desktop session and tear its VM down. Idempotent-ish: errors if the id is unknown."
+    )]
+    async fn desktop_stop(
+        &self,
+        Parameters(args): Parameters<DesktopSessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.daemon
+            .stop(&args.session_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(ok_text(format!("stopped {}", args.session_id)))
+    }
+}
+
+impl VmetteServer {
+    /// Send one desktop action, surfacing an `ok:false` agent reply as an
+    /// error so tools don't silently report success on a failed action.
+    async fn action(&self, session_id: &str, action: Value) -> Result<ActionReply, ErrorData> {
+        let reply = self
+            .daemon
+            .action(session_id, action)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        if !reply.ok {
+            let msg = reply
+                .error
+                .unwrap_or_else(|| "desktop action failed".to_string());
+            return Err(ErrorData::internal_error(msg, None));
+        }
+        Ok(reply)
+    }
+
+    /// Move to (x, y) then click. The agent's click actions fire at the
+    /// current pointer position, so we position first.
+    async fn click_at(
+        &self,
+        session_id: &str,
+        x: i32,
+        y: i32,
+        click: &str,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(
+            session_id,
+            json!({ "action": "mouse_move", "x": x, "y": y }),
+        )
+        .await?;
+        self.action(session_id, json!({ "action": click })).await?;
+        Ok(ok_text(format!("{click} at {x} {y}")))
+    }
 }
 
 #[tool_handler]
@@ -407,6 +702,11 @@ fn single_quote(s: &str) -> String {
 /// Specialised wrapper that builds `python3 -c '<code>'` shell args.
 fn shell_quoted_python(code: &str) -> String {
     format!("python3 -c {}", single_quote(code))
+}
+
+/// Wrap a short status string as a successful single text content block.
+fn ok_text(msg: String) -> CallToolResult {
+    CallToolResult::success(vec![Content::text(msg)])
 }
 
 fn format_reply(r: &RunReply) -> String {

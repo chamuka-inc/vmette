@@ -1,46 +1,19 @@
-//! Top-level [`run`] orchestration: assemble the cmdline, build the VZ
-//! config, install the delegate + optional vsock listener + optional
-//! timeout, start the VM, and pump the main run loop. The delegate's
-//! `guestDidStop` callback calls `std::process::exit` with the
-//! propagated exit code, which is why this function's return type is a
-//! never-typed-in-the-happy-path `Result<RunOutput, Error>`.
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
-use std::time::Duration;
-
-use block2::RcBlock;
-use dispatch2::{DispatchQueue, DispatchTime};
-use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::AllocAnyThread;
-use objc2_foundation::{NSError, NSRunLoop};
-use objc2_virtualization::{
-    VZVirtioSocketDevice, VZVirtioSocketListener, VZVirtualMachine, VZVirtualMachineDelegate,
-};
+//! Top-level [`run`] orchestration. `run` is a thin, CLI-facing wrapper
+//! over a one-shot [`Session`]: it owns the terminal (raw mode + signal
+//! handlers) and the user-visible banner, starts a session, blocks until
+//! it ends, and exits the process with the guest's code.
+//!
+//! The VM lifecycle itself — building the config, the delegate, the vsock
+//! listener, the timeout, and pumping the run loop — lives in
+//! [`crate::session`] so it is reusable in-process (the daemon hosts many
+//! sessions). `run` is the only place that calls `std::process::exit`, so
+//! its happy path still never returns; the `Result<RunOutput, Error>`
+//! shape is for setup errors (invalid config, snapshot unsupported, …).
 
 use crate::error::Error;
+use crate::session::{Session, SessionEnd};
 use crate::terminal::{enter_raw_mode, install_signal_handlers, restore_terminal};
-use crate::vz::config::{build as build_vz_config, resolve_vsock_port};
-use crate::vz::delegate::{DelegateState, VmetteDelegate};
-use crate::vz::vsock::{ListenerState, VsockLogger};
-use crate::{cmdline, Config};
-
-/// Send-wrapper for an objc2 `Retained`. We only ever cross thread
-/// boundaries by dispatching to the main queue, where the wrapped
-/// object was originally constructed — so the unsoundness window is
-/// closed in practice. Used to satisfy `DispatchQueue::after`'s
-/// `F: Send` bound when capturing a VM handle for a timeout closure.
-struct MainQueueOnly<T>(Retained<T>);
-unsafe impl<T> Send for MainQueueOnly<T> {}
-unsafe impl<T> Sync for MainQueueOnly<T> {}
-impl<T> std::ops::Deref for MainQueueOnly<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
+use crate::Config;
 
 /// Result of a completed [`run`]. Currently only carries the exit code,
 /// but kept as a struct so we can grow it without breaking callers.
@@ -53,9 +26,9 @@ pub struct RunOutput {
 /// then exit the process with the guest's exit code.
 ///
 /// Note: on success the function does not return — it calls
-/// `std::process::exit` from the VM's lifecycle delegate. The
-/// `Result<RunOutput, Error>` shape is for error paths (config invalid,
-/// VM failed to start, snapshot unsupported, etc).
+/// `std::process::exit` once the session ends. The `Result<RunOutput, Error>`
+/// shape is for error paths (config invalid, VM failed to start, snapshot
+/// unsupported, etc).
 pub fn run(config: &Config) -> Result<RunOutput, Error> {
     // Snapshot dispatch — both build and resume go through here.
     if let Some(p) = &config.build_snapshot {
@@ -67,99 +40,46 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
         return Ok(RunOutput { exit_code: code });
     }
 
-    let vsock_port = resolve_vsock_port(config.vsock_port);
-    let cmdline = cmdline::build(config, vsock_port);
-
-    // Pre-launch: unlink any stale .vmette-exit so we don't read a previous run.
-    let exit_code_file = config.rootfs_share.as_ref().and_then(|rs| {
-        if rs.read_only {
-            None
-        } else {
-            let p = rs.path.join(".vmette-exit");
-            let _ = std::fs::remove_file(&p);
-            Some(p)
-        }
-    });
-
-    eprint_banner(config, &cmdline, vsock_port);
-
-    let cfg = build_vz_config(config, &cmdline, vsock_port)?;
-
     install_signal_handlers();
     enter_raw_mode();
 
-    let vm = unsafe { VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg) };
-
-    // Lifecycle delegate
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let delegate = VmetteDelegate::new(DelegateState {
-        exit_code_file,
-        timed_out: timed_out.clone(),
-    });
-    unsafe {
-        let proto: &ProtocolObject<dyn VZVirtualMachineDelegate> =
-            ProtocolObject::from_ref(&*delegate);
-        vm.setDelegate(Some(proto));
-    }
-
-    // Vsock listener. Both `logger` and `listener` must outlive the run
-    // loop because VZ holds the delegate weakly — if either is dropped,
-    // the listener silently stops accepting connections. We bind them at
-    // function scope so they live until run() exits (which it never does
-    // in the happy path).
-    let _vsock_keepalive: Option<(Retained<VsockLogger>, Retained<VZVirtioSocketListener>)>;
-    if let Some(port) = vsock_port {
-        let sock_dev = unsafe { vm.socketDevices() };
-        if let Some(dev) = sock_dev.firstObject() {
-            let dev: Retained<VZVirtioSocketDevice> = unsafe { Retained::cast_unchecked(dev) };
-            let logger = VsockLogger::new(ListenerState {
-                port,
-                ready_handler: Arc::new(Mutex::new(None)),
-            });
-            let listener = unsafe { VZVirtioSocketListener::new() };
-            unsafe {
-                listener.setDelegate(Some(ProtocolObject::from_ref(&*logger)));
-                dev.setSocketListener_forPort(&listener, port);
-            }
-            _vsock_keepalive = Some((logger, listener));
-        } else {
-            _vsock_keepalive = None;
-        }
-    } else {
-        _vsock_keepalive = None;
-    }
-
-    // Timeout
-    if let Some(secs) = config.timeout_seconds {
-        let vm_for_timer = MainQueueOnly(vm.clone());
-        let timed_out_setter = timed_out.clone();
-        let when =
-            DispatchTime::try_from(Duration::from_secs(secs as u64)).unwrap_or(DispatchTime::NOW);
-        let _ = DispatchQueue::main().after(when, move || {
-            eprintln!("\r\n[vmette] timeout {}s reached, force-stopping\r", secs);
-            timed_out_setter.store(true, Ordering::SeqCst);
-            let stop_cb = RcBlock::new(|_err: *mut NSError| {
-                restore_terminal();
-                std::process::exit(124);
-            });
-            unsafe { vm_for_timer.stopWithCompletionHandler(&stop_cb) };
-        });
-    }
-
-    // Start
-    let start_cb = RcBlock::new(move |err: *mut NSError| {
-        if !err.is_null() {
-            let err = unsafe { &*err };
+    // Start the session (creates + starts the VM but does not yet pump the
+    // run loop). Print the banner before wait(): nothing services the VM's
+    // queue between start() and wait(), so no guest serial output can race
+    // ahead of the banner.
+    let session = match Session::start(config) {
+        Ok(s) => s,
+        Err(e) => {
+            // enter_raw_mode() already ran; don't leave the user's terminal raw.
             restore_terminal();
-            eprintln!("[vmette] vm.start failed: {}", err.localizedDescription());
+            return Err(e);
+        }
+    };
+    eprint_banner(config, session.cmdline(), session.vsock_port());
+
+    let end = session.wait();
+    restore_terminal();
+    match end {
+        SessionEnd::Exited(code) => {
+            eprintln!("\r\n[vmette] guest stopped (exit {})\r", code);
+            std::process::exit(code);
+        }
+        SessionEnd::TimedOut => {
+            eprintln!(
+                "\r\n[vmette] timeout {}s reached; guest force-stopped (exit 124)\r",
+                config.timeout_seconds.unwrap_or(0)
+            );
+            std::process::exit(124);
+        }
+        SessionEnd::Stopped => {
+            eprintln!("\r\n[vmette] guest stopped (exit 0)\r");
+            std::process::exit(0);
+        }
+        SessionEnd::Error(msg) => {
+            eprintln!("\r\n[vmette] guest stopped with error: {}\r", msg);
             std::process::exit(1);
         }
-    });
-    unsafe { vm.startWithCompletionHandler(&start_cb) };
-
-    // Run the main loop forever; delegate's exit() takes us out.
-    NSRunLoop::mainRunLoop().run();
-    unreachable!()
+    }
 }
 
 fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {

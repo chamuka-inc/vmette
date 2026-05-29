@@ -1,6 +1,8 @@
 //! `VZVirtualMachineDelegate` implementation: observes guest lifecycle,
 //! reads the `/.vmette-exit` file written by the guest's `/init`, and
-//! exits the host process with the propagated code.
+//! records the terminal state into the session's [`EndSlot`] (which also
+//! stops the run loop). It no longer exits the process — that is the
+//! caller's job, so the same delegate works for the in-process daemon.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,12 +14,13 @@ use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_foundation::NSError;
 use objc2_virtualization::{VZVirtualMachine, VZVirtualMachineDelegate};
 
-use crate::terminal::restore_terminal;
+use crate::session::{EndSlot, SessionEnd};
 
 /// State attached to the delegate via objc2 ivars.
 pub(crate) struct DelegateState {
     pub exit_code_file: Option<PathBuf>,
     pub timed_out: Arc<AtomicBool>,
+    pub end: Arc<EndSlot>,
 }
 
 define_class!(
@@ -31,23 +34,23 @@ define_class!(
     unsafe impl VZVirtualMachineDelegate for VmetteDelegate {
         #[unsafe(method(guestDidStopVirtualMachine:))]
         fn guest_did_stop(&self, _vm: &VZVirtualMachine) {
-            restore_terminal();
             let state = self.ivars();
+            // A timeout-initiated stop already (or will) record TimedOut;
+            // first-writer-wins in EndSlot means the exit code is ignored.
             if state.timed_out.load(Ordering::SeqCst) {
-                eprintln!("\r\n[vmette] guest stopped (timeout, exit 124)\r");
-                std::process::exit(124);
+                state.end.set(SessionEnd::TimedOut);
+                return;
             }
             let code = read_exit_file(state.exit_code_file.as_deref());
-            eprintln!("\r\n[vmette] guest stopped (exit {})\r", code);
-            std::process::exit(code);
+            state.end.set(SessionEnd::Exited(code));
         }
 
         #[unsafe(method(virtualMachine:didStopWithError:))]
         fn did_stop_with_error(&self, _vm: &VZVirtualMachine, err: &NSError) {
-            restore_terminal();
-            let msg = err.localizedDescription();
-            eprintln!("\r\n[vmette] guest stopped with error: {}\r", msg);
-            std::process::exit(1);
+            let state = self.ivars();
+            state
+                .end
+                .set(SessionEnd::Error(err.localizedDescription().to_string()));
         }
     }
 );

@@ -17,10 +17,12 @@ use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
+mod daemon_client;
 mod sandbox;
 mod server;
 mod workspace;
 
+use daemon_client::DaemonClient;
 use sandbox::Sandbox;
 use server::VmetteServer;
 use workspace::{reap_orphans, WorkspaceState};
@@ -42,6 +44,7 @@ struct Args {
     kernel: Option<PathBuf>,
     initramfs: Option<PathBuf>,
     vmette_bin: Option<PathBuf>,
+    daemon_socket: Option<PathBuf>,
 }
 
 fn usage() -> ! {
@@ -55,6 +58,7 @@ fn usage() -> ! {
            --kernel PATH         override autodiscovered vmlinuz path\n  \
            --initramfs PATH      override autodiscovered initramfs path\n  \
            --vmette PATH         override autodiscovered `vmette` binary path\n  \
+           --socket PATH         vmetted socket for desktop_* tools (default ~/Library/Caches/vmette/vmette.sock)\n  \
            -h, --help            this message\n\n\
          the server speaks MCP over stdio; configure your client to launch this binary.\n"
     );
@@ -70,6 +74,7 @@ fn parse_args() -> Args {
         kernel: None,
         initramfs: None,
         vmette_bin: None,
+        daemon_socket: None,
     };
     let take = |i: usize, flag: &str| -> String {
         if i + 1 >= raw.len() {
@@ -109,6 +114,10 @@ fn parse_args() -> Args {
                 a.vmette_bin = Some(take(i, "--vmette").into());
                 i += 2;
             }
+            "--socket" => {
+                a.daemon_socket = Some(take(i, "--socket").into());
+                i += 2;
+            }
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown arg: {other}");
@@ -140,7 +149,20 @@ async fn main() -> ExitCode {
             .context("initialising vmette sandbox")?;
         let workspaces =
             WorkspaceState::new(args.workspace_cap).context("initialising workspace state")?;
-        let server = VmetteServer::new(sandbox, workspaces, args.default_image, args.allow_network);
+        // Desktop tools route through vmetted; reuse the sandbox's already
+        // discovered kernel/initramfs assets for desktop_start.
+        let daemon = DaemonClient::new(
+            args.daemon_socket,
+            sandbox.kernel().to_path_buf(),
+            sandbox.initramfs().to_path_buf(),
+        );
+        let server = VmetteServer::new(
+            sandbox,
+            workspaces,
+            daemon,
+            args.default_image,
+            args.allow_network,
+        );
         tracing::info!(
             allow_network = args.allow_network,
             workspace_cap = args.workspace_cap,
