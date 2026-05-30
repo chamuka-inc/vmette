@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/vmette",
+    "crates/vmette-assets",
     "crates/vmette-cli",
     "crates/vmette-daemon",
     "crates/vmette-mcp",

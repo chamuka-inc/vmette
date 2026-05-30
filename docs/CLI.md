@@ -1,7 +1,7 @@
 # vmette CLI reference
 
 ```
-vmette --kernel PATH --initramfs PATH --rootfs SPEC [options]
+vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]
 vmette providers                                # list registered providers
 ```
 
@@ -9,9 +9,20 @@ vmette providers                                # list registered providers
 
 | Flag | Argument | Description |
 |------|----------|-------------|
-| `--kernel` | PATH | bzImage on x86_64; vmlinuz from alpine `linux-virt` apk. |
-| `--initramfs` | PATH | Initramfs built by `scripts/build-initramfs.sh`. |
 | `--rootfs` | SPEC | Rootfs source. Dispatched to a [provider](#rootfs-providers) by the first matching scheme/prefix. |
+
+## Boot assets
+
+`--kernel` and `--initramfs` are optional and auto-discovered. When
+omitted, vmette searches, in order: `$VMETTE_ASSETS_DIR`, `./assets`
+(repo checkout), the install prefix beside the binary, and
+`~/.local/share/vmette/assets`. The release tarball ships both there, so
+a `curl | install.sh` install boots with no asset flags.
+
+| Flag | Argument | Description |
+|------|----------|-------------|
+| `--kernel` | PATH | bzImage on x86_64; vmlinuz from alpine `linux-virt` apk. Default: discovered `vmlinuz-virt`. |
+| `--initramfs` | PATH | Initramfs built by `scripts/build-initramfs.sh`. Default: discovered `initramfs-vmette`. |
 
 ## Rootfs
 
@@ -140,12 +151,11 @@ The guest's exec environment (passed via `/init`) sets:
 
 ```sh
 # pull a public OCI image and run a command in it
-vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --rootfs python:3.12-alpine --exec 'python3 -c "import sys; print(sys.version)"'
+# (kernel + initramfs auto-discovered; pass --kernel/--initramfs to override)
+vmette --rootfs python:3.12-alpine --exec 'python3 -c "import sys; print(sys.version)"'
 
 # basic with a local rootfs
-vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --rootfs ./assets/alpine-rootfs --exec 'uname -a; exit 0'
+vmette --rootfs ./assets/alpine-rootfs --exec 'uname -a; exit 0'
 
 # offline cache hit (no network at all)
 vmette ... --rootfs alpine:3.20 --offline --exec 'cat /etc/alpine-release'

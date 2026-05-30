@@ -190,8 +190,8 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
     let mut size: Option<String> = None;
     let mut net = false;
     let mut offline = false;
-    let mut kernel = find_asset("vmlinuz-virt");
-    let mut initramfs = find_asset("initramfs-vmette");
+    let mut kernel: Option<PathBuf> = None;
+    let mut initramfs: Option<PathBuf> = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -206,11 +206,8 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
         }
     }
 
-    let kernel = kernel.ok_or(
-        "no --kernel given and assets/vmlinuz-virt not found (run from the repo or pass --kernel)",
-    )?;
-    let initramfs = initramfs
-        .ok_or("no --initramfs given and assets/initramfs-vmette not found (pass --initramfs)")?;
+    let kernel = vmette_assets::require_asset(kernel, "vmlinuz-virt")?;
+    let initramfs = vmette_assets::require_asset(initramfs, "initramfs-vmette")?;
 
     let mut req = json!({
         "kind": "desktop_start",
@@ -295,10 +292,4 @@ fn cmd_scroll(socket: &PathBuf, args: &[String]) -> Result<Option<String>, Strin
         json!({"action":"scroll","x":x,"y":y,"direction":dir,"amount":amount}),
     )?;
     Ok(None)
-}
-
-/// Look for `assets/<name>` relative to the cwd (repo layout).
-fn find_asset(name: &str) -> Option<PathBuf> {
-    let p = std::env::current_dir().ok()?.join("assets").join(name);
-    p.exists().then_some(p)
 }

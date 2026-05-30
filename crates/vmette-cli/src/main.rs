@@ -18,14 +18,16 @@ use vmette_provider_tar::TarProvider;
 
 fn usage() -> ! {
     eprintln!(
-        "vmette --kernel PATH --initramfs PATH --rootfs SPEC [options]\n\
+        "vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]\n\
          vmette providers                                  # list registered providers\n\
          vmette desktop <command> [options]                # desktop computer use (via vmetted)\n\
          \n\
          required:\n\
-           --kernel           PATH      bzImage on x86_64\n\
-           --initramfs        PATH      built by scripts/build-initramfs.sh\n\
            --rootfs           SPEC      see `vmette providers` for valid forms\n\
+         \n\
+         boot assets (auto-discovered from $VMETTE_ASSETS_DIR, ./assets, or the install prefix):\n\
+           --kernel           PATH      bzImage on x86_64 (default: discovered vmlinuz-virt)\n\
+           --initramfs        PATH      built by scripts/build-initramfs.sh (default: discovered initramfs-vmette)\n\
          \n\
          rootfs:\n\
            --rootfs-ro                  mount the rootfs share read-only\n\
@@ -238,14 +240,15 @@ fn parse_args() -> ParsedArgs {
         }
     }
 
-    let kernel = kernel.unwrap_or_else(|| {
-        eprintln!("error: --kernel required");
+    let kernel = vmette_assets::require_asset(kernel, "vmlinuz-virt").unwrap_or_else(|e| {
+        eprintln!("error: {e}");
         usage();
     });
-    let initramfs = initramfs.unwrap_or_else(|| {
-        eprintln!("error: --initramfs required");
-        usage();
-    });
+    let initramfs =
+        vmette_assets::require_asset(initramfs, "initramfs-vmette").unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            usage();
+        });
     let rootfs_spec = rootfs_spec.unwrap_or_else(|| {
         eprintln!("error: --rootfs required (try `vmette providers` for examples)");
         usage();

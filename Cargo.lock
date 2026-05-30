@@ -2670,6 +2670,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmette-assets"
+version = "0.1.0"
+
+[[package]]
 name = "vmette-cli"
 version = "0.1.0"
 dependencies = [
@@ -2677,6 +2681,7 @@ dependencies = [
  "serde_json",
  "tracing-subscriber",
  "vmette",
+ "vmette-assets",
  "vmette-provider-oci",
  "vmette-provider-squashfs",
  "vmette-provider-tar",
@@ -2718,6 +2723,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "vmette-assets",
 ]
 
 [[package]]

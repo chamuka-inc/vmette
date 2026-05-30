@@ -178,9 +178,19 @@ impl Registry {
         let ctx = Context::new(self.cache_root.clone())
             .offline(params.offline)
             .guest_helpers_dir(self.guest_helpers_dir.clone());
-        let artifact = provider
-            .resolve(&params.image, &ctx)
-            .with_context(|| format!("resolving desktop image {}", params.image))?;
+        let artifact = provider.resolve(&params.image, &ctx).map_err(|e| {
+            if params.image == DEFAULT_DESKTOP_IMAGE {
+                anyhow!(
+                    "resolving default desktop image {}: {e}\n\
+                     If the published image is unreachable, build the rootfs \
+                     locally with scripts/build-desktop-image.sh and pass it as \
+                     --image tar+file:///path/to/rootfs.tar (see docs/DESKTOP.md).",
+                    params.image
+                )
+            } else {
+                anyhow!("resolving desktop image {}: {e}", params.image)
+            }
+        })?;
 
         let mut cfg = Config::new(params.kernel, params.initramfs);
         cfg.workload = vmette::WorkloadStrategy::Agent;

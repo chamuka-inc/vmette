@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 vmette                   = { path = "../vmette" }
+vmette-assets            = { path = "../vmette-assets" }
 vmette-provider-oci      = { path = "../vmette-provider-oci" }
 vmette-provider-squashfs = { path = "../vmette-provider-squashfs" }
 vmette-provider-tar      = { path = "../vmette-provider-tar" }

@@ -50,7 +50,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Restart Claude Desktop. The seven tools appear under "vmette" in the
+Restart Claude Desktop. The vmette tools appear under "vmette" in the
 tool picker. Drop `--allow-network` if you don't want the agent to make
 any outbound HTTP calls.
 
@@ -89,10 +89,10 @@ binary path as `command` and the flags as `args`.
 | `--default-image REF` | `alpine:3.20` | Rootfs used when `execute` or `workspace_create` doesn't specify one. |
 | `--allow-network` | off | Permits tool calls with `network=true`. Without it, `fetch_url` always fails and `execute`/`workspace_run` ignore the network field. |
 | `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
-| `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `~/.local/share/vmette/assets/vmlinuz-virt`. |
-| `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `~/.local/share/vmette/assets/initramfs-vmette`. |
-| `--vmette PATH` | autodiscovered | Override `vmette` binary path. Default: `$PATH` lookup or sibling-of-this-binary. |
-| `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket used by the `desktop_*` tools. Those tools require the daemon to be running. |
+| `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
+| `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
+| `--vmette PATH` | autodiscovered | Override `vmette` binary path. Default: `$VMETTE_BIN`, sibling-of-this-binary, then `$PATH` lookup. |
+| `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. The daemon is started automatically on first desktop use if it isn't already running. |
 
 `vmette-mcp` writes structured logs (tracing) to **stderr**. `stdout`
 is reserved for MCP frames; anything written there desyncs the client.
@@ -178,7 +178,8 @@ Remove the workspace's on-disk directory and forget the ID. Idempotent.
 
 A separate family that drives a **persistent** graphical desktop session
 (Xvfb + window manager) instead of a one-shot VM. These route through
-`vmetted` (the session must outlive a single tool call), so the daemon must be
+`vmetted` (the session must outlive a single tool call); the MCP server
+launches the daemon automatically on first desktop use if it isn't already
 running. `desktop_start` returns a `session_id` to pass to the rest;
 `desktop_screenshot` returns a PNG **image content block** for the agent to
 look at. Full reference, protocol, and image build in
@@ -188,6 +189,8 @@ look at. Full reference, protocol, and image build in
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?` | session id |
 | `desktop_screenshot` | `session_id` | PNG image block |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + PNG, once the screen stops changing |
+| `desktop_what_changed` | `session_id` | note + PNG of the region changed since the last capture |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` / `desktop_click` / `desktop_double_click` / `desktop_right_click` | `session_id`, `x`, `y` | status |
 | `desktop_type` | `session_id`, `text` | status |

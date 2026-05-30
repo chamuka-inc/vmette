@@ -64,8 +64,11 @@ tar -xzf "$TMP/$TARBALL" -C "$PREFIX" --strip-components=1
 # Clear Gatekeeper quarantine flag so the binaries can run.
 xattr -dr com.apple.quarantine "$PREFIX" 2>/dev/null || true
 
-# Ad-hoc codesign with the virtualization entitlement; the tarball
-# ships unsigned (or sealed-but-untrusted) binaries.
+# Ad-hoc codesign; the tarball ships unsigned (or sealed-but-untrusted)
+# binaries. vmette + vmetted boot VMs so they get the virtualization
+# entitlement; vmette-mcp only spawns vmette / talks to vmetted, so it is
+# signed with least privilege (no entitlement) — still required for it to
+# run at all on Apple Silicon.
 ENT="$PREFIX/entitlements.plist"
 if [[ -f "$ENT" ]]; then
     for bin in vmette vmetted; do
@@ -75,17 +78,23 @@ if [[ -f "$ENT" ]]; then
         fi
     done
 fi
+if [[ -x "$PREFIX/bin/vmette-mcp" ]]; then
+    codesign --sign - --force --options=runtime "$PREFIX/bin/vmette-mcp" >/dev/null
+fi
 
-ln -sf "$PREFIX/bin/vmette"  "$BIN_DIR/vmette"
-ln -sf "$PREFIX/bin/vmetted" "$BIN_DIR/vmetted"
+ln -sf "$PREFIX/bin/vmette"     "$BIN_DIR/vmette"
+ln -sf "$PREFIX/bin/vmetted"    "$BIN_DIR/vmetted"
+ln -sf "$PREFIX/bin/vmette-mcp" "$BIN_DIR/vmette-mcp"
 
 echo
 echo "✓ installed:"
-echo "    $BIN_DIR/vmette  → $PREFIX/bin/vmette"
-echo "    $BIN_DIR/vmetted → $PREFIX/bin/vmetted"
+echo "    $BIN_DIR/vmette     → $PREFIX/bin/vmette"
+echo "    $BIN_DIR/vmetted    → $PREFIX/bin/vmetted"
+echo "    $BIN_DIR/vmette-mcp → $PREFIX/bin/vmette-mcp"
 echo
 echo "    libvmette.dylib  → $PREFIX/lib/libvmette.dylib"
 echo "    vmette.h         → $PREFIX/include/vmette.h"
+echo "    boot assets      → $PREFIX/assets/{vmlinuz-virt,initramfs-vmette}"
 echo "    guest helpers    → $PREFIX/share/vmette/guest/{vsock-send,vsock-runner}"
 echo
 if ! command -v vmette >/dev/null 2>&1; then
@@ -93,4 +102,5 @@ if ! command -v vmette >/dev/null 2>&1; then
     echo "      export PATH=\"$BIN_DIR:\$PATH\""
 fi
 echo
-echo "first run: 'vmette --help'  (assets auto-fetch on first VM boot)"
+echo "first run: vmette --rootfs alpine:3.20 --exec 'uname -a; exit 0'"
+echo "           (kernel + initramfs ship in $PREFIX/assets and are auto-discovered)"

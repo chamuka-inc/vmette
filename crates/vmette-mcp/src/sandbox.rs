@@ -6,9 +6,9 @@
 //! dispatcher, so adding a second daemon hop would just add latency.
 //!
 //! Asset discovery: the kernel + initramfs paths are picked up from
-//! either an explicit override or the standard install layout
-//! (`~/.local/share/vmette/assets/`) or the repo layout
-//! (`./assets/`) — whichever exists first.
+//! either an explicit override or the shared [`vmette_assets`] search
+//! path (`$VMETTE_ASSETS_DIR`, `./assets`, `<install prefix>/assets`),
+//! so the MCP server probes exactly where the `vmette` CLI does.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -80,16 +80,10 @@ impl Sandbox {
         let vmette_bin = vmette_bin
             .or_else(locate_vmette_bin)
             .ok_or_else(|| anyhow!("`vmette` binary not found on PATH or next to vmette-mcp"))?;
-        let assets = locate_assets_dir()
-            .ok_or_else(|| anyhow!("could not locate vmette assets dir (looked under ~/.local/share/vmette/assets and ./assets)"))?;
-        let kernel = kernel.unwrap_or_else(|| assets.join("vmlinuz-virt"));
-        let initramfs = initramfs.unwrap_or_else(|| assets.join("initramfs-vmette"));
-        if !kernel.exists() {
-            return Err(anyhow!("kernel not found at {}", kernel.display()));
-        }
-        if !initramfs.exists() {
-            return Err(anyhow!("initramfs not found at {}", initramfs.display()));
-        }
+        let kernel =
+            vmette_assets::require_asset(kernel, "vmlinuz-virt").map_err(|e| anyhow!(e))?;
+        let initramfs =
+            vmette_assets::require_asset(initramfs, "initramfs-vmette").map_err(|e| anyhow!(e))?;
         Ok(Self {
             vmette_bin,
             kernel,
@@ -266,31 +260,6 @@ fn locate_vmette_bin() -> Option<PathBuf> {
         for entry in std::env::split_paths(&path) {
             let candidate = entry.join("vmette");
             if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn locate_assets_dir() -> Option<PathBuf> {
-    // Install layout.
-    if let Ok(home) = std::env::var("HOME") {
-        let install = PathBuf::from(home).join(".local/share/vmette/assets");
-        if install.join("vmlinuz-virt").exists() {
-            return Some(install);
-        }
-    }
-    // Repo layout (running from the source checkout).
-    let repo = std::env::current_dir().ok()?.join("assets");
-    if repo.join("vmlinuz-virt").exists() {
-        return Some(repo);
-    }
-    // Next-to-binary (dist tarball layout: bin/ + share/vmette/assets/).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(prefix) = exe.parent().and_then(Path::parent) {
-            let candidate = prefix.join("share/vmette/assets");
-            if candidate.join("vmlinuz-virt").exists() {
                 return Some(candidate);
             }
         }

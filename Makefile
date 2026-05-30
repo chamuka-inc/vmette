@@ -20,6 +20,9 @@ universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	lipo -create -output target/universal/release/vmetted \
 	    target/x86_64-apple-darwin/release/vmetted \
 	    target/aarch64-apple-darwin/release/vmetted
+	lipo -create -output target/universal/release/vmette-mcp \
+	    target/x86_64-apple-darwin/release/vmette-mcp \
+	    target/aarch64-apple-darwin/release/vmette-mcp
 	lipo -create -output target/universal/release/libvmette.dylib \
 	    target/x86_64-apple-darwin/release/libvmette.dylib \
 	    target/aarch64-apple-darwin/release/libvmette.dylib
@@ -27,7 +30,12 @@ universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	    target/universal/release/vmette
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
 	    target/universal/release/vmetted
-	@lipo -info target/universal/release/vmette target/universal/release/vmetted target/universal/release/libvmette.dylib
+	# vmette-mcp boots no VM itself (it spawns vmette / talks to vmetted), so
+	# it needs no virtualization entitlement — ad-hoc sign it so it runs on
+	# Apple Silicon, with least privilege.
+	codesign --sign - --force --options=runtime \
+	    target/universal/release/vmette-mcp
+	@lipo -info target/universal/release/vmette target/universal/release/vmetted target/universal/release/vmette-mcp target/universal/release/libvmette.dylib
 
 assets:        ## Download alpine vmlinuz + initramfs + minirootfs
 	bash scripts/fetch-assets.sh
@@ -52,13 +60,16 @@ test:          ## Run cargo unit tests + end-to-end VM smoke
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
 
-dist: universal guest-bin ## Produce dist/$(DIST_NAME).tar.gz with binaries + lib + header + guest helpers + LICENSE
+dist: universal init guest-bin ## Produce dist/$(DIST_NAME).tar.gz with binaries + lib + header + boot assets + guest helpers + LICENSE
 	rm -rf dist
-	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,share/vmette/guest}
+	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,assets,share/vmette/guest}
 	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/
 	cp target/universal/release/vmetted    dist/staging/$(DIST_NAME)/bin/
+	cp target/universal/release/vmette-mcp dist/staging/$(DIST_NAME)/bin/
 	cp target/universal/release/libvmette.dylib dist/staging/$(DIST_NAME)/lib/
 	cp crates/vmette/include/vmette.h      dist/staging/$(DIST_NAME)/include/
+	cp assets/vmlinuz-virt                 dist/staging/$(DIST_NAME)/assets/
+	cp assets/initramfs-vmette             dist/staging/$(DIST_NAME)/assets/
 	cp assets/alpine-rootfs/usr/local/bin/vsock-send   dist/staging/$(DIST_NAME)/share/vmette/guest/
 	cp assets/alpine-rootfs/usr/local/bin/vsock-runner dist/staging/$(DIST_NAME)/share/vmette/guest/
 	cp entitlements.plist                  dist/staging/$(DIST_NAME)/

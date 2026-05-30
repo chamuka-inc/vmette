@@ -44,10 +44,15 @@ make test               # cargo unit + end-to-end VM smoke
 Easiest path — pull an OCI image and run a command in it:
 
 ```sh
-vmette --kernel ./assets/vmlinuz-virt --initramfs ./assets/initramfs-vmette \
-       --rootfs python:3.12-alpine \
+vmette --rootfs python:3.12-alpine \
        --exec 'python3 -c "print(2**32)"; exit 0'
 ```
+
+The kernel and initramfs are auto-discovered: the release tarball ships
+them under `$PREFIX/assets`, and from a repo checkout vmette finds
+`./assets`. Override with `--kernel` / `--initramfs`, or point
+`$VMETTE_ASSETS_DIR` at a directory holding `vmlinuz-virt` +
+`initramfs-vmette`.
 
 First run pulls + extracts the image (alpine:3.20 ≈ 30 s); subsequent
 runs are cache hits (~3 s, mostly VM boot + manifest verification).

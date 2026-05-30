@@ -10,13 +10,23 @@
 //! Protocol: one request line of JSON in, one reply line of JSON out (the
 //! daemon's stateful `desktop_*` path). We connect fresh per call — the hop
 //! cost is trivial next to a GUI round-trip.
+//!
+//! Zero-config: if nothing is listening on the socket (first desktop use, or
+//! the daemon was never started), [`DaemonClient`] launches a detached
+//! `vmetted` on demand and waits for it to come up, so `desktop_*` tools work
+//! without the user starting the daemon by hand.
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::sync::Mutex;
 
 /// Handle to the daemon's desktop subsystem. Cheap to clone.
 #[derive(Debug, Clone)]
@@ -24,6 +34,9 @@ pub struct DaemonClient {
     socket: PathBuf,
     kernel: PathBuf,
     initramfs: PathBuf,
+    /// Serializes auto-spawn so concurrent desktop calls don't each fork a
+    /// `vmetted`; losers block here, then reuse the winner's socket.
+    spawn_lock: Arc<Mutex<()>>,
 }
 
 /// The error/position fields plus optional PNG from a `desktop_action` reply.
@@ -72,6 +85,7 @@ impl DaemonClient {
             socket: socket.unwrap_or_else(default_socket),
             kernel,
             initramfs,
+            spawn_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -187,12 +201,7 @@ impl DaemonClient {
     /// Send one request line, read one reply line, and map a `kind:"error"`
     /// reply to an `Err`.
     async fn call(&self, req: &Value) -> Result<Value> {
-        let stream = UnixStream::connect(&self.socket).await.with_context(|| {
-            format!(
-                "connect {} failed (is vmetted running?)",
-                self.socket.display()
-            )
-        })?;
+        let stream = self.connect().await?;
         let (read_half, mut write_half) = stream.into_split();
 
         let mut line = serde_json::to_vec(req)?;
@@ -221,6 +230,93 @@ impl DaemonClient {
         }
         Ok(value)
     }
+
+    /// Connect to the daemon socket, lazily starting `vmetted` if nothing is
+    /// listening yet. A connect error of `NotFound` (socket absent — never
+    /// started) or `ConnectionRefused` (present but dead — crashed without
+    /// cleanup) both mean "no daemon up", and (re)starting it is the fix.
+    async fn connect(&self) -> Result<UnixStream> {
+        use std::io::ErrorKind::{ConnectionRefused, NotFound};
+        match UnixStream::connect(&self.socket).await {
+            Ok(s) => Ok(s),
+            Err(e) if matches!(e.kind(), NotFound | ConnectionRefused) => {
+                self.start_and_connect().await
+            }
+            Err(e) => Err(e).with_context(|| format!("connect {} failed", self.socket.display())),
+        }
+    }
+
+    /// Spawn a detached `vmetted`, wait for it to start accepting, and return
+    /// the live connection. The spawn lock means only one task forks the
+    /// daemon; concurrent desktop calls block, then find it already up.
+    async fn start_and_connect(&self) -> Result<UnixStream> {
+        let _guard = self.spawn_lock.lock().await;
+        // Another task may have started it while we waited for the lock.
+        if let Ok(s) = UnixStream::connect(&self.socket).await {
+            return Ok(s);
+        }
+        let bin = locate_vmetted().ok_or_else(|| {
+            anyhow!(
+                "vmetted binary not found (needed for desktop_* tools); \
+                 install it alongside vmette-mcp or start it manually"
+            )
+        })?;
+        let mut cmd = Command::new(&bin);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: setsid() is async-signal-safe and is the only call made in
+        // the forked child before exec. Detaching into a new session lets the
+        // daemon outlive this MCP server and survives signals sent to the
+        // server's process group, matching vmetted's shared-daemon model.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.spawn()
+            .with_context(|| format!("spawning {}", bin.display()))?;
+
+        // vmetted clears any stale socket and binds during startup; poll until
+        // it accepts a connection, or give up after ~5s.
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Ok(s) = UnixStream::connect(&self.socket).await {
+                return Ok(s);
+            }
+        }
+        bail!(
+            "vmetted did not start listening on {} within 5s",
+            self.socket.display()
+        );
+    }
+}
+
+/// Locate `vmetted`: next to this binary (install + repo layouts put
+/// vmette-mcp and vmetted side by side), else on `$PATH`. Canonicalize so a
+/// symlinked `vmette-mcp` resolves to the real bin dir that holds vmetted.
+fn locate_vmetted() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
+        if let Some(dir) = real.parent() {
+            let candidate = dir.join("vmetted");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for entry in std::env::split_paths(&path) {
+            let candidate = entry.join("vmetted");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 /// Parse a `{x,y,w,h}` rect object from a reply (all four fields required).
