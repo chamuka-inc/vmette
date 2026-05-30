@@ -26,8 +26,10 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
@@ -37,6 +39,14 @@ use vmette::provider::{inject_guest_helpers, Context, ProviderError, RootfsProvi
 const READY_MARKER: &str = ".vmette-tar-ready";
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+
+/// Default cap on the *extracted* rootfs size (decompressed bytes). 4 GiB is
+/// generous for a microVM rootfs (even a chromium desktop image extracts to
+/// well under that) while still bounding a decompression bomb. Override with
+/// the `VMETTE_TAR_MAX_BYTES` env var or by setting [`TarProvider::max_bytes`].
+const DEFAULT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// Env var to override [`DEFAULT_MAX_BYTES`] without a code change.
+const MAX_BYTES_ENV: &str = "VMETTE_TAR_MAX_BYTES";
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -69,9 +79,16 @@ impl From<Error> for ProviderError {
 pub struct TarProvider {
     /// Per-request HTTP timeout for downloads. Default: 5 minutes.
     pub timeout: Duration,
-    /// Hard cap on download size before extraction. Default: 512 MiB.
-    /// Bigger archives are common but vmette is a microVM toolkit; large
-    /// rootfses belong on disk via `tar+file://`.
+    /// Hard cap on the *extracted* rootfs size — counted in decompressed
+    /// bytes as the archive is streamed, not the on-disk/compressed size of
+    /// the source. A 320 MiB `.tar.gz` and the 880 MiB plain `.tar` it
+    /// gzips from therefore behave identically: the bound is on what the
+    /// rootfs actually costs, not on how the bytes happened to be packed.
+    /// Doubles as decompression-bomb protection (extraction aborts once the
+    /// decompressed stream passes the cap) and download-size protection (the
+    /// counting reader stops pulling the source once the cap is hit).
+    /// Default: [`DEFAULT_MAX_BYTES`] (4 GiB), overridable via
+    /// [`MAX_BYTES_ENV`].
     pub max_bytes: u64,
     /// How long a cached extracted rootfs is trusted before re-fetching.
     /// `Context::is_offline()` always overrides this and uses cache.
@@ -88,9 +105,14 @@ impl Default for TarProvider {
 
 impl TarProvider {
     pub fn new() -> Self {
+        let max_bytes = std::env::var(MAX_BYTES_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_BYTES);
         Self {
             timeout: Duration::from_secs(300),
-            max_bytes: 512 * 1024 * 1024,
+            max_bytes,
             cache_ttl: Some(Duration::from_secs(3600)),
         }
     }
@@ -145,7 +167,7 @@ impl RootfsProvider for TarProvider {
         }
 
         info!(url = %url, dest = %dest.display(), "fetching tarball");
-        let bytes = fetch(url, self.timeout, self.max_bytes).map_err(ProviderError::from)?;
+        let source = open_source(url, self.timeout).map_err(ProviderError::from)?;
 
         // Extract into a sibling staging dir so the ready-marker only
         // appears when the tree is complete. Staging + trash names mix
@@ -166,7 +188,11 @@ impl RootfsProvider for TarProvider {
             std::fs::remove_dir_all(&staging).map_err(ProviderError::Io)?;
         }
         std::fs::create_dir_all(&staging).map_err(ProviderError::Io)?;
-        extract_into(&bytes, &staging).map_err(ProviderError::from)?;
+        if let Err(e) = extract_into(source, &staging, self.max_bytes) {
+            // Don't leak a partial (possibly large) staging tree on failure.
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ProviderError::from(e));
+        }
 
         // Swap staging into dest. Concurrency: two racers can interleave
         // the rename-aside + rename-in pair such that the loser's
@@ -320,7 +346,12 @@ fn cache_key(url: &str) -> String {
     format!("{}__{:016x}", prefix, h.finish())
 }
 
-fn fetch(url: &str, timeout: Duration, max_bytes: u64) -> Result<Vec<u8>, Error> {
+/// Open the archive source as a streaming reader. Unlike the old buffered
+/// path, this never reads the whole archive into memory — the size bound is
+/// enforced downstream on the *decompressed* stream during extraction (see
+/// [`extract_into`]), so neither a large `file://` rootfs nor a long HTTP
+/// body is buffered up front.
+fn open_source(url: &str, timeout: Duration) -> Result<Box<dyn Read + Send>, Error> {
     if let Some(path) = url.strip_prefix("file://") {
         // RFC 8089: `file://localhost/abs` is equivalent to `file:///abs`.
         // Accept both by stripping a leading `localhost/` if present.
@@ -328,15 +359,9 @@ fn fetch(url: &str, timeout: Duration, max_bytes: u64) -> Result<Vec<u8>, Error>
             .strip_prefix("localhost/")
             .map(|p| format!("/{p}"))
             .unwrap_or_else(|| path.to_string());
-        let meta =
-            std::fs::metadata(&path).map_err(|e| Error::Download(format!("stat {path}: {e}")))?;
-        if meta.len() > max_bytes {
-            return Err(Error::Download(format!(
-                "{path}: {} bytes exceeds max {max_bytes}",
-                meta.len()
-            )));
-        }
-        return std::fs::read(&path).map_err(Error::Io);
+        let file =
+            std::fs::File::open(&path).map_err(|e| Error::Download(format!("open {path}: {e}")))?;
+        return Ok(Box::new(file));
     }
 
     let agent = ureq::AgentBuilder::new()
@@ -348,43 +373,89 @@ fn fetch(url: &str, timeout: Duration, max_bytes: u64) -> Result<Vec<u8>, Error>
         .get(url)
         .call()
         .map_err(|e| Error::Download(e.to_string()))?;
-
-    // Cap by Content-Length when present.
-    if let Some(len_hdr) = resp.header("Content-Length") {
-        if let Ok(declared) = len_hdr.parse::<u64>() {
-            if declared > max_bytes {
-                return Err(Error::Download(format!(
-                    "{url}: declared {declared} bytes exceeds max {max_bytes}"
-                )));
-            }
-        }
-    }
-
-    // Stream into a Vec with a hard byte cap; even without Content-Length
-    // a malicious server can't make us OOM. `take(max + 1)` lets us tell
-    // "exactly at the cap" from "exceeds the cap" so the error is precise.
-    let mut reader = resp.into_reader().take(max_bytes + 1);
-    let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).map_err(Error::Io)?;
-    if buf.len() as u64 > max_bytes {
-        return Err(Error::Download(format!(
-            "{url}: response exceeds max {max_bytes} bytes"
-        )));
-    }
-    Ok(buf)
+    // ureq's reader is `Box<dyn Read + Send + Sync>`, which coerces here.
+    Ok(Box::new(resp.into_reader()))
 }
 
-fn extract_into(bytes: &[u8], dest: &Path) -> Result<(), Error> {
-    let decompressed = decompress(bytes)?;
-    let mut archive = tar::Archive::new(decompressed.as_slice());
+/// A reader that counts every byte it yields into a shared counter and fails
+/// hard once the running total passes `max`. Wrapped around the *decompressed*
+/// stream, it bounds the extracted rootfs size, defuses decompression bombs,
+/// and — because tar stops pulling once this errors — bounds the source read.
+struct CountingReader<R> {
+    inner: R,
+    read: Arc<AtomicU64>,
+    max: u64,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let total = self.read.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
+        if total > self.max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "extracted size cap exceeded",
+            ));
+        }
+        Ok(n)
+    }
+}
+
+/// Stream `source` (optionally gzip/zstd-compressed, sniffed by magic bytes),
+/// counting decompressed bytes against `max_bytes` and unpacking each safe
+/// entry into `dest`. Returns an explicit cap error if the rootfs would
+/// exceed `max_bytes`.
+fn extract_into(source: Box<dyn Read + Send>, dest: &Path, max_bytes: u64) -> Result<(), Error> {
+    // Sniff the compression magic without consuming it: BufReader::fill_buf
+    // peeks, then the chosen decoder reads from the same BufReader starting
+    // at those still-buffered bytes.
+    let mut buffered = BufReader::with_capacity(64 * 1024, source);
+    let head = buffered.fill_buf().map_err(Error::Io)?;
+    let decoder: Box<dyn Read> = if head.starts_with(&GZIP_MAGIC) {
+        Box::new(flate2::read::GzDecoder::new(buffered))
+    } else if head.starts_with(&ZSTD_MAGIC) {
+        Box::new(
+            zstd::stream::read::Decoder::new(buffered)
+                .map_err(|e| Error::Extract(format!("zstd: {e}")))?,
+        )
+    } else {
+        Box::new(buffered)
+    };
+
+    let read = Arc::new(AtomicU64::new(0));
+    let counted = CountingReader {
+        inner: decoder,
+        read: read.clone(),
+        max: max_bytes,
+    };
+    // Map any extraction error to the cap error when the counter shows we
+    // tripped the limit — the underlying io error is just the symptom.
+    let cap_err = || {
+        Error::Extract(format!(
+            "extracted rootfs exceeds max {max_bytes} bytes (decompressed); \
+             raise it via the {MAX_BYTES_ENV} env var"
+        ))
+    };
+
+    let mut archive = tar::Archive::new(counted);
     archive.set_preserve_permissions(true);
     archive.set_preserve_mtime(true);
 
-    for entry in archive
-        .entries()
-        .map_err(|e| Error::Extract(e.to_string()))?
-    {
-        let mut entry = entry.map_err(|e| Error::Extract(e.to_string()))?;
+    let entries = archive.entries().map_err(|e| {
+        if read.load(Ordering::Relaxed) > max_bytes {
+            cap_err()
+        } else {
+            Error::Extract(e.to_string())
+        }
+    })?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            if read.load(Ordering::Relaxed) > max_bytes {
+                cap_err()
+            } else {
+                Error::Extract(e.to_string())
+            }
+        })?;
         let path_in_tar = entry
             .path()
             .map_err(|e| Error::Extract(e.to_string()))?
@@ -403,28 +474,23 @@ fn extract_into(bytes: &[u8], dest: &Path) -> Result<(), Error> {
         }
 
         if let Err(e) = entry.unpack_in(dest) {
+            // A cap breach surfaces as an unpack io error; distinguish it
+            // from a benign per-entry skip (e.g. an odd special file) so the
+            // caller learns the real reason instead of a silently-truncated
+            // rootfs.
+            if read.load(Ordering::Relaxed) > max_bytes {
+                return Err(cap_err());
+            }
             warn!(path = %path_in_tar.display(), error = %e, "extract skipped");
         }
     }
-    Ok(())
-}
 
-fn decompress(bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    if bytes.starts_with(&GZIP_MAGIC) {
-        let mut out = Vec::with_capacity(bytes.len() * 4);
-        flate2::read::GzDecoder::new(bytes)
-            .read_to_end(&mut out)
-            .map_err(|e| Error::Extract(format!("gzip: {e}")))?;
-        Ok(out)
-    } else if bytes.starts_with(&ZSTD_MAGIC) {
-        let mut out = Vec::with_capacity(bytes.len() * 4);
-        zstd::stream::copy_decode(bytes, &mut out)
-            .map_err(|e| Error::Extract(format!("zstd: {e}")))?;
-        Ok(out)
-    } else {
-        // Assume plain tar.
-        Ok(bytes.to_vec())
+    // Belt and suspenders: if the cap tripped on the final read but tar
+    // happened not to surface it as an entry error, still fail loudly.
+    if read.load(Ordering::Relaxed) > max_bytes {
+        return Err(cap_err());
     }
+    Ok(())
 }
 
 // -----------------------------------------------------------------------------
@@ -484,21 +550,94 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decompress_detects_gzip() {
-        // Round-trip a known small payload through gzip and back.
-        let payload = b"hello vmette tar provider";
+    /// Build an in-memory tar holding one file of `size` zero bytes.
+    fn tar_with_file(name: &str, size: usize) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(size as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, std::io::repeat(0).take(size as u64))
+            .unwrap();
+        builder.into_inner().unwrap()
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        std::io::Write::write_all(&mut enc, payload).unwrap();
-        let gz = enc.finish().unwrap();
-        let out = decompress(&gz).unwrap();
-        assert_eq!(out, payload);
+        std::io::Write::write_all(&mut enc, bytes).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// A unique scratch dir under the system temp root; removed on drop.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "vmette-tar-test-{}-{}-{}",
+                tag,
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // A one-file tar is 512 (header) + the data block padded to 512 + a
+    // 1024-byte end-of-archive marker, so the decompressed stream the cap
+    // counts is ~2 KiB even for a 16-byte file. Caps below use that headroom.
+
+    #[test]
+    fn extract_plain_tar_within_cap() {
+        let tar = tar_with_file("hello.txt", 16);
+        let dir = TmpDir::new("plain");
+        extract_into(Box::new(std::io::Cursor::new(tar)), &dir.0, 8192).unwrap();
+        assert_eq!(
+            std::fs::metadata(dir.0.join("hello.txt")).unwrap().len(),
+            16
+        );
     }
 
     #[test]
-    fn decompress_passes_plain_through() {
-        let payload = b"not compressed";
-        let out = decompress(payload).unwrap();
-        assert_eq!(out, payload);
+    fn extract_gzip_tar_within_cap() {
+        let gz = gzip(&tar_with_file("hello.txt", 16));
+        let dir = TmpDir::new("gzip");
+        extract_into(Box::new(std::io::Cursor::new(gz)), &dir.0, 8192).unwrap();
+        assert!(dir.0.join("hello.txt").exists());
+    }
+
+    #[test]
+    fn cap_is_on_extracted_not_compressed_size() {
+        // A file far larger than the cap: the *decompressed* size is what's
+        // bounded, so even a tiny gzip that expands past the cap must fail.
+        let tar = tar_with_file("big.bin", 4096);
+        let gz = gzip(&tar); // compresses to a few hundred bytes
+        assert!(
+            (gz.len() as u64) < 512,
+            "gzip of zeros should be well under the cap"
+        );
+        let dir = TmpDir::new("bomb");
+        let err = extract_into(Box::new(std::io::Cursor::new(gz)), &dir.0, 512).unwrap_err();
+        match err {
+            Error::Extract(msg) => assert!(msg.contains("exceeds max"), "got: {msg}"),
+            other => panic!("expected Extract cap error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_tar_over_cap_fails() {
+        let tar = tar_with_file("big.bin", 8192);
+        let dir = TmpDir::new("overcap");
+        let err = extract_into(Box::new(std::io::Cursor::new(tar)), &dir.0, 1024).unwrap_err();
+        assert!(matches!(err, Error::Extract(_)));
     }
 }
