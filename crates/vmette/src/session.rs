@@ -49,6 +49,13 @@ use crate::{cmdline, Config, WorkloadStrategy};
 /// Xvfb + WM + agent, which can take several seconds on first run.
 const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Per-read timeout on the agent vsock fd. Bounds how long a single framed
+/// round-trip can stall on a wedged guest before the read errors out, so the
+/// blocking thread issuing the request can't hang forever. Generous: a
+/// software-rendered screenshot frame can be slow, but data flowing resets the
+/// timer per read syscall, so this only trips when the guest stops responding.
+const AGENT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Send-wrapper for an objc2 `Retained`. The wrapped VM is only ever touched
 /// from inside closures dispatched onto its own queue, so although `Retained`
 /// is `!Send` we can safely move the wrapper across threads to enqueue that
@@ -134,6 +141,11 @@ pub(crate) struct AgentConn {
     // `fd()` drains it on first use and caches the fd in `fd`.
     rx: Mutex<Option<Receiver<RawFd>>>,
     fd: Mutex<Option<RawFd>>,
+    // Serializes the request round-trip. The framed protocol is a single
+    // request/response stream with no multiplexing, so concurrent callers
+    // (the `SessionClient` handle is `Clone` and shared via `Arc`) must not
+    // interleave their `[len][header][payload]` frames on the one fd.
+    io: Mutex<()>,
 }
 
 impl AgentConn {
@@ -145,11 +157,35 @@ impl AgentConn {
                 "request() is only valid for Agent-workload sessions".into(),
             ));
         }
+        // Resolve the fd outside the `io` lock: the first call blocks up to
+        // AGENT_CONNECT_TIMEOUT for the guest to connect, and that wait must
+        // not serialize unrelated callers. `fd()` has its own lock.
         let fd = self.fd()?;
+        // Hold `io` across the round-trip so concurrent requests on cloned
+        // `SessionClient`s cannot interleave frames on the shared fd.
+        let _io = self.io.lock().unwrap();
         let mut stream = FdStream(fd);
-        desktop::send_action(&mut stream, action)?;
-        let (header, payload) = desktop::read_response(&mut stream)?;
-        Ok((header, payload))
+        let outcome = desktop::send_action(&mut stream, action)
+            .and_then(|()| desktop::read_response(&mut stream));
+        match outcome {
+            Ok((header, payload)) => Ok((header, payload)),
+            Err(e) => {
+                // A failed or timed-out round-trip can leave a partial frame
+                // buffered on the socket; reusing the fd would desync every
+                // later request (stale bytes parsed as the next header).
+                // Invalidate it so the session fails cleanly instead.
+                self.invalidate_fd();
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Close and forget the cached agent fd after an I/O failure, so the next
+    /// request doesn't read a stale half-frame off a desynced socket.
+    fn invalidate_fd(&self) {
+        if let Some(fd) = self.fd.lock().unwrap().take() {
+            unsafe { libc::close(fd) };
+        }
     }
 
     /// Return the cached agent connection fd, blocking on first use until the
@@ -166,8 +202,30 @@ impl AgentConn {
         let fd = rx
             .recv_timeout(AGENT_CONNECT_TIMEOUT)
             .map_err(|_| Error::Vsock("timed out waiting for the guest agent to connect".into()))?;
+        // Bound subsequent reads so a wedged guest can't hang the blocking
+        // thread issuing a request indefinitely (`FdStream::read` has no
+        // timeout of its own).
+        set_recv_timeout(fd, AGENT_READ_TIMEOUT);
         *cached = Some(fd);
         Ok(fd)
+    }
+}
+
+/// Best-effort `SO_RCVTIMEO` on a socket fd. A failure here only costs us the
+/// read-timeout safety net, so we don't surface it as an error.
+fn set_recv_timeout(fd: RawFd, dur: Duration) {
+    let tv = libc::timeval {
+        tv_sec: dur.as_secs() as libc::time_t,
+        tv_usec: dur.subsec_micros() as libc::suseconds_t,
+    };
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        );
     }
 }
 
@@ -178,6 +236,15 @@ impl Drop for AgentConn {
         // path's fd is owned here and closed when the last Arc drops.
         if let Some(fd) = *self.fd.lock().unwrap() {
             unsafe { libc::close(fd) };
+        }
+        // If the listener delivered a connection we never consumed (an
+        // orphaned session where `fd()` was never called), the fd is still
+        // buffered in the channel — a bare `RawFd` with no Drop of its own.
+        // Drain and close it so the descriptor doesn't leak.
+        if let Some(rx) = self.rx.lock().unwrap().take() {
+            while let Ok(fd) = rx.try_recv() {
+                unsafe { libc::close(fd) };
+            }
         }
     }
 }
@@ -292,6 +359,7 @@ impl Session {
             workload: config.workload,
             rx: Mutex::new(agent_rx),
             fd: Mutex::new(None),
+            io: Mutex::new(()),
         });
 
         // All VM mutation (setDelegate, setSocketListener, start, the timeout
