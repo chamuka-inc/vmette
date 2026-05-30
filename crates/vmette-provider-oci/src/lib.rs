@@ -29,6 +29,7 @@
 
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use oci_client::{
@@ -38,7 +39,9 @@ use oci_client::{
 };
 use thiserror::Error;
 use tracing::{debug, info, warn};
-use vmette::provider::{inject_guest_helpers, Context, ProviderError, RootfsProvider};
+use vmette::provider::{
+    inject_guest_helpers, Context, ProviderError, RootfsArtifact, RootfsProvider,
+};
 
 /// Pull-time policy. Controls how aggressively we revalidate the cached
 /// manifest digest against the registry.
@@ -102,6 +105,167 @@ impl From<Error> for ProviderError {
     }
 }
 
+// ---- Authentication ------------------------------------------------------
+
+/// Resolves registry credentials, keyed per-registry host so a token for
+/// one registry is never sent to another (or leaked across a redirect).
+///
+/// Credential **resolution** (this trait) is deliberately separate from
+/// credential **use** (the pull): a third party can inject their own
+/// resolver via [`OciProvider::with_auth`] without touching pull logic.
+pub trait AuthResolver: Send + Sync {
+    /// Resolve auth for a specific registry host (e.g. `"ghcr.io"`,
+    /// `"docker.io"`). Returning [`RegistryAuth::Anonymous`] means
+    /// "no credentials" — the normal default for public images.
+    fn resolve(&self, registry: &str) -> RegistryAuth;
+}
+
+/// Default credential chain, in precedence order:
+///
+/// 1. **Programmatic override** — a per-registry map set via
+///    [`DefaultAuthResolver::with_registry`].
+/// 2. **Environment** — `VMETTE_OCI_AUTH_<HOST>` (`user:secret`) for a
+///    specific host, else `VMETTE_OCI_TOKEN` (+ optional `VMETTE_OCI_USER`,
+///    default `"vmette"`) as `Basic(user, token)`. `Basic` — not `Bearer` —
+///    because `oci_client` performs the `WWW-Authenticate: Bearer` exchange
+///    that ghcr requires from a personal access token.
+/// 3. **`~/.docker/config.json`** — best-effort `auths[registry].auth`
+///    (base64 `user:pass`). `credsStore` / `credHelpers` are out of scope.
+/// 4. **Anonymous** — unchanged default; every public pull behaves as before.
+#[derive(Debug, Default, Clone)]
+pub struct DefaultAuthResolver {
+    overrides: std::collections::HashMap<String, RegistryAuth>,
+}
+
+impl DefaultAuthResolver {
+    /// Empty resolver — relies on env / docker-config / anonymous.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pin an explicit credential for `registry` (highest precedence).
+    pub fn with_registry(mut self, registry: impl Into<String>, auth: RegistryAuth) -> Self {
+        self.overrides.insert(registry.into(), auth);
+        self
+    }
+}
+
+impl AuthResolver for DefaultAuthResolver {
+    fn resolve(&self, registry: &str) -> RegistryAuth {
+        if let Some(a) = self.overrides.get(registry) {
+            return a.clone();
+        }
+        if let Some(a) = env_auth(registry) {
+            return a;
+        }
+        if let Some(a) = docker_config_auth(registry) {
+            return a;
+        }
+        RegistryAuth::Anonymous
+    }
+}
+
+/// `VMETTE_OCI_AUTH_<HOST>` (per-host `user:secret`) then `VMETTE_OCI_TOKEN`.
+fn env_auth(registry: &str) -> Option<RegistryAuth> {
+    let host_key = format!("VMETTE_OCI_AUTH_{}", env_host_suffix(registry));
+    if let Ok(v) = std::env::var(&host_key) {
+        if let Some(a) = parse_userpass(&v) {
+            return Some(a);
+        }
+    }
+    let token = std::env::var("VMETTE_OCI_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())?;
+    let user = std::env::var("VMETTE_OCI_USER")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "vmette".to_string());
+    Some(RegistryAuth::Basic(user, token))
+}
+
+/// `"user:secret"` → `Basic(user, secret)`. A bare value (no colon) is
+/// treated as a token under the conventional `vmette` username.
+fn parse_userpass(v: &str) -> Option<RegistryAuth> {
+    if v.is_empty() {
+        return None;
+    }
+    match v.split_once(':') {
+        Some((u, p)) => Some(RegistryAuth::Basic(u.to_string(), p.to_string())),
+        None => Some(RegistryAuth::Basic("vmette".to_string(), v.to_string())),
+    }
+}
+
+/// Registry host → env-var suffix: uppercase, non-alphanumeric → `_`.
+/// `"ghcr.io"` → `"GHCR_IO"`.
+fn env_host_suffix(registry: &str) -> String {
+    registry
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Best-effort `~/.docker/config.json` lookup of `auths[registry].auth`
+/// (base64 `user:pass`). Returns None on any miss — missing file, missing
+/// entry, `credsStore`/`credHelpers` (which we deliberately do not shell out
+/// to), or a malformed entry.
+fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
+    let home = std::env::var_os("HOME")?;
+    let path = Path::new(&home).join(".docker").join("config.json");
+    let body = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let auths = json.get("auths")?;
+    // `docker login` (and `registry_of`) normalise Docker Hub to `docker.io`,
+    // but the config file keys the credential under the legacy v1 URL. Try the
+    // conventional Docker Hub aliases and take the first key that yields a
+    // usable `auth` (not merely the first key that exists).
+    docker_config_keys(registry)
+        .into_iter()
+        .find_map(|k| auths.get(k).and_then(parse_auth_entry))
+}
+
+/// Decode an `auths[<key>]` object's `auth` field (base64 `user:pass`) into a
+/// [`RegistryAuth::Basic`]. None on any miss (no `auth`, bad base64, no colon).
+fn parse_auth_entry(entry: &serde_json::Value) -> Option<RegistryAuth> {
+    use base64::Engine;
+    let b64 = entry.get("auth")?.as_str()?;
+    let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let pair = String::from_utf8(decoded).ok()?;
+    let (u, p) = pair.split_once(':')?;
+    Some(RegistryAuth::Basic(u.to_string(), p.to_string()))
+}
+
+/// Candidate `auths` keys for a registry host, in lookup order. Docker Hub is
+/// stored under `https://index.docker.io/v1/` (and historically
+/// `index.docker.io`) rather than the normalised `docker.io` that
+/// `registry_of` yields.
+fn docker_config_keys(registry: &str) -> Vec<&str> {
+    if registry == "docker.io" {
+        vec![
+            "docker.io",
+            "https://index.docker.io/v1/",
+            "index.docker.io",
+        ]
+    } else {
+        vec![registry]
+    }
+}
+
+/// The registry host an image ref resolves to (for keying auth). Falls back
+/// to an empty string if the ref doesn't parse; the pull then surfaces the
+/// real parse error.
+fn registry_of(image_ref: &str) -> String {
+    image_ref
+        .parse::<Reference>()
+        .map(|r| r.registry().to_string())
+        .unwrap_or_default()
+}
+
 // ---- Provider impl -------------------------------------------------------
 
 /// OCI / Docker image provider. Wraps [`pull_with_options`] behind the
@@ -109,6 +273,7 @@ impl From<Error> for ProviderError {
 /// [`OciProvider::with_options`] for non-default cache TTL.
 pub struct OciProvider {
     options: PullOptions,
+    auth: Arc<dyn AuthResolver>,
 }
 
 impl Default for OciProvider {
@@ -118,13 +283,15 @@ impl Default for OciProvider {
 }
 
 impl OciProvider {
-    /// Construct with [`PullOptions::default`] (1-hour cache TTL, online).
+    /// Construct with [`PullOptions::default`] (1-hour cache TTL, online)
+    /// and the [`DefaultAuthResolver`] credential chain.
     /// `Context::is_offline()` still overrides `options.offline` on each
     /// call, so a single provider instance serves both online and offline
     /// resolutions.
     pub fn new() -> Self {
         Self {
             options: PullOptions::default(),
+            auth: Arc::new(DefaultAuthResolver::new()),
         }
     }
 
@@ -132,7 +299,17 @@ impl OciProvider {
     /// as the floor — `Context::is_offline()` can force it on for a
     /// single call but cannot turn it off.
     pub fn with_options(options: PullOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            auth: Arc::new(DefaultAuthResolver::new()),
+        }
+    }
+
+    /// Replace the credential resolver (highest-precedence source). Lets the
+    /// daemon / MCP inject credentials with no environment at all.
+    pub fn with_auth(mut self, auth: Arc<dyn AuthResolver>) -> Self {
+        self.auth = auth;
+        self
     }
 }
 
@@ -173,7 +350,7 @@ impl RootfsProvider for OciProvider {
         true
     }
 
-    fn provide(&self, spec: &str, ctx: &Context) -> Result<PathBuf, ProviderError> {
+    fn provide(&self, spec: &str, ctx: &Context) -> Result<RootfsArtifact, ProviderError> {
         let image_ref = spec.strip_prefix("oci://").unwrap_or(spec);
         if image_ref.is_empty() {
             return Err(ProviderError::InvalidSpec("empty image reference".into()));
@@ -188,7 +365,8 @@ impl RootfsProvider for OciProvider {
         // Note: the tokio runtime is built lazily INSIDE pull_with_options
         // — only when a network roundtrip is actually needed. Cache hits
         // resolve via blocking fs::metadata and pay no runtime cost.
-        let rootfs = pull_with_options_sync(image_ref, &cache, &opts)
+        let auth = self.auth.resolve(&registry_of(image_ref));
+        let rootfs = pull_with_options_sync(image_ref, &cache, &opts, &auth)
             .map_err(|e| map_oci_error(spec, image_ref, e))?;
 
         if let Some(src) = ctx.guest_helpers() {
@@ -196,7 +374,10 @@ impl RootfsProvider for OciProvider {
                 warn!(error = %e, "guest-helper inject failed; vsock workflows may not work in this image");
             }
         }
-        Ok(rootfs)
+        Ok(RootfsArtifact::Directory {
+            path: rootfs,
+            read_only: false,
+        })
     }
 }
 
@@ -247,6 +428,7 @@ fn pull_with_options_sync(
     image_ref: &str,
     cache_root: &Path,
     options: &PullOptions,
+    auth: &RegistryAuth,
 ) -> Result<PathBuf, Error> {
     // Probe the on-disk cache first using blocking fs IO. Sharing the
     // same `fast_path_lookup` as pull_with_options means the TTL +
@@ -269,7 +451,7 @@ fn pull_with_options_sync(
         .enable_all()
         .build()
         .map_err(|e| Error::Io(std::io::Error::other(format!("tokio init: {e}"))))?;
-    rt.block_on(pull_with_options(image_ref, cache_root, options))
+    rt.block_on(pull_with_options(image_ref, cache_root, options, auth))
 }
 
 /// Blocking-fs equivalent of pull_with_options's cache-hit branch.
@@ -316,6 +498,7 @@ pub async fn pull_with_options(
     image_ref: &str,
     cache_root: &Path,
     options: &PullOptions,
+    auth: &RegistryAuth,
 ) -> Result<PathBuf, Error> {
     // Cache fast-path is identical to the sync wrapper's probe — share
     // it via `fast_path_lookup` so the TTL / offline-precedence rules
@@ -355,10 +538,9 @@ pub async fn pull_with_options(
         ..ClientConfig::default()
     };
     let client = Client::new(cfg);
-    let auth = RegistryAuth::Anonymous;
 
     // Resolve manifest digest cheaply — single HEAD/GET, no blob downloads.
-    let manifest_digest = client.fetch_manifest_digest(&reference, &auth).await?;
+    let manifest_digest = client.fetch_manifest_digest(&reference, auth).await?;
 
     let rootfs = extracted_path(cache_root, image_ref, &manifest_digest);
     let ready_marker = rootfs.join(".vmette-image-ready");
@@ -371,7 +553,7 @@ pub async fn pull_with_options(
 
     info!(digest = %manifest_digest, "cache miss; pulling layers");
 
-    let image: ImageData = client.pull(&reference, &auth, MEDIA_TYPES.to_vec()).await?;
+    let image: ImageData = client.pull(&reference, auth, MEDIA_TYPES.to_vec()).await?;
 
     info!(
         path = %rootfs.display(),
@@ -644,6 +826,63 @@ mod tests {
         assert!(p.matches("python:3.12-alpine"));
         assert!(p.matches("ghcr.io/foo/bar:tag"));
         assert!(p.matches("oci://alpine:3.20"));
+    }
+
+    #[test]
+    fn env_host_suffix_uppercases_and_sanitizes() {
+        assert_eq!(env_host_suffix("ghcr.io"), "GHCR_IO");
+        assert_eq!(env_host_suffix("docker.io"), "DOCKER_IO");
+        assert_eq!(
+            env_host_suffix("registry-1.example.com"),
+            "REGISTRY_1_EXAMPLE_COM"
+        );
+    }
+
+    #[test]
+    fn parse_userpass_splits_on_first_colon() {
+        match parse_userpass("alice:s3cr:et") {
+            Some(RegistryAuth::Basic(u, p)) => {
+                assert_eq!(u, "alice");
+                assert_eq!(p, "s3cr:et");
+            }
+            other => panic!("expected Basic, got {other:?}"),
+        }
+        match parse_userpass("just-a-token") {
+            Some(RegistryAuth::Basic(u, p)) => {
+                assert_eq!(u, "vmette");
+                assert_eq!(p, "just-a-token");
+            }
+            other => panic!("expected Basic, got {other:?}"),
+        }
+        assert!(parse_userpass("").is_none());
+    }
+
+    #[test]
+    fn default_resolver_override_takes_precedence() {
+        let r = DefaultAuthResolver::new()
+            .with_registry("ghcr.io", RegistryAuth::Basic("u".into(), "p".into()));
+        match r.resolve("ghcr.io") {
+            RegistryAuth::Basic(u, p) => {
+                assert_eq!(u, "u");
+                assert_eq!(p, "p");
+            }
+            other => panic!("expected Basic override, got {other:?}"),
+        }
+        // A registry with no override and (assuming a clean env) no creds
+        // falls through to Anonymous.
+        if std::env::var_os("VMETTE_OCI_TOKEN").is_none()
+            && std::env::var_os("VMETTE_OCI_AUTH_DOCKER_IO").is_none()
+            && docker_config_auth("docker.io").is_none()
+        {
+            assert!(matches!(r.resolve("docker.io"), RegistryAuth::Anonymous));
+        }
+    }
+
+    #[test]
+    fn registry_of_extracts_host() {
+        assert_eq!(registry_of("ghcr.io/foo/bar:tag"), "ghcr.io");
+        // Bare refs normalise to Docker Hub.
+        assert_eq!(registry_of("alpine:3.20"), "docker.io");
     }
 
     #[test]

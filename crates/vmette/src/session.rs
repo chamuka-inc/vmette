@@ -22,10 +22,11 @@
 //! that owns its lifetime via [`Session::wait`].
 
 use std::os::fd::RawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained, DispatchTime};
@@ -42,7 +43,7 @@ use crate::error::Error;
 use crate::vz::config::{build as build_vz_config, resolve_vsock_port};
 use crate::vz::delegate::{DelegateState, VmetteDelegate};
 use crate::vz::vsock::{ListenerMode, ListenerState, VsockLogger};
-use crate::{cmdline, Config, WorkloadStrategy};
+use crate::{cmdline, Config, ShareMount, WorkloadStrategy};
 
 /// How long [`SessionClient::request`] waits for the in-guest agent to make
 /// its outbound vsock connection before giving up. The desktop image boots
@@ -270,6 +271,34 @@ fn issue_stop(queue: &DispatchQueue, vm: &Retained<VZVirtualMachine>, end: &Arc<
     });
 }
 
+/// Owns a per-session host temp dir used as the writable `ctl` virtio-fs
+/// share for block-rootfs sessions. Removed on drop so the side-channel
+/// dir doesn't outlive the VM.
+struct ControlDirGuard(PathBuf);
+
+impl Drop for ControlDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Create a unique host temp dir for the block-rootfs control share. PID +
+/// a process-local counter + wall-clock nanos keep concurrent sessions in
+/// one process (PID collides) and serial sessions under a coarse clock
+/// (nanos collides) from sharing a dir.
+fn make_control_dir() -> Result<PathBuf, Error> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir =
+        std::env::temp_dir().join(format!("vmette-ctl-{}-{}-{}", std::process::id(), n, nanos));
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+    Ok(dir)
+}
+
 /// A booted VM and everything that must outlive its dispatch queue.
 pub struct Session {
     vm: Retained<VZVirtualMachine>,
@@ -282,6 +311,8 @@ pub struct Session {
     // dropped the callbacks silently stop. We own them for the VM's life.
     _delegate: Retained<VmetteDelegate>,
     _vsock_keepalive: Option<(Retained<VsockLogger>, Retained<VZVirtioSocketListener>)>,
+    // Block-rootfs control-share temp dir; removed when the session drops.
+    _control_dir: Option<ControlDirGuard>,
 }
 
 impl Session {
@@ -295,20 +326,50 @@ impl Session {
     /// [`crate::vz::snapshot`] from [`crate::run`].
     pub fn start(config: &Config) -> Result<Session, Error> {
         let vsock_port = resolve_vsock_port(config.vsock_port);
-        let cmdline = cmdline::build(config, vsock_port);
 
-        // Unlink any stale .vmette-exit so wait() can't read a prior run's code.
-        let exit_code_file = config.rootfs_share.as_ref().and_then(|rs| {
-            if rs.read_only {
-                None
-            } else {
-                let p = rs.path.join(".vmette-exit");
-                let _ = std::fs::remove_file(&p);
-                Some(p)
+        // A block rootfs is attached read-only and overlaid with a tmpfs, so
+        // the guest has no host-visible writable surface to drop `.vmette-exit`
+        // into. Auto-attach a writable "ctl" virtio-fs share backed by a
+        // per-session host temp dir; the guest writes its exit code there and
+        // the host reads it back. Clone the config so this injected share never
+        // leaks into the caller's `Config`.
+        let mut working = config.clone();
+        let mut control_dir: Option<ControlDirGuard> = None;
+        let exit_code_file = if config.rootfs_block.is_some() {
+            // "ctl" is reserved for the block-rootfs exit channel injected
+            // below. A caller share with the same tag would produce two
+            // virtio-fs devices tagged "ctl" and the guest would mount one
+            // of them at /mnt/ctl nondeterministically — silently breaking
+            // exit-code read-back. Reject loudly instead.
+            if config.shares.iter().any(|s| s.tag == "ctl") {
+                return Err(Error::InvalidConfig(
+                    "share tag \"ctl\" is reserved for the block-rootfs exit channel".into(),
+                ));
             }
-        });
+            let dir = make_control_dir()?;
+            let p = dir.join(".vmette-exit");
+            let _ = std::fs::remove_file(&p);
+            working.shares.push(ShareMount {
+                tag: "ctl".into(),
+                path: dir.clone(),
+            });
+            control_dir = Some(ControlDirGuard(dir));
+            Some(p)
+        } else {
+            // Unlink any stale .vmette-exit so wait() can't read a prior run's code.
+            config.rootfs_share.as_ref().and_then(|rs| {
+                if rs.read_only {
+                    None
+                } else {
+                    let p = rs.path.join(".vmette-exit");
+                    let _ = std::fs::remove_file(&p);
+                    Some(p)
+                }
+            })
+        };
 
-        let cfg = build_vz_config(config, &cmdline, vsock_port)?;
+        let cmdline = cmdline::build(&working, vsock_port);
+        let cfg = build_vz_config(&working, &cmdline, vsock_port)?;
 
         // Private serial queue for this VM. libdispatch services it on its
         // worker pool, so all VZ callbacks fire there without a run loop, and
@@ -426,6 +487,7 @@ impl Session {
             agent,
             _delegate: delegate,
             _vsock_keepalive: vsock_keepalive,
+            _control_dir: control_dir,
         })
     }
 

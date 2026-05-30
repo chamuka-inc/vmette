@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Block-image rootfs (squashfs).** Providers can now hand back a prebuilt
+  block image instead of a directory. A `.sqfs` is attached read-only as
+  virtio-blk slot 0 and the guest builds a tmpfs overlay over it, so the rootfs
+  is immutable and content-addressable.
+  - **New `vmette-provider-squashfs` crate.** `--rootfs squashfs+file://…`,
+    `squashfs+https://…`, or `squashfs+http://…`. Remote images are cached with
+    a TTL and downloaded with a streaming size cap
+    (`VMETTE_SQUASHFS_MAX_BYTES`, default 4 GiB); `--offline` resolves from cache
+    only.
+  - **`RootfsArtifact` provider seam.** `RootfsProvider::provide` /
+    `Registry::resolve` now return a `RootfsArtifact` (`Directory` |
+    `BlockImage`); `Config::set_rootfs_artifact` wires either form into a boot.
+  - **Control-share exit channel.** A block rootfs has no host-writable surface,
+    so the guest's exit code is relayed through an auto-attached writable `ctl`
+    virtio-fs share; works under both chroot and `--switch-root`.
+- **OCI registry authentication.** The OCI provider gained an `AuthResolver`
+  (env vars → `~/.docker/config.json` → anonymous), so private images
+  (e.g. `ghcr.io`) can be pulled with a username + token. `credsStore` /
+  `credHelpers` are not yet supported.
 - **Desktop computer use.** vmette can now run a persistent graphical
   Linux desktop inside a microVM and drive it via screenshots +
   synthetic mouse/keyboard — the computer-use agent loop.

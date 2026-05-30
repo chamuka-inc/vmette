@@ -2678,6 +2678,7 @@ dependencies = [
  "tracing-subscriber",
  "vmette",
  "vmette-provider-oci",
+ "vmette-provider-squashfs",
  "vmette-provider-tar",
 ]
 
@@ -2696,6 +2697,7 @@ dependencies = [
  "tracing-subscriber",
  "vmette",
  "vmette-provider-oci",
+ "vmette-provider-squashfs",
  "vmette-provider-tar",
 ]
 
@@ -2722,14 +2724,26 @@ dependencies = [
 name = "vmette-provider-oci"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "flate2",
  "oci-client",
+ "serde_json",
  "tar",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "vmette",
  "zstd",
+]
+
+[[package]]
+name = "vmette-provider-squashfs"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "tracing",
+ "ureq",
+ "vmette",
 ]
 
 [[package]]

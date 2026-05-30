@@ -1,0 +1,13 @@
+[package]
+name        = "vmette-provider-squashfs"
+description = "Prebuilt squashfs block-image rootfs provider for vmette"
+version     .workspace = true
+edition     .workspace = true
+license     .workspace = true
+repository  .workspace = true
+
+[dependencies]
+vmette    = { path = "../vmette" }
+ureq      = { version = "2", default-features = false, features = ["tls"] }
+thiserror = "1"
+tracing   = "0.1"

@@ -47,7 +47,7 @@ mount -t devtmpfs devtmpfs /dev      2>/dev/null
 depmod -a 2>/dev/null || true
 
 for m in virtio virtio_ring virtio_pci virtio_console virtio_blk virtio_net \
-         fuse virtiofs \
+         fuse virtiofs loop squashfs overlay \
          vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport; do
     modprobe "$m" 2>/dev/null
 done
@@ -75,6 +75,7 @@ cmdline_all() {
 }
 
 # Pull out the flags we care about up front.
+ROOTFS_BLOCK="$(cmdline_get vmette.rootfs_block)"
 ROOTFS_RO="$(cmdline_get vmette.rootfs_ro)"
 USE_SWITCH_ROOT="$(cmdline_get vmette.switch_root)"
 VMETTE_NET="$(cmdline_get vmette.net)"
@@ -87,7 +88,32 @@ export VMETTE_VSOCK_PORT VMETTE_GUEST_VSOCK_PORT
 
 # ---- step 3: mount rootfs share -----------------------------------------
 
-if [ "$(cmdline_get vmette.rootfs)" = "1" ]; then
+if [ -n "$ROOTFS_BLOCK" ]; then
+    # Block-image rootfs (e.g. squashfs): the host attached the image
+    # read-only as /dev/vda (storage slot 0). Mount it read-only as the
+    # lower layer and overlay a tmpfs so the guest gets a writable / that
+    # is discarded on shutdown — exactly the sandbox semantic. fstype is
+    # taken verbatim from the cmdline so this branch is fs-agnostic.
+    DEV=/dev/vda
+    modprobe "$ROOTFS_BLOCK" 2>/dev/null
+    modprobe overlay 2>/dev/null
+    mkdir -p /lower /ovl /newroot
+    if mount -t "$ROOTFS_BLOCK" -o ro "$DEV" /lower 2>/dev/null; then
+        log "mounted $ROOTFS_BLOCK $DEV at /lower (ro)"
+    else
+        log "FATAL: could not mount $ROOTFS_BLOCK on $DEV; dropping to shell"
+        exec /bin/sh
+    fi
+    mount -t tmpfs tmpfs /ovl 2>/dev/null
+    mkdir -p /ovl/upper /ovl/work
+    if mount -t overlay overlay \
+        -o lowerdir=/lower,upperdir=/ovl/upper,workdir=/ovl/work /newroot 2>/dev/null; then
+        log "overlay root at /newroot (upper=tmpfs, lower=$ROOTFS_BLOCK ro)"
+    else
+        log "FATAL: overlay mount failed; dropping to shell"
+        exec /bin/sh
+    fi
+elif [ "$(cmdline_get vmette.rootfs)" = "1" ]; then
     if [ "$ROOTFS_RO" = "1" ]; then
         mount_opts="-o ro"
     else
@@ -236,7 +262,15 @@ if [ -n "$B64" ]; then
 fi
 
 EXIT_FILE=""
-if [ -z "$ROOTFS_RO" ] || [ "$ROOTFS_RO" != "1" ]; then
+if [ -n "$ROOTFS_BLOCK" ]; then
+    # The overlay root's writable upper is a tmpfs the host can't see, so
+    # write the exit code into the dedicated writable "ctl" virtio-fs share
+    # the host reads back. It is mounted at /newroot/mnt/ctl (step 4) and,
+    # being under /newroot, survives switch_root automatically. The path is
+    # relative to the post-pivot/chroot root, so it works for both the
+    # chroot (/newroot/mnt/ctl/...) and switch_root (/mnt/ctl/...) paths.
+    EXIT_FILE="/mnt/ctl/.vmette-exit"
+elif [ -z "$ROOTFS_RO" ] || [ "$ROOTFS_RO" != "1" ]; then
     EXIT_FILE="/.vmette-exit"
 fi
 

@@ -27,14 +27,16 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
 use tracing::{debug, info, warn};
-use vmette::provider::{inject_guest_helpers, Context, ProviderError, RootfsProvider};
+use vmette::provider::{
+    inject_guest_helpers, Context, ProviderError, RootfsArtifact, RootfsProvider,
+};
 
 const READY_MARKER: &str = ".vmette-tar-ready";
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -129,7 +131,7 @@ impl RootfsProvider for TarProvider {
             || spec.starts_with("tar+file://")
     }
 
-    fn provide(&self, spec: &str, ctx: &Context) -> Result<PathBuf, ProviderError> {
+    fn provide(&self, spec: &str, ctx: &Context) -> Result<RootfsArtifact, ProviderError> {
         // `matches` already guarantees one of the prefixes, but be explicit
         // so the parser stays valid if `matches` is ever refactored.
         let url = spec
@@ -157,7 +159,10 @@ impl RootfsProvider for TarProvider {
                         warn!(error = %e, "guest-helper inject failed on cache hit");
                     }
                 }
-                return Ok(dest);
+                return Ok(RootfsArtifact::Directory {
+                    path: dest,
+                    read_only: false,
+                });
             }
             debug!(path = %dest.display(), age_s = age.as_secs(), "tar cache expired; refetching");
         }
@@ -308,7 +313,10 @@ impl RootfsProvider for TarProvider {
             }
         }
         info!(path = %dest.display(), "tar rootfs ready");
-        Ok(dest)
+        Ok(RootfsArtifact::Directory {
+            path: dest,
+            read_only: false,
+        })
     }
 }
 
@@ -498,6 +506,7 @@ fn extract_into(source: Box<dyn Read + Send>, dest: &Path, max_bytes: u64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn tar_matches_only_tar_schemes() {

@@ -11,10 +11,11 @@ name = "vmette"
 path = "src/main.rs"
 
 [dependencies]
-vmette              = { path = "../vmette" }
-vmette-provider-oci = { path = "../vmette-provider-oci" }
-vmette-provider-tar = { path = "../vmette-provider-tar" }
-tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
+vmette                   = { path = "../vmette" }
+vmette-provider-oci      = { path = "../vmette-provider-oci" }
+vmette-provider-squashfs = { path = "../vmette-provider-squashfs" }
+vmette-provider-tar      = { path = "../vmette-provider-tar" }
+tracing-subscriber       = { version = "0.3", features = ["env-filter"] }
 # `vmette desktop` subcommands talk to vmetted over its UNIX socket.
 serde_json          = "1"
 base64              = "0.22"

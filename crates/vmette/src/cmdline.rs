@@ -20,7 +20,12 @@ pub(crate) fn build(config: &Config, effective_vsock_port: Option<u32>) -> Strin
         s.push_str(&b64);
     }
 
-    if let Some(rs) = &config.rootfs_share {
+    // A block rootfs and a virtio-fs rootfs share are mutually exclusive;
+    // the block branch wins (Config keeps only one set at a time).
+    if let Some(rb) = &config.rootfs_block {
+        s.push_str(" vmette.rootfs_block=");
+        s.push_str(rb.fstype.as_str());
+    } else if let Some(rs) = &config.rootfs_share {
         s.push_str(" vmette.rootfs=1");
         if rs.read_only {
             s.push_str(" vmette.rootfs_ro=1");
@@ -96,6 +101,18 @@ mod tests {
         let s = build(&c, None);
         assert!(s.contains("vmette.rootfs=1"));
         assert!(s.contains("vmette.rootfs_ro=1"));
+    }
+
+    #[test]
+    fn rootfs_block_emits_fstype_and_suppresses_share() {
+        let mut c = base();
+        c.rootfs_block = Some(crate::RootfsBlock {
+            path: PathBuf::from("/img.sqfs"),
+            fstype: crate::BlockFs::Squashfs,
+        });
+        let s = build(&c, None);
+        assert!(s.contains("vmette.rootfs_block=squashfs"));
+        assert!(!s.contains("vmette.rootfs=1"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ members = [
     "crates/vmette-daemon",
     "crates/vmette-mcp",
     "crates/vmette-provider-oci",
+    "crates/vmette-provider-squashfs",
     "crates/vmette-provider-tar",
 ]
 

@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vmette::provider::{Context, DirProvider, Registry};
-use vmette::{Config, RootfsShare, ShareMount, VsockPort};
+use vmette::{Config, RootfsArtifact, ShareMount, VsockPort};
 use vmette_provider_oci::OciProvider;
+use vmette_provider_squashfs::SquashfsProvider;
 use vmette_provider_tar::TarProvider;
 
 fn usage() -> ! {
@@ -50,11 +51,13 @@ fn usage() -> ! {
            --guest-vsock-port N         guest vsock-runner listens here (default 1025)\n\
          \n\
          rootfs spec examples:\n\
-           --rootfs /path/to/dir              local directory\n\
-           --rootfs alpine:3.20               OCI image (anonymous registry)\n\
-           --rootfs oci://ghcr.io/foo/bar:v1  OCI image, explicit scheme\n\
-           --rootfs tar+https://h/r.tar.gz    tarball download (gzip/zstd auto-detected)\n\
-           --rootfs tar+file:///tmp/r.tar     local tarball\n"
+           --rootfs /path/to/dir                 local directory\n\
+           --rootfs alpine:3.20                  OCI image (anonymous registry)\n\
+           --rootfs oci://ghcr.io/foo/bar:v1     OCI image, explicit scheme\n\
+           --rootfs squashfs+https://h/img.sqfs  prebuilt squashfs (block rootfs)\n\
+           --rootfs squashfs+file:///img.sqfs    local squashfs image\n\
+           --rootfs tar+https://h/r.tar.gz       tarball download (gzip/zstd auto-detected)\n\
+           --rootfs tar+file:///tmp/r.tar        local tarball\n"
     );
     std::process::exit(2);
 }
@@ -324,10 +327,12 @@ fn guest_helpers_dir() -> Option<PathBuf> {
 
 fn default_registry() -> Registry {
     // Order matters — first-match-wins. DirProvider claims path-like
-    // specs, TarProvider claims tar+ schemes, OciProvider is the
-    // catch-all for everything else (bare image refs, oci://).
+    // specs, SquashfsProvider + TarProvider claim their `<fs>+`/`tar+`
+    // schemes, OciProvider is the catch-all for everything else (bare
+    // image refs, oci://).
     Registry::new()
         .with(DirProvider::new())
+        .with(SquashfsProvider::new())
         .with(TarProvider::new())
         .with(OciProvider::new())
 }
@@ -337,11 +342,18 @@ fn print_providers(registry: &Registry) {
     for name in registry.names() {
         let example = match name {
             "dir" => "  --rootfs /path/to/dir",
+            "squashfs" => {
+                "  --rootfs squashfs+file:///img.sqfs   |   squashfs+https://host/img.sqfs"
+            }
             "tar" => "  --rootfs tar+https://host/rootfs.tar.gz   |   tar+file:///tmp/r.tar",
             "oci" => "  --rootfs alpine:3.20   |   oci://ghcr.io/foo/bar:v1",
             _ => "  (third-party provider)",
         };
         println!("  - {name}\n    {example}");
+        if name == "oci" {
+            println!("    private images: VMETTE_OCI_AUTH_<HOST>=user:secret, or VMETTE_OCI_TOKEN");
+            println!("    (+ optional VMETTE_OCI_USER); else falls back to ~/.docker/config.json");
+        }
     }
 }
 
@@ -379,18 +391,24 @@ fn main() -> ExitCode {
     let ctx = Context::new(cache_root())
         .offline(parsed.offline)
         .guest_helpers_dir(guest_helpers_dir());
-    let rootfs_path = match registry.resolve(&parsed.rootfs_spec, &ctx) {
-        Ok(p) => p,
+    let artifact = match registry.resolve(&parsed.rootfs_spec, &ctx) {
+        Ok(a) => a,
         Err(e) => {
             eprintln!("[vmette] rootfs resolution failed: {}", e);
             eprintln!("[vmette] try `vmette providers` for registered providers and examples");
             return ExitCode::from(1);
         }
     };
-    config.rootfs_share = Some(RootfsShare {
-        path: rootfs_path,
-        read_only: parsed.rootfs_ro,
-    });
+    // Block images (e.g. squashfs) are inherently read-only — the guest builds
+    // a tmpfs overlay for writes — so --rootfs-ro is a silent no-op there. Warn
+    // rather than let the user believe the flag changed anything.
+    if parsed.rootfs_ro && matches!(artifact, RootfsArtifact::BlockImage { .. }) {
+        eprintln!(
+            "[vmette] note: --rootfs-ro is redundant for block images; \
+             they are always mounted read-only (writes go to a tmpfs overlay)"
+        );
+    }
+    config.set_rootfs_artifact(artifact, parsed.rootfs_ro);
 
     match vmette::run(&config) {
         Ok(out) => {

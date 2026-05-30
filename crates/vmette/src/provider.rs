@@ -28,19 +28,18 @@
 //! ## Writing a new provider
 //!
 //! ```no_run
-//! use std::path::PathBuf;
-//! use vmette::provider::{Context, ProviderError, RootfsProvider};
+//! use vmette::provider::{Context, ProviderError, RootfsArtifact, RootfsProvider};
 //!
 //! struct EchoProvider;
 //!
 //! impl RootfsProvider for EchoProvider {
 //!     fn name(&self) -> &'static str { "echo" }
 //!     fn matches(&self, spec: &str) -> bool { spec.starts_with("echo://") }
-//!     fn provide(&self, spec: &str, ctx: &Context) -> Result<PathBuf, ProviderError> {
+//!     fn provide(&self, spec: &str, ctx: &Context) -> Result<RootfsArtifact, ProviderError> {
 //!         let rel = spec.strip_prefix("echo://").unwrap_or(spec);
 //!         let dest = ctx.provider_cache("echo")?.join(rel);
 //!         std::fs::create_dir_all(&dest)?;
-//!         Ok(dest)
+//!         Ok(RootfsArtifact::Directory { path: dest, read_only: false })
 //!     }
 //! }
 //! ```
@@ -48,6 +47,56 @@
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+
+/// Filesystem type of a block-image rootfs. Determines the `-t <fstype>`
+/// the guest init passes to `mount` and the `vmette.rootfs_block=<fstype>`
+/// cmdline token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockFs {
+    /// A read-only `squashfs` image, mounted as the overlay lower layer.
+    Squashfs,
+}
+
+impl BlockFs {
+    /// The kernel filesystem name (as used by `mount -t` and the cmdline).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockFs::Squashfs => "squashfs",
+        }
+    }
+}
+
+impl std::fmt::Display for BlockFs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a provider materialised for use as the guest root filesystem.
+///
+/// Most providers hand back a host [`directory`](RootfsArtifact::Directory)
+/// shared into the guest over virtio-fs. A provider may instead hand back a
+/// [`block image`](RootfsArtifact::BlockImage) (e.g. a `squashfs` file)
+/// attached as a virtio-blk device and overlaid with a tmpfs upper for
+/// writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootfsArtifact {
+    /// A host directory tree, mounted as `/` via virtio-fs.
+    Directory {
+        /// Host path to share.
+        path: PathBuf,
+        /// Mount the share read-only inside the guest.
+        read_only: bool,
+    },
+    /// A filesystem image file, attached as a virtio-blk device and
+    /// mounted read-only as the lower layer of a tmpfs-backed overlay.
+    BlockImage {
+        /// Host path to the image file.
+        path: PathBuf,
+        /// Image filesystem type.
+        fstype: BlockFs,
+    },
+}
 
 /// Errors a provider may surface from [`RootfsProvider::provide`].
 #[derive(Debug, Error)]
@@ -152,14 +201,14 @@ pub trait RootfsProvider: Send + Sync {
     /// (see [`Registry::resolve`]).
     fn matches(&self, spec: &str) -> bool;
 
-    /// Resolve `spec` to a host directory that can be mounted as `/`.
+    /// Resolve `spec` to a [`RootfsArtifact`] the VM can mount as `/`.
     ///
     /// Must be idempotent: re-resolving the same spec should return the
-    /// same path (modulo provider-internal cache invalidation policy).
+    /// same artifact (modulo provider-internal cache invalidation policy).
     /// `ctx.guest_helpers()` should be honoured by providers that
     /// materialise the rootfs themselves (OCI, tar) — local-dir
     /// providers leave the user's directory alone.
-    fn provide(&self, spec: &str, ctx: &Context) -> Result<PathBuf, ProviderError>;
+    fn provide(&self, spec: &str, ctx: &Context) -> Result<RootfsArtifact, ProviderError>;
 }
 
 /// Ordered collection of providers. Dispatch is first-match-wins.
@@ -185,10 +234,10 @@ impl Registry {
         self
     }
 
-    /// Resolve `spec` to a rootfs path via the first matching provider.
-    /// Returns [`ProviderError::InvalidSpec`] if no provider claims it,
-    /// listing the registered providers for diagnostics.
-    pub fn resolve(&self, spec: &str, ctx: &Context) -> Result<PathBuf, ProviderError> {
+    /// Resolve `spec` to a [`RootfsArtifact`] via the first matching
+    /// provider. Returns [`ProviderError::InvalidSpec`] if no provider
+    /// claims it, listing the registered providers for diagnostics.
+    pub fn resolve(&self, spec: &str, ctx: &Context) -> Result<RootfsArtifact, ProviderError> {
         for p in &self.providers {
             if p.matches(spec) {
                 return p.provide(spec, ctx);
@@ -292,7 +341,7 @@ impl RootfsProvider for DirProvider {
             || spec == ".."
     }
 
-    fn provide(&self, spec: &str, _ctx: &Context) -> Result<PathBuf, ProviderError> {
+    fn provide(&self, spec: &str, _ctx: &Context) -> Result<RootfsArtifact, ProviderError> {
         let path = if let Some(rest) = spec.strip_prefix("~/") {
             let home = std::env::var_os("HOME").ok_or_else(|| {
                 ProviderError::InvalidSpec("$HOME not set; cannot expand '~/'".into())
@@ -315,7 +364,10 @@ impl RootfsProvider for DirProvider {
                 path.display()
             )));
         }
-        Ok(path)
+        Ok(RootfsArtifact::Directory {
+            path,
+            read_only: false,
+        })
     }
 }
 
@@ -370,12 +422,24 @@ mod tests {
         // VERBATIM (not canonicalised to /private/tmp) so symlink-swap
         // deploy strategies keep working.
         let resolved = p.provide("/tmp", &ctx).expect("resolve /tmp");
-        assert_eq!(resolved, std::path::PathBuf::from("/tmp"));
-        assert!(resolved.is_dir());
+        match resolved {
+            RootfsArtifact::Directory { path, read_only } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp"));
+                assert!(path.is_dir());
+                assert!(!read_only);
+            }
+            other => panic!("expected Directory, got {other:?}"),
+        }
     }
 
     #[test]
     fn registry_dispatches_first_match() {
+        fn dir_path(a: RootfsArtifact) -> PathBuf {
+            match a {
+                RootfsArtifact::Directory { path, .. } => path,
+                other => panic!("expected Directory, got {other:?}"),
+            }
+        }
         struct A;
         impl RootfsProvider for A {
             fn name(&self) -> &'static str {
@@ -384,8 +448,11 @@ mod tests {
             fn matches(&self, s: &str) -> bool {
                 s.starts_with("a:")
             }
-            fn provide(&self, _: &str, _: &Context) -> Result<PathBuf, ProviderError> {
-                Ok(PathBuf::from("/a"))
+            fn provide(&self, _: &str, _: &Context) -> Result<RootfsArtifact, ProviderError> {
+                Ok(RootfsArtifact::Directory {
+                    path: PathBuf::from("/a"),
+                    read_only: false,
+                })
             }
         }
         struct B;
@@ -396,14 +463,23 @@ mod tests {
             fn matches(&self, _: &str) -> bool {
                 true
             }
-            fn provide(&self, _: &str, _: &Context) -> Result<PathBuf, ProviderError> {
-                Ok(PathBuf::from("/b"))
+            fn provide(&self, _: &str, _: &Context) -> Result<RootfsArtifact, ProviderError> {
+                Ok(RootfsArtifact::Directory {
+                    path: PathBuf::from("/b"),
+                    read_only: false,
+                })
             }
         }
         let reg = Registry::new().with(A).with(B);
         let ctx = Context::new("/tmp");
-        assert_eq!(reg.resolve("a:x", &ctx).unwrap(), PathBuf::from("/a"));
-        assert_eq!(reg.resolve("z", &ctx).unwrap(), PathBuf::from("/b"));
+        assert_eq!(
+            dir_path(reg.resolve("a:x", &ctx).unwrap()),
+            PathBuf::from("/a")
+        );
+        assert_eq!(
+            dir_path(reg.resolve("z", &ctx).unwrap()),
+            PathBuf::from("/b")
+        );
         assert_eq!(reg.names(), vec!["a", "b"]);
     }
 

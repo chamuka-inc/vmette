@@ -83,17 +83,17 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
 }
 
 fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
-    let rootfs = config
-        .rootfs_share
-        .as_ref()
-        .map(|r| {
-            format!(
-                "{}{}",
-                r.path.display(),
-                if r.read_only { " (ro)" } else { "" }
-            )
-        })
-        .unwrap_or_else(|| "(none)".into());
+    let rootfs = if let Some(rb) = &config.rootfs_block {
+        format!("{} ({} block, ro)", rb.path.display(), rb.fstype)
+    } else if let Some(r) = &config.rootfs_share {
+        format!(
+            "{}{}",
+            r.path.display(),
+            if r.read_only { " (ro)" } else { "" }
+        )
+    } else {
+        "(none)".into()
+    };
     let vsock = match vsock_port {
         None => "(disabled)".into(),
         Some(p) => p.to_string(),

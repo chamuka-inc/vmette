@@ -46,8 +46,9 @@ use anyhow::{anyhow, bail, Context as _, Result};
 use rand::Rng;
 use vmette::provider::{Context, DirProvider, Registry as ProviderRegistry};
 use vmette::settle::{Frame, Rect, SettleConfig, SettleDetector, SettleState};
-use vmette::{Action, Config, RootfsShare, Session, SessionClient, SessionEnd, StopHandle};
+use vmette::{Action, Config, Session, SessionClient, SessionEnd, StopHandle};
 use vmette_provider_oci::OciProvider;
+use vmette_provider_squashfs::SquashfsProvider;
 use vmette_provider_tar::TarProvider;
 
 /// How often the settle poll re-captures the screen. Needs to be long enough
@@ -171,12 +172,13 @@ impl Registry {
         // exactly as the CLI does for --rootfs.
         let provider = ProviderRegistry::new()
             .with(DirProvider::new())
+            .with(SquashfsProvider::new())
             .with(TarProvider::new())
             .with(OciProvider::new());
         let ctx = Context::new(self.cache_root.clone())
             .offline(params.offline)
             .guest_helpers_dir(self.guest_helpers_dir.clone());
-        let rootfs_path = provider
+        let artifact = provider
             .resolve(&params.image, &ctx)
             .with_context(|| format!("resolving desktop image {}", params.image))?;
 
@@ -187,10 +189,7 @@ impl Registry {
         cfg.vcpus = params.vcpus;
         cfg.mem_mib = params.mem_mib;
         // Writable share: the entrypoint writes Xvfb/openbox logs under /var.
-        cfg.rootfs_share = Some(RootfsShare {
-            path: rootfs_path,
-            read_only: false,
-        });
+        cfg.set_rootfs_artifact(artifact, false);
         // vsock_port stays Auto (Session resolves it); the cmdline emits
         // vmette.desktop=1 + vmette.display + vmette.vsock_port for the agent.
 

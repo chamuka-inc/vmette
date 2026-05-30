@@ -119,8 +119,30 @@ pub(crate) fn build(
             NSArray::from_retained_slice(&fs_devices);
         cfg.setDirectorySharingDevices(&fs_array);
 
-        // virtio-blk disks
+        // virtio-blk disks. A block rootfs (e.g. squashfs) is attached
+        // FIRST and read-only, so it deterministically enumerates as
+        // slot 0 = /dev/vda; user `--disk`s follow on /dev/vdb…
         let mut storage: Vec<Retained<VZStorageDeviceConfiguration>> = Vec::new();
+        if let Some(rb) = &config.rootfs_block {
+            let url = file_url(&rb.path);
+            let att = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_error(
+                VZDiskImageStorageDeviceAttachment::alloc(),
+                &url,
+                true,
+            )
+            .map_err(|e| {
+                Error::InvalidConfig(format!(
+                    "rootfs block image {}: {}",
+                    rb.path.display(),
+                    e.localizedDescription()
+                ))
+            })?;
+            let blk = VZVirtioBlockDeviceConfiguration::initWithAttachment(
+                VZVirtioBlockDeviceConfiguration::alloc(),
+                &att.into_super(),
+            );
+            storage.push(blk.into_super());
+        }
         for path in &config.disks {
             let url = file_url(path);
             let att = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_error(
