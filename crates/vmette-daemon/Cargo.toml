@@ -24,3 +24,7 @@ vmette-provider-oci  = { path = "../vmette-provider-oci" }
 vmette-provider-tar  = { path = "../vmette-provider-tar" }
 base64      = "0.22"
 rand        = "0.8"
+# Decode the agent's screenshot PNGs into raw pixels for the host-side
+# settle detector. Lives only in the daemon binary — the size-sensitive core
+# vmette cdylib/staticlib stays PNG-decoder-free.
+png         = "0.17"

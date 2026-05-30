@@ -151,10 +151,32 @@ struct DesktopActionReq {
     action: vmette::Action,
 }
 
+/// `kind: "desktop_screenshot_settled"` — poll until the desktop stops changing,
+/// then return that frame plus the regions still moving.
+#[derive(Debug, Deserialize)]
+struct DesktopSettleReq {
+    session_id: String,
+    /// Max time to wait for the screen to settle before returning the latest
+    /// frame anyway (with `settled: false`). Defaults to 10s.
+    #[serde(default = "default_settle_timeout_ms")]
+    timeout_ms: u64,
+}
+
+/// `kind: "desktop_what_changed"` — capture one frame and report what moved
+/// since this session's previous capture.
+#[derive(Debug, Deserialize)]
+struct DesktopWhatChangedReq {
+    session_id: String,
+}
+
 /// `kind: "desktop_stop"` — tear a live session down.
 #[derive(Debug, Deserialize)]
 struct DesktopStopReq {
     session_id: String,
+}
+
+fn default_settle_timeout_ms() -> u64 {
+    10_000
 }
 
 fn default_desktop_image() -> String {
@@ -165,6 +187,27 @@ fn default_desktop_vcpus() -> u8 {
 }
 fn default_desktop_mem_mib() -> u64 {
     2048
+}
+
+/// A rectangle on the wire (pixel coords). Mirror of [`vmette::settle::Rect`],
+/// which is intentionally not `Serialize` (the core stays serde-free).
+#[derive(Debug, Serialize)]
+struct RectJson {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+impl From<vmette::settle::Rect> for RectJson {
+    fn from(r: vmette::settle::Rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        }
+    }
 }
 
 /// Single-line JSON reply for the desktop kinds.
@@ -185,6 +228,20 @@ enum DesktopReply {
         /// Base64 PNG for `screenshot`; absent otherwise.
         #[serde(skip_serializing_if = "Option::is_none")]
         png_base64: Option<String>,
+    },
+    /// Reply for `desktop_screenshot_settled`: the captured frame, whether it
+    /// actually settled (vs. timed out), and the regions still moving.
+    Settled {
+        settled: bool,
+        moving: Vec<RectJson>,
+        png_base64: String,
+    },
+    /// Reply for `desktop_what_changed`: a fresh frame and the damage box
+    /// (absent when nothing changed since the previous capture).
+    Changed {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        changed: Option<RectJson>,
+        png_base64: String,
     },
     Stopped,
     Error {
@@ -345,7 +402,11 @@ async fn dispatch(stream: UnixStream, vmette_bin: PathBuf, registry: Arc<Registr
         .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned));
 
     match kind.as_deref() {
-        Some("desktop_start") | Some("desktop_action") | Some("desktop_stop") => {
+        Some("desktop_start")
+        | Some("desktop_action")
+        | Some("desktop_screenshot_settled")
+        | Some("desktop_what_changed")
+        | Some("desktop_stop") => {
             let reply = handle_desktop(kind.as_deref().unwrap(), &line, registry).await;
             let mut json = serde_json::to_vec(&reply)?;
             json.push(b'\n');
@@ -409,6 +470,32 @@ async fn desktop_result(kind: &str, line: &str, registry: Arc<Registry>) -> Resu
                 png_base64: res
                     .png
                     .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            })
+        }
+        "desktop_screenshot_settled" => {
+            let req: DesktopSettleReq =
+                serde_json::from_str(line).context("parse desktop_screenshot_settled")?;
+            let timeout = Duration::from_millis(req.timeout_ms);
+            let res = tokio::task::spawn_blocking(move || {
+                registry.screenshot_when_settled(&req.session_id, timeout)
+            })
+            .await
+            .context("settle poll task")??;
+            Ok(DesktopReply::Settled {
+                settled: res.settled,
+                moving: res.moving.into_iter().map(RectJson::from).collect(),
+                png_base64: base64::engine::general_purpose::STANDARD.encode(res.png),
+            })
+        }
+        "desktop_what_changed" => {
+            let req: DesktopWhatChangedReq =
+                serde_json::from_str(line).context("parse desktop_what_changed")?;
+            let res = tokio::task::spawn_blocking(move || registry.what_changed(&req.session_id))
+                .await
+                .context("what_changed task")??;
+            Ok(DesktopReply::Changed {
+                changed: res.changed.map(RectJson::from),
+                png_base64: base64::engine::general_purpose::STANDARD.encode(res.png),
             })
         }
         "desktop_stop" => {

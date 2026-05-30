@@ -37,6 +37,32 @@ pub struct ActionReply {
     pub png_base64: Option<String>,
 }
 
+/// A rectangle in pixel coordinates (a moving region or a damage box).
+#[derive(Debug, Clone, Copy)]
+pub struct RectReply {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Reply to `desktop_screenshot_settled`: the settled (or timed-out) frame plus
+/// the regions still moving.
+#[derive(Debug)]
+pub struct SettleReply {
+    pub settled: bool,
+    pub moving: Vec<RectReply>,
+    pub png_base64: String,
+}
+
+/// Reply to `desktop_what_changed`: a fresh frame and the damage box (absent
+/// when nothing changed since the previous capture).
+#[derive(Debug)]
+pub struct ChangedReply {
+    pub changed: Option<RectReply>,
+    pub png_base64: String,
+}
+
 impl DaemonClient {
     /// `socket` defaults to `~/Library/Caches/vmette/vmette.sock` when `None`.
     /// `kernel`/`initramfs` are the ordinary vmette assets (reuse the
@@ -102,6 +128,55 @@ impl DaemonClient {
         })
     }
 
+    /// Poll the desktop until it settles (or `timeout_ms` elapses) and return
+    /// that frame plus the regions still moving.
+    pub async fn screenshot_when_settled(
+        &self,
+        session_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<SettleReply> {
+        let mut req = json!({
+            "kind": "desktop_screenshot_settled",
+            "session_id": session_id,
+        });
+        if let Some(ms) = timeout_ms {
+            req["timeout_ms"] = json!(ms);
+        }
+        let reply = self.call(&req).await?;
+        let moving = reply
+            .get("moving")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(parse_rect).collect())
+            .unwrap_or_default();
+        Ok(SettleReply {
+            settled: reply
+                .get("settled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            moving,
+            png_base64: reply
+                .get("png_base64")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("settle reply missing png_base64"))?,
+        })
+    }
+
+    /// Capture one frame and report what changed since this session's previous
+    /// capture.
+    pub async fn what_changed(&self, session_id: &str) -> Result<ChangedReply> {
+        let req = json!({ "kind": "desktop_what_changed", "session_id": session_id });
+        let reply = self.call(&req).await?;
+        Ok(ChangedReply {
+            changed: reply.get("changed").and_then(parse_rect),
+            png_base64: reply
+                .get("png_base64")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("what_changed reply missing png_base64"))?,
+        })
+    }
+
     /// Tear a session down.
     pub async fn stop(&self, session_id: &str) -> Result<()> {
         let req = json!({ "kind": "desktop_stop", "session_id": session_id });
@@ -146,6 +221,17 @@ impl DaemonClient {
         }
         Ok(value)
     }
+}
+
+/// Parse a `{x,y,w,h}` rect object from a reply (all four fields required).
+fn parse_rect(v: &Value) -> Option<RectReply> {
+    let f = |k: &str| v.get(k).and_then(Value::as_u64).map(|n| n as u32);
+    Some(RectReply {
+        x: f("x")?,
+        y: f("y")?,
+        w: f("w")?,
+        h: f("h")?,
+    })
 }
 
 fn default_socket() -> PathBuf {

@@ -45,9 +45,15 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context as _, Result};
 use rand::Rng;
 use vmette::provider::{Context, DirProvider, Registry as ProviderRegistry};
+use vmette::settle::{Frame, Rect, SettleConfig, SettleDetector, SettleState};
 use vmette::{Action, Config, RootfsShare, Session, SessionClient, SessionEnd, StopHandle};
 use vmette_provider_oci::OciProvider;
 use vmette_provider_tar::TarProvider;
+
+/// How often the settle poll re-captures the screen. Needs to be long enough
+/// that a playing video actually changes between polls (so churn is detected),
+/// short enough that a settled screen is returned promptly.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(120);
 
 /// Default OCI ref for the desktop rootfs image, baked in the same way the
 /// MCP/CLI default `python:3.12-alpine` etc. Overridable per `start` request.
@@ -60,6 +66,12 @@ struct Entry {
     stop: StopHandle,
     /// `Some` until joined; the thread yields the terminal [`SessionEnd`].
     thread: Option<JoinHandle<SessionEnd>>,
+    /// Per-session pixel-settle detector. Shared (`Arc<Mutex>`) so a poll loop
+    /// can hold it across many screenshots without pinning the registry map
+    /// lock. Its rolling churn/stable state carries across requests on purpose:
+    /// a region already known to be a video stays known, and `what_changed`
+    /// reports damage *since the previous capture*.
+    detector: Arc<Mutex<SettleDetector>>,
     last_used: Instant,
 }
 
@@ -86,6 +98,23 @@ pub struct ActionResult {
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub png: Option<Vec<u8>>,
+}
+
+/// The result of a "screenshot once settled" request: the captured frame plus
+/// the verdict. `settled` is false only when the poll timed out before the
+/// screen quiesced (the most recent frame is still returned, best-effort).
+/// `moving` lists regions still animating at capture time (video/spinner).
+pub struct SettleResult {
+    pub png: Vec<u8>,
+    pub settled: bool,
+    pub moving: Vec<Rect>,
+}
+
+/// The result of a `what_changed` probe: a fresh capture plus the bounding box
+/// of what moved since this session's previous capture (`None` if nothing did).
+pub struct WhatChangedResult {
+    pub png: Vec<u8>,
+    pub changed: Option<Rect>,
 }
 
 /// Shared registry of live desktop sessions.
@@ -190,6 +219,12 @@ impl Registry {
             .context("session thread exited before reporting readiness")?
             .map_err(|e| anyhow!("session failed to start: {e}"))?;
 
+        let detector = Arc::new(Mutex::new(SettleDetector::new(
+            params.width,
+            params.height,
+            SettleConfig::default(),
+        )));
+
         let id = new_session_id();
         {
             let mut map = self.sessions.lock().unwrap();
@@ -199,6 +234,7 @@ impl Registry {
                     client,
                     stop,
                     thread: Some(thread),
+                    detector,
                     last_used: Instant::now(),
                 },
             );
@@ -237,6 +273,97 @@ impl Registry {
                 Some(payload)
             },
         })
+    }
+
+    /// Poll the desktop until it *settles*, then return that frame plus the
+    /// regions still moving. Captures a screenshot, decodes it, feeds the
+    /// per-session settle detector, and repeats every [`SETTLE_POLL_INTERVAL`]
+    /// until the detector reports `Settled` or `timeout` elapses. On timeout
+    /// the most recent frame is still returned with `settled = false`, so the
+    /// caller always gets a usable screenshot. Blocking (sleeps + round-trips)
+    /// — call from `spawn_blocking`.
+    pub fn screenshot_when_settled(&self, id: &str, timeout: Duration) -> Result<SettleResult> {
+        let (client, detector) = self.client_and_detector(id)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let (header, payload) = client
+                .request(&Action::Screenshot)
+                .with_context(|| format!("screenshot on session {id}"))?;
+            if !header.ok {
+                bail!(
+                    "agent screenshot failed: {}",
+                    header.error.as_deref().unwrap_or("unknown error")
+                );
+            }
+            let frame = decode_png(&payload).context("decoding screenshot PNG")?;
+            let state = detector.lock().unwrap().push(frame);
+            if let SettleState::Settled { moving } = state {
+                return Ok(SettleResult {
+                    png: payload,
+                    settled: true,
+                    moving,
+                });
+            }
+            if Instant::now() >= deadline {
+                return Ok(SettleResult {
+                    png: payload,
+                    settled: false,
+                    moving: Vec::new(),
+                });
+            }
+            // Keep the idle timer fresh: a long settle wait is active use, not
+            // idleness, so the background sweep must not reap this session
+            // out from under the poll.
+            self.touch(id);
+            std::thread::sleep(SETTLE_POLL_INTERVAL);
+        }
+    }
+
+    /// Capture one frame and report the bounding box of what changed since this
+    /// session's previous capture. Blocking — call from `spawn_blocking`.
+    pub fn what_changed(&self, id: &str) -> Result<WhatChangedResult> {
+        let (client, detector) = self.client_and_detector(id)?;
+        let (header, payload) = client
+            .request(&Action::Screenshot)
+            .with_context(|| format!("screenshot on session {id}"))?;
+        if !header.ok {
+            bail!(
+                "agent screenshot failed: {}",
+                header.error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        let frame = decode_png(&payload).context("decoding screenshot PNG")?;
+        let changed = {
+            let mut d = detector.lock().unwrap();
+            d.push(frame);
+            d.last_damage()
+        };
+        Ok(WhatChangedResult {
+            png: payload,
+            changed,
+        })
+    }
+
+    /// Clone the `Send` client + the shared detector out under the map lock,
+    /// touching `last_used`, so the (slow) poll round-trips don't serialize the
+    /// registry.
+    fn client_and_detector(&self, id: &str) -> Result<(SessionClient, Arc<Mutex<SettleDetector>>)> {
+        let mut map = self.sessions.lock().unwrap();
+        let entry = map
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("no such session: {id}"))?;
+        entry.last_used = Instant::now();
+        Ok((entry.client.clone(), entry.detector.clone()))
+    }
+
+    /// Best-effort refresh of a session's idle timer, used to keep a session
+    /// that is being actively polled (a long [`screenshot_when_settled`] wait)
+    /// from being reaped by [`sweep_idle`] mid-poll. No-ops if the session is
+    /// already gone — the next round-trip will surface that.
+    fn touch(&self, id: &str) {
+        if let Some(entry) = self.sessions.lock().unwrap().get_mut(id) {
+            entry.last_used = Instant::now();
+        }
     }
 
     /// Stop and remove a session. Blocking (joins the session thread, which
@@ -321,6 +448,26 @@ fn finish(mut entry: Entry) {
     if let Some(handle) = entry.thread.take() {
         let _ = handle.join();
     }
+}
+
+/// Decode a screenshot PNG (the agent emits 8-bit RGB) into a [`Frame`] for the
+/// settle detector. Accepts RGB or RGBA at 8-bit depth; anything else is an
+/// error rather than a silent misread, since the agent's output is known.
+fn decode_png(bytes: &[u8]) -> Result<Frame> {
+    let decoder = png::Decoder::new(bytes);
+    let mut reader = decoder.read_info().context("reading PNG header")?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).context("decoding PNG frame")?;
+    if info.bit_depth != png::BitDepth::Eight {
+        bail!("unsupported PNG bit depth {:?}", info.bit_depth);
+    }
+    let channels = match info.color_type {
+        png::ColorType::Rgb => 3u8,
+        png::ColorType::Rgba => 4u8,
+        other => bail!("unsupported PNG color type {other:?}"),
+    };
+    buf.truncate(info.buffer_size());
+    Ok(Frame::new(info.width, info.height, channels, buf))
 }
 
 /// Best-effort location of the static guest helpers (vsock-send/runner) so the

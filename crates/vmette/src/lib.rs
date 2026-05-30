@@ -23,6 +23,7 @@ mod vz;
 pub mod desktop;
 pub mod ffi;
 pub mod provider;
+pub mod settle;
 
 pub use desktop::{Action, ResponseHeader, ScrollDirection};
 pub use lifecycle::{run, RunOutput};

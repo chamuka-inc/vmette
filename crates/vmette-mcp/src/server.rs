@@ -176,6 +176,15 @@ pub struct DesktopExecArgs {
     pub command: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopSettleArgs {
+    /// Session id returned by desktop_start.
+    pub session_id: String,
+    /// Max time to wait for the screen to stop changing before returning the
+    /// latest frame anyway (in milliseconds). Defaults to 10000 (10s).
+    pub timeout_ms: Option<u64>,
+}
+
 // --- structured returns for the workspace_create tool --------------------
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -476,6 +485,60 @@ impl VmetteServer {
             png,
             "image/png".to_string(),
         )]))
+    }
+
+    #[tool(
+        description = "Capture the desktop only once it has stopped changing, then return it as a PNG plus a note about any regions still in motion. Prefer this over desktop_screenshot right after an action that triggers loading/animation (navigating a page, opening a menu): it polls the framebuffer and waits for the screen to settle, so you see the final state instead of a mid-transition frame. A playing video or spinner won't block it — those are reported as 'still moving' rectangles you can reason about. If the screen never settles within timeout_ms, the latest frame is returned with a note that it had not settled."
+    )]
+    async fn desktop_screenshot_when_settled(
+        &self,
+        Parameters(args): Parameters<DesktopSettleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reply = self
+            .daemon
+            .screenshot_when_settled(&args.session_id, args.timeout_ms)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let note = if reply.settled {
+            if reply.moving.is_empty() {
+                "screen settled; nothing moving".to_string()
+            } else {
+                let regions: Vec<String> = reply
+                    .moving
+                    .iter()
+                    .map(|r| format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y))
+                    .collect();
+                format!("screen settled; still moving: {}", regions.join(", "))
+            }
+        } else {
+            "screen did not settle within timeout; latest frame returned".to_string()
+        };
+        Ok(CallToolResult::success(vec![
+            Content::text(note),
+            Content::image(reply.png_base64, "image/png".to_string()),
+        ]))
+    }
+
+    #[tool(
+        description = "Capture the desktop and report what changed since the previous capture in this session, as a PNG plus the bounding box of the change (or a note that nothing changed). Useful for confirming an action had a localized effect, or detecting that the screen is now static."
+    )]
+    async fn desktop_what_changed(
+        &self,
+        Parameters(args): Parameters<DesktopSessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reply = self
+            .daemon
+            .what_changed(&args.session_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let note = match reply.changed {
+            Some(r) => format!("changed region: {}x{}+{}+{}", r.w, r.h, r.x, r.y),
+            None => "nothing changed since the previous capture".to_string(),
+        };
+        Ok(CallToolResult::success(vec![
+            Content::text(note),
+            Content::image(reply.png_base64, "image/png".to_string()),
+        ]))
     }
 
     #[tool(description = "Report the current pointer position as 'x y'.")]
