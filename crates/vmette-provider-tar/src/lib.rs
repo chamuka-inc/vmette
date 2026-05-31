@@ -50,6 +50,24 @@ const DEFAULT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Env var to override [`DEFAULT_MAX_BYTES`] without a code change.
 const MAX_BYTES_ENV: &str = "VMETTE_TAR_MAX_BYTES";
 
+/// Default cap on the *total* size of all extracted rootfs trees in the tar
+/// cache. The cache key is the URL, so iterating on a `tar+file://` rootfs
+/// under changing names (`rootfs.tar`, `rootfs-new.tar.gz`, …) would otherwise
+/// accumulate a fresh multi-hundred-MB extraction per name, unbounded. After a
+/// fresh extraction the cache is pruned to this cap by evicting least-recently
+/// used trees. 8 GiB keeps a healthy working set of images while bounding
+/// growth. Override with `VMETTE_TAR_CACHE_MAX_BYTES`.
+const DEFAULT_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Env var to override [`DEFAULT_CACHE_MAX_BYTES`].
+const CACHE_MAX_BYTES_ENV: &str = "VMETTE_TAR_CACHE_MAX_BYTES";
+/// Orphaned `*.staging.*` / `*.trash.*` intermediates younger than this are
+/// left alone (a concurrent extraction may still own them); older ones are
+/// swept as abandoned.
+const ORPHAN_GRACE: Duration = Duration::from_secs(3600);
+/// A ready tree touched more recently than this is never evicted, even over the
+/// cap — it may be in active use by a concurrent boot.
+const EVICT_MIN_AGE: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("invalid url: {0}")]
@@ -97,6 +115,12 @@ pub struct TarProvider {
     /// `None` = always re-fetch when online (every call hits the URL).
     /// Default: 1 hour, mirroring the OCI provider's ref-entry TTL.
     pub cache_ttl: Option<Duration>,
+    /// Cap on the total size of all extracted trees in the tar cache. After a
+    /// fresh extraction the cache is pruned to this by evicting least-recently
+    /// used trees (and sweeping abandoned staging/trash intermediates). `0`
+    /// disables pruning. Default: [`DEFAULT_CACHE_MAX_BYTES`] (8 GiB),
+    /// overridable via [`CACHE_MAX_BYTES_ENV`].
+    pub cache_max_bytes: u64,
 }
 
 impl Default for TarProvider {
@@ -112,10 +136,16 @@ impl TarProvider {
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_MAX_BYTES);
+        // 0 is a valid override here: it disables cache pruning.
+        let cache_max_bytes = std::env::var(CACHE_MAX_BYTES_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_CACHE_MAX_BYTES);
         Self {
             timeout: Duration::from_secs(300),
             max_bytes,
             cache_ttl: Some(Duration::from_secs(3600)),
+            cache_max_bytes,
         }
     }
 }
@@ -162,6 +192,9 @@ impl RootfsProvider for TarProvider {
             let fresh_enough = ctx.is_offline() || (within_ttl && !source_changed);
             if fresh_enough {
                 debug!(path = %dest.display(), age_s = age.as_secs(), "tar cache hit");
+                // Mark this tree as recently used so cache pruning evicts it
+                // last (LRU), not on its original extraction time.
+                touch(&marker);
                 if let Some(src) = ctx.guest_helpers() {
                     if let Err(e) = inject_guest_helpers(&dest, src) {
                         warn!(error = %e, "guest-helper inject failed on cache hit");
@@ -326,6 +359,12 @@ impl RootfsProvider for TarProvider {
             }
         }
         info!(path = %dest.display(), "tar rootfs ready");
+        // Prune the cache now that we've added a tree — this is the only path
+        // that grows it, so it's the right place to bound it. Best-effort: a
+        // prune failure must never fail an otherwise-successful resolve.
+        if self.cache_max_bytes > 0 {
+            prune_cache(&cache, &dest, self.cache_max_bytes);
+        }
         Ok(RootfsArtifact::Directory {
             path: dest,
             read_only: false,
@@ -334,6 +373,148 @@ impl RootfsProvider for TarProvider {
 }
 
 // ---- helpers -------------------------------------------------------------
+
+/// Set a file's modified-time to now (best-effort). Marks a cache tree as
+/// recently used on a hit so LRU pruning evicts it last. `futimens` works on a
+/// read-only handle, so this needs no write permission on the marker.
+fn touch(path: &Path) {
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.set_modified(SystemTime::now());
+    }
+}
+
+/// Remove a directory tree, first making every directory under it
+/// owner-writable so trees that contain non-writable dirs can still be deleted.
+/// An extracted distro rootfs routinely has dirs like a `0555 /etc`; plain
+/// `remove_dir_all` fails on those with `EACCES` because it can't unlink the
+/// children of a directory it has no write permission on (the mode is on the
+/// dir, not the file). We only reach the chmod path on first-attempt failure,
+/// so the common case stays a single syscall-batch.
+fn force_remove_dir_all(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            chmod_dirs_writable(path);
+            std::fs::remove_dir_all(path)
+        }
+    }
+}
+
+/// Recursively add owner `rwx` to every directory under `path` (so its entries
+/// can be unlinked). Files are left alone — unlink needs write on the *parent*,
+/// not the file. Symlinks are never followed. Best-effort.
+fn chmod_dirs_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return; // a file or symlink: nothing to traverse, no chmod needed
+    }
+    let mode = meta.permissions().mode();
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for e in rd.flatten() {
+            chmod_dirs_writable(&e.path());
+        }
+    }
+}
+
+/// Total bytes of all regular files under `dir` (recursive, symlinks counted as
+/// links, not followed). Best-effort: unreadable entries are skipped.
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(entry.path()),
+                Ok(_) => {
+                    if let Ok(md) = entry.metadata() {
+                        total = total.saturating_add(md.len());
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    total
+}
+
+/// Bound the total size of extracted trees in `cache` to `cap` bytes by evicting
+/// least-recently-used trees, and sweep abandoned `*.staging.*` / `*.trash.*`
+/// intermediates from interrupted extractions. The just-resolved tree (`keep`)
+/// is never evicted, nor is any tree touched within [`EVICT_MIN_AGE`] (it may be
+/// in active use by a concurrent boot). Best-effort; runs only on the
+/// extraction path, so the directory walk is amortised against a fetch.
+fn prune_cache(cache: &Path, keep: &Path, cap: u64) {
+    let Ok(rd) = std::fs::read_dir(cache) else {
+        return;
+    };
+    let now = SystemTime::now();
+    let mut ready: Vec<(std::path::PathBuf, u64, SystemTime)> = Vec::new();
+    for entry in rd.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.contains(".staging.") || name.contains(".trash.") {
+            let age = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .unwrap_or(Duration::ZERO);
+            if age >= ORPHAN_GRACE {
+                debug!(path = %path.display(), "sweeping abandoned tar intermediate");
+                let _ = force_remove_dir_all(&path);
+            }
+            continue;
+        }
+        // Only count complete trees (those carrying the ready marker); leave
+        // anything else untouched.
+        if !path.join(READY_MARKER).exists() {
+            continue;
+        }
+        let used = path
+            .join(READY_MARKER)
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(now);
+        ready.push((path.clone(), dir_size(&path), used));
+    }
+
+    let mut total: u64 = ready.iter().map(|(_, sz, _)| *sz).sum();
+    if total <= cap {
+        return;
+    }
+    ready.sort_by_key(|(_, _, used)| *used); // least-recently-used first
+    for (path, size, used) in ready {
+        if total <= cap {
+            break;
+        }
+        if path == keep {
+            continue;
+        }
+        let recent = now
+            .duration_since(used)
+            .map(|age| age < EVICT_MIN_AGE)
+            .unwrap_or(false);
+        if recent {
+            continue;
+        }
+        debug!(path = %path.display(), size, "evicting LRU tar cache tree");
+        if force_remove_dir_all(&path).is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
+}
 
 /// The local filesystem path a `tar+file://` URL refers to, or `None` for a
 /// non-file URL. RFC 8089: `file://localhost/abs` is equivalent to
@@ -540,6 +721,121 @@ fn extract_into(source: Box<dyn Read + Send>, dest: &Path, max_bytes: u64) -> Re
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn unique_cache(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!(
+            "vmette-tar-prune-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Create a ready tree `cache/<name>/` with a `data` payload of `bytes` and
+    /// a ready marker whose mtime is `age` in the past (drives LRU ordering).
+    fn mk_tree(cache: &Path, name: &str, bytes: usize, age: Duration) {
+        let dir = cache.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("data"), vec![0u8; bytes]).unwrap();
+        let marker = dir.join(READY_MARKER);
+        std::fs::write(&marker, "ok\n").unwrap();
+        std::fs::File::open(&marker)
+            .unwrap()
+            .set_modified(SystemTime::now() - age)
+            .unwrap();
+    }
+
+    #[test]
+    fn dir_size_sums_files_recursively() {
+        let c = unique_cache("size");
+        std::fs::create_dir_all(c.join("a/b")).unwrap();
+        std::fs::write(c.join("a/x"), vec![0u8; 100]).unwrap();
+        std::fs::write(c.join("a/b/y"), vec![0u8; 250]).unwrap();
+        assert_eq!(dir_size(&c.join("a")), 350);
+        std::fs::remove_dir_all(&c).ok();
+    }
+
+    #[test]
+    fn prune_evicts_least_recently_used_over_cap() {
+        let c = unique_cache("lru");
+        // Three trees ~1000B each; keep is recent, the others are old enough to
+        // be evictable (past EVICT_MIN_AGE).
+        mk_tree(&c, "keep", 1000, Duration::from_secs(1));
+        mk_tree(&c, "old1", 1000, Duration::from_secs(600));
+        mk_tree(&c, "old2", 1000, Duration::from_secs(300));
+        let keep = c.join("keep");
+        // cap fits ~2 trees; the LRU one (old1) must go, old2 + keep survive.
+        prune_cache(&c, &keep, 2200);
+        assert!(keep.exists(), "just-resolved tree must survive");
+        assert!(c.join("old2").exists(), "newer tree must survive");
+        assert!(!c.join("old1").exists(), "LRU tree must be evicted");
+        std::fs::remove_dir_all(&c).ok();
+    }
+
+    #[test]
+    fn prune_never_evicts_keep_or_recent_even_over_cap() {
+        let c = unique_cache("protect");
+        mk_tree(&c, "keep", 1000, Duration::from_secs(1));
+        mk_tree(&c, "fresh", 1000, Duration::from_secs(5)); // within EVICT_MIN_AGE
+        let keep = c.join("keep");
+        // Cap is below either tree, but both are protected (keep / recent).
+        prune_cache(&c, &keep, 10);
+        assert!(keep.exists());
+        assert!(c.join("fresh").exists());
+        std::fs::remove_dir_all(&c).ok();
+    }
+
+    #[test]
+    fn force_remove_handles_non_writable_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let c = unique_cache("force-rm");
+        // Mimic an extracted distro rootfs: a file inside a 0555 (no-write) dir,
+        // which plain remove_dir_all cannot delete (can't unlink under it).
+        let etc = c.join("tree/etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::write(etc.join("passwd.dpkg-new"), b"x").unwrap();
+        std::fs::set_permissions(&etc, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Plain removal fails…
+        assert!(std::fs::remove_dir_all(c.join("tree")).is_err());
+        // …force removal succeeds by making dirs writable first.
+        force_remove_dir_all(&c.join("tree")).expect("force remove");
+        assert!(!c.join("tree").exists());
+        std::fs::remove_dir_all(&c).ok();
+    }
+
+    #[test]
+    fn prune_under_cap_is_a_noop() {
+        let c = unique_cache("noop");
+        mk_tree(&c, "a", 1000, Duration::from_secs(600));
+        let keep = c.join("a");
+        prune_cache(&c, &keep, 1024 * 1024);
+        assert!(c.join("a").exists());
+        std::fs::remove_dir_all(&c).ok();
+    }
+
+    #[test]
+    fn prune_sweeps_old_orphan_intermediates_only() {
+        let c = unique_cache("orphan");
+        // An abandoned trash dir older than the grace period → swept.
+        let old_trash = c.join("img.tar__abc.trash.111.222");
+        std::fs::create_dir_all(&old_trash).unwrap();
+        std::fs::File::open(&old_trash)
+            .unwrap()
+            .set_modified(SystemTime::now() - ORPHAN_GRACE - Duration::from_secs(60))
+            .unwrap();
+        // A fresh staging dir (a concurrent extraction may own it) → kept.
+        let fresh_staging = c.join("img.tar__abc.staging.333.444");
+        std::fs::create_dir_all(&fresh_staging).unwrap();
+        mk_tree(&c, "keep", 100, Duration::from_secs(1));
+        prune_cache(&c, &c.join("keep"), 1024 * 1024);
+        assert!(!old_trash.exists(), "stale orphan must be swept");
+        assert!(fresh_staging.exists(), "fresh intermediate must be kept");
+        std::fs::remove_dir_all(&c).ok();
+    }
 
     #[test]
     fn tar_matches_only_tar_schemes() {

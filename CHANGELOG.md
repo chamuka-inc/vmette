@@ -130,6 +130,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tar rootfs cache is now bounded.** The cache keys on the URL, so a
+  `tar+file://` rootfs iterated under changing names (`rootfs.tar`,
+  `rootfs-new.tar.gz`, …) accumulated a fresh multi-hundred-MB extraction per
+  name with no eviction (a dev loop could leave 10+ GB of stale trees). After a
+  fresh extraction the cache is pruned to a size cap (`VMETTE_TAR_CACHE_MAX_BYTES`,
+  default 8 GiB) by evicting least-recently-used trees — the just-resolved tree
+  and any in active use are never evicted — and abandoned `staging`/`trash`
+  intermediates from interrupted extractions are swept. Removal makes
+  directories writable first, so an extracted distro rootfs (with e.g. a `0555
+  /etc`) can actually be deleted instead of failing with `EACCES`.
 - **Desktop sessions no longer share rootfs state (per-session isolation).** A
   directory/OCI/tar rootfs (what desktop sessions use) was mounted **read-write
   on the host with no overlay**, so every session for the same image shared one
