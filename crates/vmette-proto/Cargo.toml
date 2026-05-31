@@ -8,6 +8,7 @@ license     .workspace = true
 repository  .workspace = true
 keywords    = ["vmette", "protocol", "serde", "ipc", "microvm"]
 categories  = ["encoding", "virtualization"]
+readme      = "README.md"
 
 [lib]
 name = "vmette_proto"

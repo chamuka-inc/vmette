@@ -8,6 +8,7 @@ license     = { workspace = true }
 repository  = { workspace = true }
 keywords    = ["vmette", "microvm", "boot", "kernel", "initramfs"]
 categories  = ["virtualization"]
+readme      = "README.md"
 
 [lib]
 name = "vmette_assets"

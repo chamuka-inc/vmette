@@ -6,8 +6,9 @@ edition     .workspace = true
 rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
-keywords    = ["vmette", "microvm", "sandbox", "macos", "virtualization"]
-categories  = ["command-line-utilities", "virtualization"]
+# Distributed via the release tarball + install.sh (macOS-only, codesigned),
+# not crates.io.
+publish = false
 
 [[bin]]
 name = "vmette"

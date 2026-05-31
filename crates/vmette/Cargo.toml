@@ -8,6 +8,13 @@ license     .workspace = true
 repository  .workspace = true
 keywords    = ["macos", "virtualization", "microvm", "sandbox", "vm"]
 categories  = ["virtualization", "os::macos-apis"]
+readme      = "README.md"
+
+# macOS-only (Apple's Virtualization.framework). docs.rs builds on Linux by
+# default, where this crate can't compile — pin its build to the Apple targets.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 
 # `lib`       — usable as a normal Rust crate dependency (used by vmette-cli + tests)
 # `cdylib`    — produces libvmette.dylib for non-Rust consumers
@@ -32,5 +39,10 @@ serde                .workspace = true
 serde_json           .workspace = true
 tracing              = "0.1"
 
+[features]
+# Opt-in: regenerate the checked-in `include/vmette.h` from `src/ffi.rs` at
+# build time (see build.rs). Off by default so consumers never compile cbindgen.
+regenerate-header = ["dep:cbindgen"]
+
 [build-dependencies]
-cbindgen = "0.27"
+cbindgen = { version = "0.27", optional = true }

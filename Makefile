@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build universal dist assets init guest-bin run shell test clean
+.PHONY: help build header universal dist assets init guest-bin run shell test clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -8,6 +8,9 @@ help:
 build:         ## cargo build the workspace + codesign vmette (host arch)
 	cargo build --release
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette
+
+header:        ## Regenerate the checked-in C header from src/ffi.rs (cbindgen)
+	cargo build -p vmette --features regenerate-header
 
 universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	@rustup target add x86_64-apple-darwin aarch64-apple-darwin
@@ -60,7 +63,7 @@ test:          ## Run cargo unit tests + end-to-end VM smoke
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
 
-dist: universal init guest-bin ## Produce dist/$(DIST_NAME).tar.gz with binaries + lib + header + boot assets + guest helpers + LICENSE
+dist: universal init guest-bin header ## Produce dist/$(DIST_NAME).tar.gz with binaries + lib + header + boot assets + guest helpers + LICENSE
 	rm -rf dist
 	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,assets,share/vmette/guest}
 	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/

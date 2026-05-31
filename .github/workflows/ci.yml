@@ -30,3 +30,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
+      # build.rs only regenerates the C header under this feature, so the
+      # committed include/vmette.h can drift. Regenerate and fail on any diff.
+      - name: C header is up to date
+        run: |
+          cargo build -p vmette --features regenerate-header
+          git diff --exit-code crates/vmette/include/vmette.h

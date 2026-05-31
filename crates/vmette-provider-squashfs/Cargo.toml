@@ -8,6 +8,13 @@ license     .workspace = true
 repository  .workspace = true
 keywords    = ["vmette", "squashfs", "rootfs", "block-image", "microvm"]
 categories  = ["virtualization", "filesystem"]
+readme      = "README.md"
+
+# Depends on vmette (macOS-only), so it can't build on the Linux host docs.rs
+# uses by default — pin its build to the Apple targets.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 
 [dependencies]
 vmette    = { workspace = true }
