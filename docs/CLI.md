@@ -3,6 +3,7 @@
 ```
 vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]
 vmette providers                                # list registered providers
+vmette desktop <command> [options]              # drive a persistent desktop session
 ```
 
 ## Required
@@ -62,6 +63,32 @@ a `curl | install.sh` install boots with no asset flags.
 
 On Intel, snapshot flags exit 1 with a clear error pointing at Apple's
 `#if defined(__arm64__)` gate.
+
+## Desktop sessions (`vmette desktop`)
+
+`vmette desktop` is a thin client for the persistent computer-use sessions
+held by `vmetted` — it talks to the daemon's UNIX socket, so `vmetted` must be
+running first. It exists for manual end-to-end testing without an MCP host.
+
+```
+vmette desktop start [--image REF] [--size WxH] [--net] [--offline]
+                     [--kernel PATH] [--initramfs PATH]   boot a desktop; prints SESSION_ID
+vmette desktop screenshot SESSION_ID --out FILE           capture the framebuffer to a PNG
+vmette desktop cursor      SESSION_ID                     print the pointer position
+vmette desktop move        SESSION_ID X Y                 move the pointer
+vmette desktop click       SESSION_ID X Y                 left-click at X Y
+vmette desktop double-click SESSION_ID X Y                double left-click at X Y
+vmette desktop right-click SESSION_ID X Y                 right-click at X Y
+vmette desktop type        SESSION_ID TEXT                type a string
+vmette desktop key         SESSION_ID CHORD              press a chord, e.g. 'ctrl+c'
+vmette desktop scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)
+vmette desktop exec        SESSION_ID COMMAND             launch a shell command in the guest
+vmette desktop stop        SESSION_ID                     tear the session down
+```
+
+Global: `--socket PATH` overrides the daemon socket (default
+`~/Library/Caches/vmette/vmette.sock`). See [`DESKTOP.md`](DESKTOP.md) for the
+session model and the MCP-facing tools.
 
 ## Rootfs providers
 

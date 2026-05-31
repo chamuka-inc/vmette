@@ -91,7 +91,7 @@ binary path as `command` and the flags as `args`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--default-image REF` | `alpine:3.20` | Rootfs used when `execute` or `workspace_create` doesn't specify one. |
-| `--allow-network` | off | Permits tool calls with `network=true`. Without it, `fetch_url` always fails and `execute`/`workspace_run` ignore the network field. |
+| `--allow-network` | off | Permits tool calls with `network=true`. Without it, `fetch_url` always fails and any `execute`/`workspace_create` call requesting `network=true` is rejected with an error (the field is not silently ignored). |
 | `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |

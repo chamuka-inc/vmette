@@ -40,7 +40,7 @@ fn usage() -> ! {
          \n\
          runtime:\n\
            --timeout          N         force-stop the VM after N seconds, exit 124\n\
-           --cmdline          STR       extra kernel cmdline (default 'console=hvc0 quiet')\n\
+           --cmdline          STR       override base kernel cmdline (default 'console=hvc0 quiet')\n\
            --vsock-port       N         -1=disable; 0=auto-pick 50000-59999 (default); >0=explicit\n\
            --vcpus            N         default 1\n\
            --mem-mib          N         default 512\n\

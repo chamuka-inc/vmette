@@ -55,21 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     over the same primitive; behaviour is unchanged. Agent sessions run
     on a per-session serial dispatch queue (multiple concurrent VMs) and
     expose `Send` `SessionClient` / `StopHandle` handles.
-  - **Framed vsock protocol** (`crates/vmette/src/desktop.rs`):
-    `[u32 LE header_len][header JSON][optional payload]`, with an
-    `Action` vocabulary mirroring Anthropic computer use (screenshot,
-    mouse_move, clicks, type, key chords, scroll, exec, …). Screenshots
-    return a PNG payload.
-  - **Guest desktop agent** (`guest/vmette-desktop-agent.c`): XTEST for
-    input, XGetImage + PNG encode for capture, served over vsock. Ships
-    inside a Debian-slim desktop rootfs image (Xvfb + openbox), built by
-    `scripts/build-desktop-image.sh`; `custom-init.sh` gained a
-    `vmette.desktop=1` branch.
-  - **Daemon session registry** (`vmette-daemon`): a stateful subsystem,
-    kept separate from the stateless subprocess dispatch, that holds live
-    sessions across requests with a max-live cap, idle eviction (30 min),
-    and shutdown teardown. New `desktop_start` / `desktop_action` /
-    `desktop_stop` request kinds.
+  - **New `vmetted` desktop protocol kinds.** `desktop_start` /
+    `desktop_action` / `desktop_stop` request kinds over the daemon's
+    UNIX socket, backed by a session registry that holds live sessions
+    across requests with a max-live cap, idle eviction (30 min), and
+    shutdown teardown. The `Action` vocabulary mirrors Anthropic computer
+    use (screenshot, mouse_move, clicks, type, key chords, scroll, exec, …).
   - **CLI**: a `vmette desktop` subcommand group (start / screenshot /
     move / click / type / key / scroll / exec / cursor / stop) talking to
     `vmetted` for manual end-to-end testing.
@@ -103,24 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Single owner per wire contract (internal restructure).** Extracted a new
-  leaf crate **`vmette-proto`** (serde only) that owns every cross-crate wire
-  shape: the guest computer-use vocabulary (`Action`, `ResponseHeader`,
-  `ScrollDirection`), the `vmetted` UNIX-socket protocol (the run
-  `Request`/`Frame` and the desktop `DesktopRequest`/`DesktopReply` tagged
-  enums), `Rect`, and `ShareMount`. The daemon, MCP server, and CLI all build
-  and parse these as the *same* Rust types — the hand-rolled `json!()` desktop
-  clients and the triplicated rectangle type are gone, so a renamed field or new
-  `kind` is now a compile error rather than a silent runtime break. The socket
-  bytes are unchanged.
-- **Provider order has one home.** New **`vmette-providers`** crate exposes
-  `default_registry()` (DirProvider→Squashfs→Tar→Oci); the CLI and the daemon's
-  desktop registry both call it instead of each hand-building the load-bearing,
-  first-match-wins order.
-- **Core trimmed to VZ mechanism.** The pixel-`settle` perception module moved
-  out of the "lean" core (`crates/vmette`) into `vmette-daemon`, its only
-  consumer; core `vmette` is now VZ + `Session` plus a thin re-export of the
-  proto types.
 - **`tar+file://` cache follows the file.** The tar provider keys its cache on
   the URL, so a local archive rebuilt in place under the same path used to be
   masked by the prior extraction until the 1-hour TTL lapsed. The cache is now

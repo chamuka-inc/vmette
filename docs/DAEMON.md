@@ -131,9 +131,11 @@ echo '{"kernel":"/k","initramfs":"/i","rootfs":"/p","exec":"true"}' | \
 Beyond the stateless run protocol, the daemon serves a **stateful**
 computer-use path on the same socket: a `desktop_start` boots a persistent
 graphical VM that the daemon holds in-process across connections, and
-later requests act against it by `session_id`. Sessions are capped, idle-
-evicted, and torn down on shutdown. See [`DESKTOP.md`](DESKTOP.md) for the
-session model, the `Action` vocabulary, and the image build.
+later requests act against it by `session_id`. The registry caps concurrent
+sessions at **8**, force-stops any session idle for **30 minutes**, runs the
+eviction sweep every **60 seconds**, and tears every session down on shutdown.
+See [`DESKTOP.md`](DESKTOP.md) for the session model, the `Action` vocabulary,
+and the image build.
 
 Each request is still one JSON object per connection, tagged by `kind`:
 
@@ -141,9 +143,9 @@ Each request is still one JSON object per connection, tagged by `kind`:
 |--------|-----------|-------|
 | `desktop_start` | `kernel`, `initramfs`, `image?`, `size?` (`"WxH"`), `net?`, `offline?`, `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
 | `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"type":"screenshot"}`, mouse/key/type/scroll/exec) | `{"kind":"action_result","ok":true,"x?":…,"y?":…,"png_base64?":"…"}` |
-| `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
+| `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; small default, larger for launches) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
 | `desktop_what_changed` | `session_id` | fresh frame + damage region |
-| `desktop_stop` | `session_id` | `{"kind":"action_result","ok":true}` |
+| `desktop_stop` | `session_id` | `{"kind":"stopped"}` |
 
 A daemon-side failure on any kind returns `{"kind":"error","message":"…"}`.
 

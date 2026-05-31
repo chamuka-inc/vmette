@@ -149,5 +149,11 @@ returns an MCP image content block. `--allow-network` gates outbound network.
   pulling in clap-scale deps — small binary is a goal).
 - Prefer structurally correct solutions over pragmatic band-aids.
 - Docs live in `docs/`: `CLI.md`, `API.md`, `DAEMON.md`, `MCP.md`, `DESKTOP.md`,
-  `HACKING.md`. Keep `CHANGELOG.md` updated for user-facing changes.
+  `HACKING.md`.
+- `CHANGELOG.md` records **only external-API changes and bug fixes** — anything a
+  consumer calls, passes, or observes (CLI flags, MCP tools, library
+  types/signatures, daemon wire protocol, env vars, build/make targets) or a
+  behavioral fix. Internal restructures (crate extractions, module moves,
+  refactors with unchanged behavior) do **not** belong, even under "Changed".
+  Fold internal sub-points into the external-facing entry they support.
 - Do not commit `assets/` or `images/` build outputs.

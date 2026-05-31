@@ -150,12 +150,14 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_start` | `image?`, `size?`, `network?` | session id (text) |
 | `desktop_screenshot` | `session_id` | **PNG image content block** |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | **PNG image content block** (once the screen stops changing) |
-| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture |
+| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture **plus a PNG image content block** of the fresh frame |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` | `session_id`, `x`, `y` | status text |
 | `desktop_click` | `session_id`, `x`, `y` | status text |
 | `desktop_double_click` | `session_id`, `x`, `y` | status text |
 | `desktop_right_click` | `session_id`, `x`, `y` | status text |
+| `desktop_middle_click` | `session_id`, `x`, `y` | status text |
+| `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the current pointer position) |
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status text |

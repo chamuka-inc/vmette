@@ -127,7 +127,7 @@ pub enum ProviderError {
 /// Carries cache root, offline policy, and an optional pointer to the
 /// directory holding `vsock-send` / `vsock-runner` binaries that the OCI
 /// provider injects into pulled images. Constructed by callers via
-/// [`Context::builder`].
+/// [`Context::new`].
 #[derive(Debug, Clone)]
 pub struct Context {
     cache_root: PathBuf,

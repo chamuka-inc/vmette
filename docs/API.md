@@ -53,7 +53,10 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
 - `VsockPort` — `Disabled` | `Auto` | `Fixed(u32)`.
 - `RootfsShare { path, read_only }` — a host directory shared over
   virtio-fs; held in `Config.rootfs_share`.
-- `RootfsArtifact` — what a provider's `resolve()` produces:
+- `RootfsBlock { path, fstype }` — a filesystem image attached read-only as
+  `/dev/vda` with a tmpfs overlay; held in `Config.rootfs_block`, mutually
+  exclusive with `rootfs_share`.
+- `RootfsArtifact` — what a provider's `provide()` produces:
   `Directory { path, read_only }` (virtio-fs share) or
   `BlockImage { path, fstype }` (read-only block device + tmpfs overlay).
 - `BlockFs` — block-image filesystem tag; currently `Squashfs` only.

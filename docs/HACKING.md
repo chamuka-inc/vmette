@@ -29,12 +29,20 @@ make test                   # cargo tests + end-to-end VM smoke
 ## Layout reminder
 
 ```
-crates/vmette/        library (rlib + cdylib + staticlib)
-crates/vmette-cli/    `vmette` CLI binary
-crates/vmette-daemon/ `vmetted` UNIX-socket daemon
-guest/                C sources cross-compiled with musl for the alpine guest
-scripts/              asset pipeline + dev wrappers + installer
-tests/                cargo unit tests live in-crate; smoke runner here
+crates/vmette/                   library (rlib + cdylib + staticlib): VZ wrapper, Config, run(), Session, C ABI
+crates/vmette-proto/             leaf wire contracts (serde only): agent + daemon protocol types
+crates/vmette-providers/         aggregator exposing default_registry() (Dir→Squashfs→Tar→Oci)
+crates/vmette-assets/            shared boot-asset (kernel + initramfs) discovery
+crates/vmette-cli/               `vmette` CLI binary
+crates/vmette-daemon/            `vmetted` UNIX-socket daemon + stateful desktop registry
+crates/vmette-mcp/               `vmette-mcp` MCP server for AI agents
+crates/vmette-provider-oci/      OCI/Docker image rootfs provider
+crates/vmette-provider-squashfs/ squashfs block-image rootfs provider
+crates/vmette-provider-tar/      tarball rootfs provider
+guest/                           C sources cross-compiled with musl for the alpine guest
+images/vmette-desktop/           Dockerfile + entrypoint for the desktop rootfs (untracked build inputs)
+scripts/                         asset pipeline + dev wrappers + installer
+tests/                           cargo unit tests live in-crate; smoke runner here
 ```
 
 ## Building the library for non-Rust consumers
