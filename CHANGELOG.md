@@ -130,6 +130,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Desktop sessions no longer share rootfs state (per-session isolation).** A
+  directory/OCI/tar rootfs (what desktop sessions use) was mounted **read-write
+  on the host with no overlay**, so every session for the same image shared one
+  on-host directory: one session's writes — a chromium profile, `/etc/resolv.conf`
+  from a `--net` DHCP, any file — bled into every other session and persisted
+  across daemon restarts. The rootfs share is now mounted **read-only on the host
+  and overlaid with a per-session tmpfs in the guest** (the same ephemeral
+  semantic the squashfs block path already had); writes are discarded on shutdown
+  and never reach the shared directory. The exit code now travels through the
+  writable `ctl` share (as the block path does) rather than the rootfs. Explicit
+  `--share` mounts stay writable.
+- **`--rootfs <bare-relative-dir>` now resolves to the local directory.** A real
+  directory given without a `./` prefix (e.g. `--rootfs assets/rootfs`) used to
+  fall through to the OCI provider and fail with a registry `401`; `DirProvider`
+  now claims any spec that is an existing directory. A local dir shadows an OCI
+  image of the same name — use `oci://name` to force the image.
+- **`desktop_what_changed` returns just the changed region.** It now crops the
+  PNG to the reported bounding box instead of sending the full framebuffer
+  (10–50× fewer bytes for a typical local change), matching its documented
+  contract.
+- **An immediate screenshot after `desktop_start` is no longer black.** The WM
+  clears the root on init, so the neutral background is now painted *after*
+  openbox registers, and `desktop_start` blocks on a settle barrier until the
+  first frame paints — an agent's first capture shows the slate desktop, not a
+  pre-paint black frame that reads as a broken capture.
+- **`vmette` no longer emits ANSI colour codes when its stderr is piped.** The
+  provider trace logs (`resolving image …`) are now plain text when stderr isn't
+  a terminal, so a parent that captures them (the MCP server) doesn't surface raw
+  escape sequences to the agent. Colour is kept for interactive use.
+- **`workspace_create` no longer returns the host path.** The result is just
+  `{workspace_id, image}`; the agent operates on the workspace through
+  `workspace_id` only, matching the documented isolation boundary.
+- **`make build` signs all three binaries.** It now codesigns `vmetted` and
+  `vmette-mcp` (with/without the virtualization entitlement respectively) in
+  addition to `vmette`, so a plain `make build` produces binaries that can boot a
+  VM instead of failing with a start error until re-signed.
 - **MCP `execute` / `workspace_run` output is now just the command's output.**
   The guest exec runs inside marker-bracketed framing so the server slices the
   guest console down to exactly what the command produced — the surrounding

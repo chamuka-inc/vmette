@@ -88,6 +88,11 @@ export VMETTE_VSOCK_PORT VMETTE_GUEST_VSOCK_PORT
 
 # ---- step 3: mount rootfs share -----------------------------------------
 
+# EXIT_VIA_CTL=1 means the guest root is not host-visible (block or overlaid
+# virtio-fs), so the exit code is written to the writable "ctl" share the host
+# injected, not onto the root itself. Set by the overlay branches below.
+EXIT_VIA_CTL=0
+
 if [ -n "$ROOTFS_BLOCK" ]; then
     # Block-image rootfs (e.g. squashfs): the host attached the image
     # read-only as /dev/vda (storage slot 0). Mount it read-only as the
@@ -109,22 +114,45 @@ if [ -n "$ROOTFS_BLOCK" ]; then
     if mount -t overlay overlay \
         -o lowerdir=/lower,upperdir=/ovl/upper,workdir=/ovl/work /newroot 2>/dev/null; then
         log "overlay root at /newroot (upper=tmpfs, lower=$ROOTFS_BLOCK ro)"
+        EXIT_VIA_CTL=1
     else
         log "FATAL: overlay mount failed; dropping to shell"
         exec /bin/sh
     fi
 elif [ "$(cmdline_get vmette.rootfs)" = "1" ]; then
+    # Directory rootfs over virtio-fs. The host always shares it READ-ONLY.
     if [ "$ROOTFS_RO" = "1" ]; then
-        mount_opts="-o ro"
+        # `--rootfs-ro`: mount it read-only directly, no writable layer.
+        if mount -t virtiofs -o ro rootfs /newroot 2>/dev/null; then
+            log "mounted virtio-fs 'rootfs' at /newroot (ro)"
+        else
+            log "FATAL: could not mount virtio-fs tag 'rootfs'; dropping to shell"
+            exec /bin/sh
+        fi
     else
-        mount_opts=""
-    fi
-    # shellcheck disable=SC2086
-    if mount -t virtiofs $mount_opts rootfs /newroot 2>/dev/null; then
-        log "mounted virtio-fs 'rootfs' at /newroot${ROOTFS_RO:+ (ro)}"
-    else
-        log "FATAL: could not mount virtio-fs tag 'rootfs'; dropping to shell"
-        exec /bin/sh
+        # Default: overlay a per-session tmpfs upper over the read-only
+        # virtio-fs lower, so the guest gets a writable / whose writes are
+        # discarded on shutdown and NEVER reach the shared host directory —
+        # the same isolation the block path gets. Without this, every session
+        # sharing the extracted rootfs dir would see each other's writes.
+        modprobe overlay 2>/dev/null
+        mkdir -p /lower /ovl /newroot
+        if mount -t virtiofs -o ro rootfs /lower 2>/dev/null; then
+            log "mounted virtio-fs 'rootfs' at /lower (ro, overlay lower)"
+        else
+            log "FATAL: could not mount virtio-fs tag 'rootfs'; dropping to shell"
+            exec /bin/sh
+        fi
+        mount -t tmpfs tmpfs /ovl 2>/dev/null
+        mkdir -p /ovl/upper /ovl/work
+        if mount -t overlay overlay \
+            -o lowerdir=/lower,upperdir=/ovl/upper,workdir=/ovl/work /newroot 2>/dev/null; then
+            log "overlay root at /newroot (upper=tmpfs, lower=virtio-fs ro)"
+            EXIT_VIA_CTL=1
+        else
+            log "FATAL: overlay mount over virtio-fs failed; dropping to shell"
+            exec /bin/sh
+        fi
     fi
 else
     log "no rootfs share; running in initramfs (limited environment)"
@@ -262,7 +290,7 @@ if [ -n "$B64" ]; then
 fi
 
 EXIT_FILE=""
-if [ -n "$ROOTFS_BLOCK" ]; then
+if [ "$EXIT_VIA_CTL" = "1" ]; then
     # The overlay root's writable upper is a tmpfs the host can't see, so
     # write the exit code into the dedicated writable "ctl" virtio-fs share
     # the host reads back. It is mounted at /newroot/mnt/ctl (step 4) and,
@@ -270,7 +298,9 @@ if [ -n "$ROOTFS_BLOCK" ]; then
     # relative to the post-pivot/chroot root, so it works for both the
     # chroot (/newroot/mnt/ctl/...) and switch_root (/mnt/ctl/...) paths.
     EXIT_FILE="/mnt/ctl/.vmette-exit"
-elif [ -z "$ROOTFS_RO" ] || [ "$ROOTFS_RO" != "1" ]; then
+elif [ "$ROOTFS_RO" != "1" ]; then
+    # No overlay and not read-only: a host-visible writable root (the
+    # initramfs-only fallback). Drop the exit code onto the root directly.
     EXIT_FILE="/.vmette-exit"
 fi
 

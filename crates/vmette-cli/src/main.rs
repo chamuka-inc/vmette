@@ -355,12 +355,16 @@ fn print_providers(registry: &Registry) {
 
 fn main() -> ExitCode {
     // Light tracing so the OCI puller and tar fetcher can log to stderr.
+    // Disable ANSI colours when stderr isn't a terminal (e.g. the vmette-mcp
+    // server captures it into a pipe and returns it to the agent verbatim —
+    // raw escape codes there are noise). Keep colour for interactive use.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "vmette_provider_oci=info,vmette_provider_tar=info".into()),
         )
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .without_time()
         .with_target(false)
         .try_init();

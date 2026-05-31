@@ -230,7 +230,9 @@ pub struct DesktopSettleArgs {
 pub struct WorkspaceCreateResult {
     pub workspace_id: String,
     pub image: String,
-    pub host_path: String,
+    // No `host_path`: the agent must never see a host filesystem path (it
+    // operates on the workspace only via `workspace_id`). Exposing it would
+    // contradict the isolation boundary the server documents.
 }
 
 // --- the server ----------------------------------------------------------
@@ -372,7 +374,6 @@ impl VmetteServer {
         Ok(Json(WorkspaceCreateResult {
             workspace_id: ws.id,
             image,
-            host_path: ws.dir.display().to_string(),
         }))
     }
 

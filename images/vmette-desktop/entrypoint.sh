@@ -61,10 +61,25 @@ fi
 echo "[desktop] starting openbox" >&2
 openbox >/var/log/openbox.log 2>&1 &
 
-# Paint the root window a neutral colour. Openbox sets no wallpaper, so an idle
-# desktop is otherwise pure black — which reads as a broken/blank capture to an
-# agent taking its first screenshot before launching any app.
-xsetroot -solid '#2e3440' 2>/dev/null || true
+# Paint the root window a neutral colour so an idle desktop is a neutral slate
+# rather than pure black — which an agent's first screenshot (taken right after
+# desktop_start returns) would read as a broken/blank capture. openbox clears
+# the root to black when it initialises, so a colour set BEFORE it is clobbered;
+# xsetroot must run AFTER openbox is up to stick. Do it in the background (so the
+# agent still execs promptly) once openbox has registered as the EWMH window
+# manager. The daemon's desktop_start settle barrier blocks until this paint
+# lands, so the first screenshot is never the pre-paint black framebuffer.
+(
+    n=0
+    while [ "$n" -lt 30 ]; do
+        if xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1; then
+            break
+        fi
+        n=$((n + 1))
+        sleep 0.1
+    done
+    xsetroot -solid '#2e3440' 2>/dev/null || true
+) &
 
 echo "[desktop] exec agent → host:${HOST_PORT}" >&2
 exec vmette-desktop-agent "$HOST_PORT" :99

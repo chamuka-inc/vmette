@@ -90,10 +90,18 @@ pub(crate) fn build(
                 VZVirtioFileSystemDeviceConfiguration::alloc(),
                 &nsstr("rootfs"),
             );
+            // The rootfs share is ALWAYS mounted read-only on the host. The
+            // guest never writes through to the shared host directory: when the
+            // rootfs is writable it overlays a per-session tmpfs upper over this
+            // read-only lower (writes discarded on shutdown), and when it's
+            // `--rootfs-ro` it mounts read-only directly. Host writability would
+            // leak one session's writes (chromium profile, /etc/resolv.conf, …)
+            // into every other session sharing the same extracted rootfs dir.
+            // Explicit `--share` mounts remain writable; this is only the root.
             let dir = VZSharedDirectory::initWithURL_readOnly(
                 VZSharedDirectory::alloc(),
                 &file_url(&rs.path),
-                rs.read_only,
+                true,
             );
             let share =
                 VZSingleDirectoryShare::initWithDirectory(VZSingleDirectoryShare::alloc(), &dir);

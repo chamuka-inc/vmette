@@ -12,6 +12,14 @@ is the hypervisor, the screen the agent sees and the input it injects stay
 inside the guest, and it reaches your host filesystem or network only where you
 explicitly grant it.
 
+Each session is also isolated **from every other session**: the desktop rootfs
+is mounted read-only on the host and overlaid with a per-session tmpfs in the
+guest, so anything a session writes — browser profile and cache, cookies,
+downloads, `/etc` edits — lives only in that session and is discarded when it
+stops. Two sessions never see each other's state, and nothing persists across a
+daemon restart. (Explicit `--share`/share mounts are the deliberate exception:
+those are writable and shared with the host because you asked for them.)
+
 There is no Apple graphics window involved. The guest runs a headless X server
 (`Xvfb :99`) plus a lightweight window manager (`openbox`), and an in-guest C
 agent (`vmette-desktop-agent`) captures the framebuffer with `XGetImage` and

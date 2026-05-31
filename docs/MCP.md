@@ -145,7 +145,9 @@ session lifetime.
 | `image` | string, default `--default-image` | OCI ref used by subsequent `workspace_run` calls. |
 | `network` | bool, default false | Network policy for `workspace_run` calls (requires `--allow-network`). |
 
-Returns (structured): `{"workspace_id": "...", "image": "...", "host_path": "..."}`
+Returns (structured): `{"workspace_id": "...", "image": "..."}`. The host
+path is deliberately **not** returned — the agent operates on the workspace
+only through `workspace_id`, never a host filesystem path.
 
 ### `workspace_write`
 
@@ -228,12 +230,24 @@ surprises:
   the page viewport starts *below* the browser chrome (roughly the toolbar
   height), so a coordinate that looks right in the page is off by that offset.
   Take a `desktop_screenshot` and calibrate against what's actually on screen.
-- **Typing goes to the focused widget.** `desktop_type` / `desktop_key` deliver
-  keystrokes to whatever currently has focus — click the field first. Text typed
-  with no focus target is silently dropped, not buffered.
+- **Typing goes to the focused widget, and success is not delivery.**
+  `desktop_type` / `desktop_key` deliver keystrokes to whatever currently has
+  focus — click *inside* the target window first (an absolute coordinate that
+  lands outside the window will focus the root and silently drop the input).
+  Their `ok` status only means the X server accepted the synthetic event, **not**
+  that a focused widget received it — X/XTEST exposes no delivery signal. Always
+  confirm the effect with a follow-up `desktop_screenshot` (e.g. that your text
+  actually appeared at the prompt) rather than trusting the `ok`.
 - **Typing is one synthetic keystroke at a time.** Fine for form fields and
   shell commands; slow for very large blobs. To put a big file into the guest,
   write it with `desktop_exec` (e.g. a here-doc) rather than typing it.
+- **`desktop_exec` is fire-and-forget.** It backgrounds a command and returns
+  immediately — it does **not** capture stdout/stderr or report an exit code, so
+  you cannot use it to verify a result. To check a command's output inside a
+  desktop session, redirect it to a guest file (`mycmd > /tmp/out 2>&1`) and
+  surface that file visually (e.g. `desktop_launch "xterm -hold -e cat /tmp/out"`),
+  or run the command on the one-shot path (`execute` / `workspace_run`), which
+  *does* return exit code + stdout + stderr.
 - **Settle ignores sub-tile pixel noise.** `desktop_what_changed` and the
   settle logic compare in tiles, so a tiny visual change — a single counter
   digit ticking, a small checkmark appearing — can read as "nothing changed."

@@ -327,23 +327,30 @@ impl Session {
     pub fn start(config: &Config) -> Result<Session, Error> {
         let vsock_port = resolve_vsock_port(config.vsock_port);
 
-        // A block rootfs is attached read-only and overlaid with a tmpfs, so
-        // the guest has no host-visible writable surface to drop `.vmette-exit`
-        // into. Auto-attach a writable "ctl" virtio-fs share backed by a
-        // per-session host temp dir; the guest writes its exit code there and
-        // the host reads it back. Clone the config so this injected share never
-        // leaks into the caller's `Config`.
+        // The guest root is never host-writable: a block rootfs is overlaid
+        // with a tmpfs, and a directory rootfs is now mounted read-only on the
+        // host + overlaid with a tmpfs in the guest (per-session isolation). So
+        // whenever there's a writable workload, the guest has no host-visible
+        // surface to drop `.vmette-exit` into. Auto-attach a writable "ctl"
+        // virtio-fs share backed by a per-session host temp dir; the guest
+        // writes its exit code there and the host reads it back. Clone the
+        // config so this injected share never leaks into the caller's `Config`.
+        //
+        // A truly read-only directory rootfs (`--rootfs-ro`) gets no exit
+        // channel — it can't write one and the guest can't either.
         let mut working = config.clone();
         let mut control_dir: Option<ControlDirGuard> = None;
-        let exit_code_file = if config.rootfs_block.is_some() {
-            // "ctl" is reserved for the block-rootfs exit channel injected
-            // below. A caller share with the same tag would produce two
-            // virtio-fs devices tagged "ctl" and the guest would mount one
-            // of them at /mnt/ctl nondeterministically — silently breaking
-            // exit-code read-back. Reject loudly instead.
+        let needs_ctl = config.rootfs_block.is_some()
+            || config.rootfs_share.as_ref().is_some_and(|rs| !rs.read_only);
+        let exit_code_file = if needs_ctl {
+            // "ctl" is reserved for the exit channel injected below. A caller
+            // share with the same tag would produce two virtio-fs devices
+            // tagged "ctl" and the guest would mount one of them at /mnt/ctl
+            // nondeterministically — silently breaking exit-code read-back.
+            // Reject loudly instead.
             if config.shares.iter().any(|s| s.tag == "ctl") {
                 return Err(Error::InvalidConfig(
-                    "share tag \"ctl\" is reserved for the block-rootfs exit channel".into(),
+                    "share tag \"ctl\" is reserved for the rootfs exit channel".into(),
                 ));
             }
             let dir = make_control_dir()?;
@@ -356,16 +363,7 @@ impl Session {
             control_dir = Some(ControlDirGuard(dir));
             Some(p)
         } else {
-            // Unlink any stale .vmette-exit so wait() can't read a prior run's code.
-            config.rootfs_share.as_ref().and_then(|rs| {
-                if rs.read_only {
-                    None
-                } else {
-                    let p = rs.path.join(".vmette-exit");
-                    let _ = std::fs::remove_file(&p);
-                    Some(p)
-                }
-            })
+            None
         };
 
         let cmdline = cmdline::build(&working, vsock_port);

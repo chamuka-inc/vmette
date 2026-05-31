@@ -216,23 +216,24 @@ else
 fi
 rm -f "$log"
 
-# --rootfs assets/alpine-rootfs (no leading ./) used to confusingly
-# fall through to OciProvider's catch-all. New OciProvider now emits
-# a friendly hint suggesting the ./ prefix.
-printf "  %-40s " "bare relative path → path-hint error"
+# --rootfs assets/alpine-rootfs (no leading ./) is a real local directory, so
+# DirProvider must claim it (is_dir) and boot it — NOT fall through to the OCI
+# catch-all (which would treat it as a Docker repo and 401). Run from the repo
+# root so the bare-relative path resolves.
+printf "  %-40s " "bare relative dir boots (DirProvider)"
 log=$(mktemp)
-"$BIN" \
+( cd "$HERE" && "$BIN" \
     --kernel    "$ASSETS/vmlinuz-virt" \
     --initramfs "$ASSETS/initramfs-vmette" \
     --rootfs    assets/alpine-rootfs \
-    --exec      'true' </dev/null >"$log" 2>&1
+    --exec      'true' </dev/null >"$log" 2>&1 )
 got=$?
-if [[ "$got" == "1" ]] && grep -qE 'looks like a relative path|did you mean|./' "$log"; then
+if [[ "$got" == "0" ]] && ! grep -qiE 'index.docker.io|not authorized|OCI' "$log"; then
     echo "PASS"
     PASS=$((PASS + 1))
 else
-    echo "FAIL  (expected exit 1 with path-hint, got exit $got)"
-    FAIL=$((FAIL + 1)); FAILED+=("path-hint error")
+    echo "FAIL  (expected exit 0 via DirProvider, got exit $got)"
+    FAIL=$((FAIL + 1)); FAILED+=("bare relative dir boots")
     echo "    --- log tail ---"
     tail -5 "$log" | sed 's/^/    /'
 fi

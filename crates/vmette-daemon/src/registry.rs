@@ -72,6 +72,12 @@ pub const DEFAULT_SETTLE_TIMEOUT_MS: u64 = 10_000;
 /// noticeably slowing an agent's per-action settle. `desktop_launch` overrides
 /// this with a larger hold to bridge a page load's chrome-then-content gap.
 pub const DEFAULT_SETTLE_HOLD_MS: u64 = 500;
+/// How long [`SessionRegistry::start`] waits for the desktop's first paint
+/// before returning the session id. Without this barrier an immediate
+/// `desktop_screenshot` after `desktop_start` races the WM's first paint and
+/// captures the pre-paint black framebuffer. Best-effort: the frame is
+/// discarded and a timeout never fails the (already-live) session.
+const START_SETTLE_TIMEOUT_MS: u64 = 8_000;
 
 /// A live desktop session's host-side handles. The `Session` itself lives on
 /// `thread`; we keep only the `Send` control handles here.
@@ -258,6 +264,19 @@ impl Registry {
         // The session now counts via `sessions.len()`; release the reservation
         // (done after the insert so the slot is never momentarily uncounted).
         reservation.commit();
+
+        // Readiness barrier: block until the desktop's first frame has painted
+        // (the WM's neutral root), so a screenshot taken right after
+        // desktop_start returns isn't the pre-paint black framebuffer. The
+        // frame is discarded — we only want the barrier — and a timeout is
+        // non-fatal since the session is already live. This also primes the
+        // settle detector, so the first `what_changed` compares against the
+        // initial painted frame.
+        let _ = self.screenshot_when_settled(
+            &id,
+            Duration::from_millis(START_SETTLE_TIMEOUT_MS),
+            Duration::from_millis(DEFAULT_SETTLE_HOLD_MS),
+        );
         Ok(id)
     }
 
@@ -397,13 +416,19 @@ impl Registry {
         let frame = decode_png(&payload).context("decoding screenshot PNG")?;
         let changed = {
             let mut d = detector.lock().unwrap();
-            d.push(frame);
+            d.push(frame.clone());
             d.last_damage()
         };
-        Ok(WhatChangedResult {
-            png: payload,
-            changed,
-        })
+        // Return only the changed region as the PNG (matching the documented
+        // "PNG of the region changed") — a small crop instead of the full
+        // framebuffer, which is 10-50× fewer bytes for a typical local change.
+        // Fall back to the full frame if there's no change or the crop is
+        // degenerate.
+        let png = match changed {
+            Some(rect) => crop_png(&frame, rect).unwrap_or(payload),
+            None => payload,
+        };
+        Ok(WhatChangedResult { png, changed })
     }
 
     /// Clone the `Send` client + the shared detector out under the map lock,
@@ -530,6 +555,43 @@ fn decode_png(bytes: &[u8]) -> Result<Frame> {
     };
     buf.truncate(info.buffer_size());
     Ok(Frame::new(info.width, info.height, channels, buf))
+}
+
+/// Crop a decoded frame to `rect` (clamped to the frame) and re-encode as PNG.
+/// Returns an error for a degenerate (zero-area) region so the caller can fall
+/// back to the full frame. Mirrors the agent's 8-bit RGB/RGBA output.
+fn crop_png(frame: &Frame, rect: Rect) -> Result<Vec<u8>> {
+    let ch = frame.channels as usize;
+    let x0 = rect.x.min(frame.width);
+    let y0 = rect.y.min(frame.height);
+    let x1 = (rect.x.saturating_add(rect.w)).min(frame.width);
+    let y1 = (rect.y.saturating_add(rect.h)).min(frame.height);
+    let cw = x1.saturating_sub(x0);
+    let cropped_h = y1.saturating_sub(y0);
+    if cw == 0 || cropped_h == 0 {
+        bail!("empty crop region {rect:?}");
+    }
+    let row_bytes = cw as usize * ch;
+    let mut out = Vec::with_capacity(row_bytes * cropped_h as usize);
+    for y in y0..y1 {
+        let start = (y * frame.width + x0) as usize * ch;
+        out.extend_from_slice(&frame.pixels[start..start + row_bytes]);
+    }
+    let mut png_bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut png_bytes, cw, cropped_h);
+        enc.set_color(if ch == 4 {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().context("png header")?;
+        writer
+            .write_image_data(&out)
+            .context("writing cropped png data")?;
+    }
+    Ok(png_bytes)
 }
 
 /// Best-effort location of the static guest helpers (vsock-send/runner) so the

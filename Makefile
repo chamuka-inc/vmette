@@ -5,9 +5,13 @@ SHELL := /bin/bash
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-build:         ## cargo build the workspace + codesign vmette (host arch)
+build:         ## cargo build the workspace + codesign vmette/vmetted/vmette-mcp (host arch)
 	cargo build --release
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmetted
+	# vmette-mcp boots no VM itself (it spawns vmette / talks to vmetted), so
+	# it needs no virtualization entitlement — ad-hoc sign it with least privilege.
+	codesign --sign - --force --options=runtime target/release/vmette-mcp
 
 header:        ## Regenerate the checked-in C header from src/ffi.rs (cbindgen)
 	cargo build -p vmette --features regenerate-header

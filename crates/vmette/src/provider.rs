@@ -196,9 +196,12 @@ pub trait RootfsProvider: Send + Sync {
     /// subdirectory name. Must be a path-safe ASCII slug.
     fn name(&self) -> &'static str;
 
-    /// Does this provider claim `spec`? Should be a pure string check —
-    /// no I/O. Multiple providers may match; the first registered wins
-    /// (see [`Registry::resolve`]).
+    /// Does this provider claim `spec`? Normally a pure string check, but a
+    /// provider may stat the filesystem to disambiguate (e.g. [`DirProvider`]
+    /// claims a bare-relative spec that is an existing directory, so it isn't
+    /// mistaken for an image ref). Keep any such I/O cheap and infallible —
+    /// errors belong in [`provide`](Self::provide). Multiple providers may
+    /// match; the first registered wins (see [`Registry::resolve`]).
     fn matches(&self, spec: &str) -> bool;
 
     /// Resolve `spec` to a [`RootfsArtifact`] the VM can mount as `/`.
@@ -315,9 +318,15 @@ pub fn inject_guest_helpers(rootfs: &Path, src_bin_dir: &Path) -> std::io::Resul
 
 // ---- built-in: DirProvider ----------------------------------------------
 
-/// Resolves bare filesystem paths to themselves. Claims any spec that
-/// begins with `/`, `./`, `../`, or `~/`. Tilde expansion is shell-style
-/// (only a leading `~/` against `$HOME`; `~user` is not supported).
+/// Resolves bare filesystem paths to themselves. Claims any spec that begins
+/// with `/`, `./`, `../`, or `~/`, plus any bare-relative spec that resolves to
+/// an existing directory (so `--rootfs assets/foo` works without a `./`).
+/// Tilde expansion is shell-style (only a leading `~/` against `$HOME`;
+/// `~user` is not supported).
+///
+/// A bare-relative existing directory shadows an OCI image of the same name —
+/// e.g. a local `./node` directory wins over the Docker `node` image. Force the
+/// OCI provider with an explicit scheme (`oci://node`) to disambiguate.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DirProvider;
 
@@ -333,12 +342,26 @@ impl RootfsProvider for DirProvider {
     }
 
     fn matches(&self, spec: &str) -> bool {
-        spec.starts_with('/')
+        // Path-shaped specs are claimed even if missing, so the user gets a
+        // "no such file" error from `provide` rather than a confusing OCI
+        // pull failure.
+        if spec.starts_with('/')
             || spec.starts_with("./")
             || spec.starts_with("../")
             || spec.starts_with("~/")
             || spec == "."
             || spec == ".."
+        {
+            return true;
+        }
+        // Bare-relative specs that resolve to an existing directory (e.g.
+        // `assets/alpine-rootfs`) are real local rootfs dirs, not image refs.
+        // Claim them here so they don't fall through to the OCI catch-all,
+        // which would treat them as a Docker repo and fail with a 401. A spec
+        // that isn't an existing dir (e.g. `alpine:3.20`, `node`) is left for
+        // the scheme/OCI providers. Disambiguate a dir that shadows an image
+        // name with an explicit `oci://` scheme.
+        std::path::Path::new(spec).is_dir()
     }
 
     fn provide(&self, spec: &str, _ctx: &Context) -> Result<RootfsArtifact, ProviderError> {
@@ -390,6 +413,20 @@ mod tests {
         assert!(!p.matches("oci://alpine"));
         assert!(!p.matches("tar+https://example.com/a.tgz"));
         assert!(!p.matches(""));
+    }
+
+    #[test]
+    fn dir_matches_bare_relative_existing_dir() {
+        let p = DirProvider;
+        // `cargo test` runs with cwd = the crate root, which has a `src/` dir.
+        // A bare-relative spec that resolves to an existing directory must be
+        // claimed (so it never falls through to OCI and 401s).
+        assert!(p.matches("src"));
+        // A bare-relative spec that isn't an existing dir is left for the
+        // scheme/OCI providers (so real image refs still resolve).
+        assert!(!p.matches("definitely-not-a-dir-xyz"));
+        // A regular file is not a directory, so it's not claimed either.
+        assert!(!p.matches("Cargo.toml"));
     }
 
     #[test]
