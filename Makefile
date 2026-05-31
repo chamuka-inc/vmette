@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist assets init guest-bin run shell test clean
+.PHONY: help build header universal dist publish assets init guest-bin run shell test clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -11,6 +11,20 @@ build:         ## cargo build the workspace + codesign vmette (host arch)
 
 header:        ## Regenerate the checked-in C header from src/ffi.rs (cbindgen)
 	cargo build -p vmette --features regenerate-header
+
+# Publish the library crates to crates.io, dependencies before dependents.
+# cargo publish waits for each crate to land in the index before returning, so
+# the next dependent can resolve it. The three binary crates are publish=false
+# and intentionally skipped. Pass FLAGS=--dry-run to rehearse a single crate
+# (dependents can only be dry-run once their deps are already on crates.io).
+publish:       ## Publish the vmette library crates to crates.io (in dep order)
+	cargo publish $(FLAGS) -p vmette-proto
+	cargo publish $(FLAGS) -p vmette-assets
+	cargo publish $(FLAGS) -p vmette
+	cargo publish $(FLAGS) -p vmette-provider-oci
+	cargo publish $(FLAGS) -p vmette-provider-squashfs
+	cargo publish $(FLAGS) -p vmette-provider-tar
+	cargo publish $(FLAGS) -p vmette-providers
 
 universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	@rustup target add x86_64-apple-darwin aarch64-apple-darwin
