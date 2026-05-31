@@ -104,6 +104,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a `tar+file://` rebuild is picked up on the next boot. http(s) URLs are
   unchanged (TTL governs); `--offline` still pins to cache.
 
+### Fixed
+
+- **`desktop_type` corrupted long / multi-line input.** The guest agent's
+  string-typing path (`guest/vmette-desktop-agent.c`) bound each distinct
+  character to a scratch keycode, but reused the last keycode as a per-keystroke
+  "overflow" slot — so any string with more distinct characters than free
+  keycodes clobbered a bound character and emitted wrong glyphs (e.g.
+  `/root/demo.txt` typed as `/r--t/demm.txt`). It now types in **segments**,
+  binding each segment's distinct characters up front and never reusing a
+  keycode mid-string, so arbitrarily long/diverse text types verbatim. Newlines
+  and tabs in typed text now map to Return/Tab (`cp_to_keysym`) instead of the
+  raw `0x0A`/`0x09` keysyms, so multi-line input (e.g. a here-doc) advances
+  lines as intended.
+
 ## [0.1.0] — 2026-05-29
 
 Initial release. Local Linux microVM sandbox for macOS built on

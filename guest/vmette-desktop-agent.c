@@ -271,6 +271,12 @@ static long utf8_next(const char **p) {
 // Latin-1 codepoints map 1:1 to their keysym; everything else uses the X11
 // Unicode keysym range (0x01000000 | codepoint).
 static KeySym cp_to_keysym(long cp) {
+    // Control characters callers expect to act as keys, not literal glyphs:
+    // newline / carriage-return submit (Return) and tab indents (Tab). Without
+    // this a typed "\n" maps to keysym 0x0A, which clients do not treat as
+    // Enter, so multi-line desktop_type input never advances a line.
+    if (cp == 0x0A || cp == 0x0D) return XK_Return;
+    if (cp == 0x09) return XK_Tab;
     return (cp < 0x100) ? (KeySym)cp : (KeySym)(0x01000000 | cp);
 }
 
@@ -291,6 +297,15 @@ static KeySym cp_to_keysym(long cp) {
 // every call, so Xvfb's XKB layer (which silently recompiles its keymap and
 // reverts core-protocol remaps between calls) cannot strand us mid-session, and
 // repeated characters cost no extra remap.
+//
+// When a string has more *distinct* codepoints than we have scratch keycodes,
+// we type it in SEGMENTS: bind a segment's distinct chars up front, sync once,
+// type that segment, revert, then rebind for the next segment. Every keystroke
+// still fires against a fixed mapping (the race stays gone), and no keycode is
+// ever reused mid-string — unlike the earlier single-pass scheme, whose
+// per-keystroke "overflow" slot reused freekc[nfree-1] (also the last bound
+// keycode), clobbering it and corrupting any string with >= nfree distinct
+// characters.
 //
 // We map BOTH shift levels to the same keysym ({ks, ks}) so the bare keycode
 // emits the exact character with no modifier: X case-folds a lone alphabetic
@@ -316,58 +331,62 @@ static int do_type(const char *text) {
     XFree(km);
     if (nfree == 0) return -1;
 
-    // Pass 1: bind each distinct codepoint to its own scratch keycode.
-    long bound_cp[256];
-    int nbound = 0;
-    for (const char *p = text; *p && nbound < nfree;) {
-        long cp = utf8_next(&p);
-        if (cp < 0) break;
-        int seen = 0;
-        for (int b = 0; b < nbound; b++)
-            if (bound_cp[b] == cp) { seen = 1; break; }
-        if (seen) continue;
-        KeySym ks = cp_to_keysym(cp);
-        KeySym list[2] = { ks, ks };
-        XChangeKeyboardMapping(g_dpy, freekc[nbound], 2, list, 1);
-        bound_cp[nbound++] = cp;
-    }
-    // A single sync + settle: the client refreshes its keymap exactly once,
-    // after which the mapping is fixed for every keystroke below.
-    XSync(g_dpy, False);
-    usleep(20000);
-
-    // The last free keycode doubles as an overflow slot for the rare string
-    // with more distinct characters than we had scratch keycodes.
-    KeyCode overflow = freekc[nfree - 1];
-
-    // Pass 2: fire each character against the now-stable mapping.
-    for (const char *p = text; *p;) {
-        long cp = utf8_next(&p);
-        if (cp < 0) break;
-        KeyCode kc = 0;
-        for (int b = 0; b < nbound; b++)
-            if (bound_cp[b] == cp) { kc = freekc[b]; break; }
-        if (kc == 0) {
-            // Overflow char: rebind the spare keycode for just this keystroke.
-            KeySym ks = cp_to_keysym(cp);
-            KeySym list[2] = { ks, ks };
-            XChangeKeyboardMapping(g_dpy, overflow, 2, list, 1);
-            XSync(g_dpy, False);
-            usleep(20000);
-            kc = overflow;
+    const char *p = text;
+    int max_bound = 0; // high-water mark of scratch keycodes used, for cleanup
+    while (*p) {
+        // Pass 1: extend a segment from `p`, binding each new distinct codepoint
+        // to its own scratch keycode, until the next new one would exceed the
+        // keycode pool. `seg_end` marks the (exclusive) end of the segment.
+        long bound_cp[256];
+        int nbound = 0;
+        const char *seg_end = p;
+        for (const char *q = p; *q;) {
+            long cp = utf8_next(&q);
+            int seen = 0;
+            for (int b = 0; b < nbound; b++)
+                if (bound_cp[b] == cp) { seen = 1; break; }
+            if (!seen) {
+                if (nbound == nfree) break; // pool full: end the segment here
+                KeySym ks = cp_to_keysym(cp);
+                KeySym list[2] = { ks, ks };
+                XChangeKeyboardMapping(g_dpy, freekc[nbound], 2, list, 1);
+                bound_cp[nbound++] = cp;
+            }
+            seg_end = q; // this char is part of the segment
         }
-        XTestFakeKeyEvent(g_dpy, kc, True, CurrentTime);
-        usleep(6000); // split inter-key delay across down/up, like xdotool
-        XTestFakeKeyEvent(g_dpy, kc, False, CurrentTime);
+        if (nbound > max_bound) max_bound = nbound;
+
+        // Sync + settle so the focused client processes the MappingNotify and
+        // refreshes its keymap before we fire keystrokes against it. A new
+        // segment rebinds keycodes the previous one used, so its *first* strokes
+        // race that refresh; this settle (longer than a single bind needs)
+        // covers the boundary. Keycodes are NOT reverted between segments — a
+        // stroke that still beats the refresh then decodes as the prior glyph
+        // (recoverable) rather than NoSymbol (a silent drop).
         XSync(g_dpy, False);
-        usleep(6000);
+        usleep(40000);
+
+        // Pass 2: fire the segment's characters against the now-stable mapping.
+        for (const char *q = p; q < seg_end;) {
+            long cp = utf8_next(&q);
+            KeyCode kc = 0;
+            for (int b = 0; b < nbound; b++)
+                if (bound_cp[b] == cp) { kc = freekc[b]; break; }
+            if (kc == 0) continue; // defensive: every segment char was bound
+            XTestFakeKeyEvent(g_dpy, kc, True, CurrentTime);
+            usleep(6000); // split inter-key delay across down/up, like xdotool
+            XTestFakeKeyEvent(g_dpy, kc, False, CurrentTime);
+            XSync(g_dpy, False);
+            usleep(6000);
+        }
+
+        p = seg_end; // always advances: the first char of a segment always binds
     }
 
-    // Revert every scratch keycode we touched back to NoSymbol.
+    // Revert every scratch keycode we touched back to NoSymbol, once.
     KeySym none[2] = { NoSymbol, NoSymbol };
-    for (int b = 0; b < nbound; b++)
+    for (int b = 0; b < max_bound; b++)
         XChangeKeyboardMapping(g_dpy, freekc[b], 2, none, 1);
-    XChangeKeyboardMapping(g_dpy, overflow, 2, none, 1);
     XSync(g_dpy, False);
     return 0;
 }
