@@ -1,16 +1,20 @@
 # vmette-mcp — Model Context Protocol server
 
-`vmette-mcp` exposes vmette as an MCP server: any MCP-aware agent host
-(Claude Desktop, Cursor, Cline, Zed, Goose, custom clients) gets a set of
-tools that run inside a Linux microVM. Most boot a fresh VM per call; the
-`desktop_*` family drives a persistent graphical desktop session. The agent
-sees a sandbox; nothing it does can touch your real filesystem unless you
-explicitly shared a directory into it.
+`vmette-mcp` is the security boundary between an untrusted agent and the
+machine it runs on. Any MCP-aware agent host (Claude Desktop, Cursor, Cline,
+Zed, Goose, custom clients) gets a set of tools whose every effect lands
+inside a Linux microVM — never on your host. The agent gets a real shell,
+filesystem, and (optionally) network to work with; that environment is *not*
+your machine, and it cannot reach your real filesystem unless you explicitly
+share a directory into it, nor the network unless you start the server with
+`--allow-network`. Most tools boot a fresh VM per call; the `desktop_*` family
+drives a persistent graphical desktop session.
 
 Each tool call boots a fresh kernel via Apple's `Virtualization.framework`
-(~1 second), runs the agent's request, and tears down the VM on return.
-The MCP server itself is long-lived — it dies when the client closes
-its stdio connection.
+(~1 second), runs the agent's request, and tears down the VM on return — so the
+isolation boundary is the hypervisor, not a container or a `chroot`. The MCP
+server itself is long-lived — it dies when the client closes its stdio
+connection.
 
 ## Install
 
@@ -200,6 +204,10 @@ look at. Full reference, protocol, and image build in
 | `desktop_stop` | `session_id` | status |
 
 ## Security model
+
+The boundary is the microVM: the agent is meant to be fully in control *inside*
+it and unable to reach the host *outside* it. Everything below is default-deny —
+the agent is granted host filesystem access and network only where you say so.
 
 What the server **does** isolate:
 
