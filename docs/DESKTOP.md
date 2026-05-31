@@ -6,6 +6,12 @@ move/click/type, screenshot again. This is the opposite of the headless
 one-shot path — the VM stays alive across many actions until you explicitly
 stop it.
 
+The isolation story is the same as the rest of vmette: a computer-use agent
+gets a real desktop to click around in that is *not* your machine. The boundary
+is the hypervisor, the screen the agent sees and the input it injects stay
+inside the guest, and it reaches your host filesystem or network only where you
+explicitly grant it.
+
 There is no Apple graphics window involved. The guest runs a headless X server
 (`Xvfb :99`) plus a lightweight window manager (`openbox`), and an in-guest C
 agent (`vmette-desktop-agent`) captures the framebuffer with `XGetImage` and
