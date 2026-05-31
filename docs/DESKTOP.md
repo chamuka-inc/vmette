@@ -58,7 +58,12 @@ sessions left untouched for longer than the idle TTL (30 min).
 
    The image bundles `xvfb`, `openbox`, `x11-utils`, base fonts, the compiled
    `vmette-desktop-agent`, and an entrypoint that starts `Xvfb`, the WM, then
-   the agent. Pass `--with-chromium` to include a browser.
+   the agent. It also ships `chromium` plus an `/etc/chromium.d/` flags file so
+   a bare `chromium <url>` renders under the headless software-GL guest
+   (`--no-sandbox`, `--use-gl=swiftshader`, …) — the browser incantation lives
+   with the browser, in the image, so `desktop_launch` and the CLI stay
+   application-agnostic. Drop the `chromium` install line to shrink the image;
+   the agent works without it (you can launch any X app).
 
 ## Use it (CLI)
 
@@ -100,6 +105,8 @@ to be running; the MCP server connects to its socket. Override the socket with
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?` | session id (text) |
 | `desktop_screenshot` | `session_id` | **PNG image content block** |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | **PNG image content block** (once the screen stops changing) |
+| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` | `session_id`, `x`, `y` | status text |
 | `desktop_click` | `session_id`, `x`, `y` | status text |
@@ -108,7 +115,8 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status text |
-| `desktop_exec` | `session_id`, `command` | status text |
+| `desktop_exec` | `session_id`, `command` | status text (fire-and-forget) |
+| `desktop_launch` | `session_id`, `command`, `wait_ms?` | **PNG image content block** (the app's first painted frame) |
 | `desktop_stop` | `session_id` | status text |
 
 `desktop_screenshot` returns an MCP image content block
@@ -117,6 +125,20 @@ to be running; the MCP server connects to its socket. Override the socket with
 pointer to `(x, y)` first, then click (agent click actions fire at the current
 pointer position). `network=true` on `desktop_start` is subject to the server's
 `--allow-network` gate.
+
+**Starting an app and seeing it: `desktop_launch`.** `desktop_exec` is
+fire-and-forget — it launches a command and returns immediately, leaving you to
+poll for the window. `desktop_launch` is the one-call alternative: it
+backgrounds the command (redirecting its stdio to a guest log so a chatty app
+can't block before painting), waits for the screen to actually change and then
+settle, and returns that frame. It is **application-agnostic** — it knows
+nothing about browsers. You pass a complete command and supply whatever flags
+the app needs; e.g. `command: "chromium https://example.com"`,
+`"gimp /mnt/a.png"`, or `"xterm"`. The app-specific incantation a headless
+software-rendered guest requires (for the browser: `--no-sandbox`, software GL)
+lives in the **desktop image**, not in this tool — see below — so a bare
+`chromium <url>` renders. Network-dependent apps only reach the network when the
+session was started with `network=true`.
 
 ## Protocol
 

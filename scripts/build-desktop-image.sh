@@ -4,7 +4,7 @@
 # the OCI rootfs provider, e.g. `--rootfs ghcr.io/chamuka-inc/vmette-desktop:latest`.
 #
 # Usage:
-#   scripts/build-desktop-image.sh [--tag REF] [--push] [--with-chromium|--no-chromium]
+#   scripts/build-desktop-image.sh [--tag REF] [--push] [--platform PLAT]
 #
 # Notes:
 #   * vmette's guest assets are x86_64-only, so we pin --platform linux/amd64.

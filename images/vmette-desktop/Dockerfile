@@ -55,6 +55,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
     && rm -rf /var/lib/apt/lists/* || true
 
+# Make plain `chromium <url>` render inside this guest. Debian's chromium is a
+# wrapper that sources /etc/chromium.d/* and appends $CHROMIUM_FLAGS, so the
+# software-GL / root-sandbox incantation lives here, with the app — not in any
+# caller. Without these the window maps but stays black: we are root with user
+# namespaces off (--no-sandbox) and there is no GPU (software GL).
+RUN mkdir -p /etc/chromium.d \
+    && printf '%s\n' \
+        'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-gpu-compositing --use-gl=swiftshader --no-first-run --disable-features=Translate"' \
+        > /etc/chromium.d/00-vmette-swiftshader
+
 COPY --from=builder /usr/local/bin/vmette-desktop-agent /usr/local/bin/vmette-desktop-agent
 COPY entrypoint.sh /usr/local/bin/vmette-desktop-entrypoint.sh
 RUN chmod +x /usr/local/bin/vmette-desktop-entrypoint.sh
