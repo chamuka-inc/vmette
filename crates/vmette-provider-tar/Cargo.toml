@@ -3,11 +3,14 @@ name        = "vmette-provider-tar"
 description = "Tarball-over-HTTP/file rootfs provider for vmette"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "tar", "rootfs", "tarball", "microvm"]
+categories  = ["virtualization", "filesystem"]
 
 [dependencies]
-vmette    = { path = "../vmette" }
+vmette    = { workspace = true }
 ureq      = { version = "2", default-features = false, features = ["tls"] }
 tar       = "0.4"
 flate2    = "1"

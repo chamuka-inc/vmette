@@ -3,16 +3,19 @@ name        = "vmette-mcp"
 description = "Model Context Protocol server exposing vmette as a sandbox for AI agents"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "mcp", "ai-agents", "sandbox", "microvm"]
+categories  = ["virtualization", "command-line-utilities"]
 
 [[bin]]
 name = "vmette-mcp"
 path = "src/main.rs"
 
 [dependencies]
-vmette-assets = { path = "../vmette-assets" }
-vmette-proto  = { path = "../vmette-proto" }
+vmette-assets = { workspace = true }
+vmette-proto  = { workspace = true }
 rmcp      = { version = "1.7", features = ["server", "macros", "transport-io", "schemars"] }
 schemars  = "1"
 tokio     = { version = "1", features = ["full"] }

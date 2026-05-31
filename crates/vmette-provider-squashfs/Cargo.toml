@@ -3,11 +3,14 @@ name        = "vmette-provider-squashfs"
 description = "Prebuilt squashfs block-image rootfs provider for vmette"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "squashfs", "rootfs", "block-image", "microvm"]
+categories  = ["virtualization", "filesystem"]
 
 [dependencies]
-vmette    = { path = "../vmette" }
+vmette    = { workspace = true }
 ureq      = { version = "2", default-features = false, features = ["tls"] }
 thiserror = "1"
 tracing   = "0.1"

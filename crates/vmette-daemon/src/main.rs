@@ -38,7 +38,6 @@
 //!   --vmette  $(dirname argv[0])/vmette  (falls back to PATH lookup)
 
 mod registry;
-mod settle;
 
 use std::path::PathBuf;
 use std::process::Stdio;

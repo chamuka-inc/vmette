@@ -35,6 +35,16 @@ rand                 = "0.8"
 serde                = { version = "1", features = ["derive"] }
 serde_json           = "1"
 
+# Internal crates. `path` builds the workspace locally; `version` lets each
+# crate be published to crates.io (publish strips `path` and uses `version`).
+vmette                   = { path = "crates/vmette", version = "0.1.0" }
+vmette-proto             = { path = "crates/vmette-proto", version = "0.1.0" }
+vmette-assets            = { path = "crates/vmette-assets", version = "0.1.0" }
+vmette-providers         = { path = "crates/vmette-providers", version = "0.1.0" }
+vmette-provider-oci      = { path = "crates/vmette-provider-oci", version = "0.1.0" }
+vmette-provider-squashfs = { path = "crates/vmette-provider-squashfs", version = "0.1.0" }
+vmette-provider-tar      = { path = "crates/vmette-provider-tar", version = "0.1.0" }
+
 [profile.release]
 lto = "thin"
 strip = true

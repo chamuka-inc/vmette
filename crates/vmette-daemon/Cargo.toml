@@ -3,8 +3,11 @@ name        = "vmette-daemon"
 description = "Long-lived UNIX-socket daemon dispatching guests via vmette"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "daemon", "microvm", "macos", "virtualization"]
+categories  = ["virtualization", "command-line-utilities"]
 
 [[bin]]
 name = "vmetted"
@@ -19,12 +22,18 @@ anyhow      = "1"
 # In-process desktop sessions: the daemon hosts live vmette::Session VMs
 # (Agent workload) and resolves their rootfs images via the shared provider
 # registry. The socket wire types come from vmette-proto.
-vmette            = { path = "../vmette" }
-vmette-proto      = { path = "../vmette-proto" }
-vmette-providers  = { path = "../vmette-providers" }
+vmette            = { workspace = true }
+vmette-proto      = { workspace = true }
+vmette-providers  = { workspace = true }
 base64      = "0.22"
 rand        = "0.8"
 # Decode the agent's screenshot PNGs into raw pixels for the host-side
 # settle detector. Lives only in the daemon binary — the size-sensitive core
 # vmette cdylib/staticlib stays PNG-decoder-free.
 png         = "0.17"
+
+# Microbenchmark for the pure settle detector (see benches/settle.rs). Plain
+# `main()` harness — no criterion dep — run with `cargo bench -p vmette-daemon`.
+[[bench]]
+name = "settle"
+harness = false

@@ -3,11 +3,14 @@ name        = "vmette-provider-oci"
 description = "OCI/Docker image rootfs provider for vmette"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "oci", "docker", "rootfs", "container"]
+categories  = ["virtualization", "filesystem"]
 
 [dependencies]
-vmette     = { path = "../vmette" }
+vmette     = { workspace = true }
 oci-client = { version = "0.17", default-features = false, features = ["rustls-tls"] }
 tokio      = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros"] }
 tar        = "0.4"

@@ -3,8 +3,11 @@ name        = "vmette"
 description = "Local Linux microVM sandbox for macOS, built on Apple's Virtualization.framework"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["macos", "virtualization", "microvm", "sandbox", "vm"]
+categories  = ["virtualization", "os::macos-apis"]
 
 # `lib`       — usable as a normal Rust crate dependency (used by vmette-cli + tests)
 # `cdylib`    — produces libvmette.dylib for non-Rust consumers
@@ -13,7 +16,7 @@ repository  .workspace = true
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-vmette-proto         = { path = "../vmette-proto" }
+vmette-proto         = { workspace = true }
 objc2                .workspace = true
 objc2-core-foundation .workspace = true
 objc2-foundation     .workspace = true

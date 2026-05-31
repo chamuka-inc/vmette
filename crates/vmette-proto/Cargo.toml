@@ -3,8 +3,11 @@ name        = "vmette-proto"
 description = "Wire contracts shared across the vmette workspace: the guest computer-use vocabulary and the vmetted UNIX-socket protocol"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "protocol", "serde", "ipc", "microvm"]
+categories  = ["encoding", "virtualization"]
 
 [lib]
 name = "vmette_proto"

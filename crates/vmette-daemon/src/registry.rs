@@ -48,7 +48,7 @@ use vmette::provider::Context;
 use vmette::{Action, Config, Session, SessionClient, SessionEnd, StopHandle};
 use vmette_proto::Rect;
 
-use crate::settle::{Frame, SettleConfig, SettleDetector, SettleState};
+use vmette_daemon::settle::{Frame, SettleConfig, SettleDetector, SettleState};
 
 /// How often the settle poll re-captures the screen. Needs to be long enough
 /// that a playing video actually changes between polls (so churn is detected),

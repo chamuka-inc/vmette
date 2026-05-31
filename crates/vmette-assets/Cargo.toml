@@ -6,6 +6,8 @@ edition     = { workspace = true }
 rust-version = { workspace = true }
 license     = { workspace = true }
 repository  = { workspace = true }
+keywords    = ["vmette", "microvm", "boot", "kernel", "initramfs"]
+categories  = ["virtualization"]
 
 [lib]
 name = "vmette_assets"

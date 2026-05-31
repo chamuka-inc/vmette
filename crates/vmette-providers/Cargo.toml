@@ -3,15 +3,18 @@ name        = "vmette-providers"
 description = "The default rootfs-provider registry for vmette (dir + squashfs + tar + OCI, in resolution order)"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "rootfs", "oci", "squashfs", "microvm"]
+categories  = ["virtualization", "filesystem"]
 
 [lib]
 name = "vmette_providers"
 path = "src/lib.rs"
 
 [dependencies]
-vmette                   = { path = "../vmette" }
-vmette-provider-oci      = { path = "../vmette-provider-oci" }
-vmette-provider-squashfs = { path = "../vmette-provider-squashfs" }
-vmette-provider-tar      = { path = "../vmette-provider-tar" }
+vmette                   = { workspace = true }
+vmette-provider-oci      = { workspace = true }
+vmette-provider-squashfs = { workspace = true }
+vmette-provider-tar      = { workspace = true }

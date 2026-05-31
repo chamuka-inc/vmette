@@ -3,18 +3,21 @@ name        = "vmette-cli"
 description = "Command-line interface to vmette"
 version     .workspace = true
 edition     .workspace = true
+rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+keywords    = ["vmette", "microvm", "sandbox", "macos", "virtualization"]
+categories  = ["command-line-utilities", "virtualization"]
 
 [[bin]]
 name = "vmette"
 path = "src/main.rs"
 
 [dependencies]
-vmette            = { path = "../vmette" }
-vmette-assets     = { path = "../vmette-assets" }
-vmette-proto      = { path = "../vmette-proto" }
-vmette-providers  = { path = "../vmette-providers" }
+vmette            = { workspace = true }
+vmette-assets     = { workspace = true }
+vmette-proto      = { workspace = true }
+vmette-providers  = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `vmette desktop` subcommands talk to vmetted over its UNIX socket, building
 # requests / parsing replies as the shared vmette-proto wire types.

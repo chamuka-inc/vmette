@@ -1,11 +1,12 @@
 /target
 /assets
 /dist
-/vmette/vmette
-/examples/minimal_c
 *.sock
 *.log
 .DS_Store
 .vmette-exit
 .vmette-runner.sh
 /tests/fixtures/share/from-guest*
+
+# Local agent / session state (Claude Code)
+/.claude/

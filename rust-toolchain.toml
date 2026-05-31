@@ -1,0 +1,7 @@
+# Toolchain used to build, lint, and test vmette. The crates declare
+# `rust-version = "1.80"` as the MSRV (minimum supported); this is the toolchain
+# contributors and CI actually run — current stable, with the rustfmt and clippy
+# components CI requires. rustup installs it automatically on the first build.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
