@@ -89,6 +89,16 @@ typedef struct vmette_run_output_t {
  void vmette_config_add_share(struct vmette_config_t *cfg, const char *tag, const char *path);
 
 /**
+ * Append a `KEY=value` environment variable applied in the guest before the
+ * exec command (overrides any OCI image env). Ignored on null/invalid-UTF-8
+ * args.
+ *
+ * # Safety
+ * See the module-level safety contract.
+ */
+ void vmette_config_add_env(struct vmette_config_t *cfg, const char *key, const char *value);
+
+/**
  * # Safety
  * See the module-level safety contract.
  */

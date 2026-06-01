@@ -611,44 +611,25 @@ fn write_image_env(rootfs: &Path, config_blob: &[u8]) {
     }
 }
 
-/// Render an OCI image config's `Env` array into shell `export KEY='VALUE'`
-/// lines. Returns `None` when the blob is unparseable or carries no usable
-/// entries. Keys must be shell identifiers (`[A-Za-z0-9_]`); values are
-/// single-quoted with embedded quotes escaped, so metacharacters are inert
-/// when the guest sources the file. Pure — unit-tested.
+/// Parse an OCI image config's `Env` array (`["KEY=VALUE", …]`) and render it
+/// into shell `export KEY='VALUE'` lines via the shared
+/// [`vmette::render_env_exports`] — the same renderer the `--env` cmdline
+/// channel uses, so image env and caller env share identical key/escaping
+/// rules. Returns `None` when the blob is unparseable or carries no usable env.
 fn render_image_env(config_blob: &[u8]) -> Option<String> {
     let cfg = serde_json::from_slice::<serde_json::Value>(config_blob).ok()?;
-    let env = cfg
+    let pairs: Vec<(String, String)> = cfg
         .get("config")
         .and_then(|c| c.get("Env"))
-        .and_then(|e| e.as_array())?;
-    let mut out = String::new();
-    for entry in env {
-        let Some((key, val)) = entry.as_str().and_then(|kv| kv.split_once('=')) else {
-            continue;
-        };
-        // POSIX shell identifier: first char `[A-Za-z_]`, rest `[A-Za-z0-9_]`.
-        // A leading digit (e.g. `1FOO`) would render an `export` line the guest
-        // shell rejects, so drop it rather than emit a line that errors on source.
-        let mut bytes = key.bytes();
-        let valid = match bytes.next() {
-            Some(first) => {
-                (first.is_ascii_alphabetic() || first == b'_')
-                    && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            }
-            None => false,
-        };
-        if !valid {
-            continue;
-        }
-        let escaped = val.replace('\'', "'\\''");
-        out.push_str("export ");
-        out.push_str(key);
-        out.push_str("='");
-        out.push_str(&escaped);
-        out.push_str("'\n");
-    }
-    (!out.is_empty()).then_some(out)
+        .and_then(|e| e.as_array())?
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .filter_map(|kv| {
+            kv.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
+        .collect();
+    vmette::render_env_exports(&pairs)
 }
 
 fn extracted_path(cache_root: &Path, image_ref: &str, digest: &str) -> PathBuf {

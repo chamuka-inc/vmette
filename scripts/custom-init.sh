@@ -289,6 +289,16 @@ if [ -n "$B64" ]; then
     fi
 fi
 
+# Caller-supplied env (`--env`): base64 of shell `export` lines, emitted by the
+# host (cmdline.rs via vmette::render_env_exports). Held in VMETTE_CALLER_ENV and
+# eval'd *after* any image env in the exec paths below — so --env overrides the
+# image's values. Exporting it lets it survive chroot/switch_root into the runner.
+ENV_B64="$(cmdline_get vmette.env)"
+if [ -n "$ENV_B64" ]; then
+    VMETTE_CALLER_ENV="$(printf '%s' "$ENV_B64" | base64 -d 2>/dev/null)"
+    export VMETTE_CALLER_ENV
+fi
+
 EXIT_FILE=""
 if [ "$EXIT_VIA_CTL" = "1" ]; then
     # The overlay root's writable upper is a tmpfs the host can't see, so
@@ -314,6 +324,8 @@ if [ "$USE_SWITCH_ROOT" = "1" ]; then
 #!/bin/sh
 export VMETTE_VSOCK_PORT='$VMETTE_VSOCK_PORT'
 [ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null
+[ -n "\$VMETTE_CALLER_ENV" ] && eval "\$VMETTE_CALLER_ENV"
+unset VMETTE_CALLER_ENV
 /bin/sh -c '$(printf '%s' "$USER_CMD" | sed "s/'/'\\\\''/g")'
 RC=\$?
 sync
@@ -341,7 +353,7 @@ else
     # `/.vmette-image-env` is written by vmette-provider-oci's write_image_env()
     # — keep the filename in sync with that crate. $USER_CMD is passed as a
     # positional arg so it needs no re-escaping here.
-    chroot /newroot /bin/sh -c '[ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null; exec /bin/sh -c "$1"' vmette "$USER_CMD"
+    chroot /newroot /bin/sh -c '[ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null; [ -n "$VMETTE_CALLER_ENV" ] && eval "$VMETTE_CALLER_ENV"; unset VMETTE_CALLER_ENV; exec /bin/sh -c "$1"' vmette "$USER_CMD"
     RC=$?
     log "exit=$RC"
 fi

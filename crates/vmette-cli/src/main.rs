@@ -34,6 +34,7 @@ fn usage() -> ! {
          workload:\n\
            --share            TAG=PATH  extra virtio-fs mount at /mnt/<TAG> (repeatable)\n\
            --disk             PATH      raw block image as virtio-blk (repeatable)\n\
+           --env              KEY=VALUE set a guest env var, overrides image env (repeatable)\n\
            --exec             CMD       shell command to run in guest, then poweroff\n\
            --net                        attach virtio-net with NAT; /init runs udhcpc on eth0\n\
            --switch-root                use switch_root instead of chroot for the exec env\n\
@@ -95,6 +96,7 @@ fn parse_args() -> ParsedArgs {
     let mut offline = false;
     let mut shares: Vec<ShareMount> = Vec::new();
     let mut disks: Vec<PathBuf> = Vec::new();
+    let mut env: Vec<(String, String)> = Vec::new();
     let mut exec_cmd: Option<String> = None;
     let mut switch_root = false;
     let mut net = false;
@@ -179,6 +181,17 @@ fn parse_args() -> ParsedArgs {
             }
             "--disk" => {
                 disks.push(take(i, "--disk", false).into());
+                i += 2;
+            }
+            // --env VALUE may legitimately contain a leading '-' (e.g.
+            // `FOO=-x`), so allow a dash-prefixed argument.
+            "--env" => {
+                let s = take(i, "--env", true);
+                let (k, val) = s.split_once('=').unwrap_or_else(|| {
+                    eprintln!("error: --env expects KEY=VALUE, got '{}'", s);
+                    usage();
+                });
+                env.push((k.into(), val.into()));
                 i += 2;
             }
             // --exec is a shell command; leading `-` is plausible.
@@ -286,6 +299,7 @@ fn parse_args() -> ParsedArgs {
     }
     c.shares = shares;
     c.disks = disks;
+    c.env = env;
     c.exec_cmd = exec_cmd;
     c.switch_root = switch_root;
     c.net = net;

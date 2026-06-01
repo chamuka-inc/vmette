@@ -185,6 +185,28 @@ pub unsafe extern "C" fn vmette_config_add_share(
     c.shares.push(ShareMount { tag, path });
 }
 
+/// Append a `KEY=value` environment variable applied in the guest before the
+/// exec command (overrides any OCI image env). Ignored on null/invalid-UTF-8
+/// args.
+///
+/// # Safety
+/// See the module-level safety contract.
+#[no_mangle]
+pub unsafe extern "C" fn vmette_config_add_env(
+    cfg: *mut vmette_config_t,
+    key: *const c_char,
+    value: *const c_char,
+) {
+    let Some(c) = cfg_mut(cfg) else { return };
+    let Some(key) = cstr_to_string(key) else {
+        return;
+    };
+    let Some(value) = cstr_to_string(value) else {
+        return;
+    };
+    c.env.push((key, value));
+}
+
 /// # Safety
 /// See the module-level safety contract.
 #[no_mangle]

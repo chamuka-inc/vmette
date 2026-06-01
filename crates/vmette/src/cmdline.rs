@@ -63,6 +63,15 @@ pub(crate) fn build(config: &Config, effective_vsock_port: Option<u32>) -> Strin
         s.push_str(&format!(" vmette.display={}x{}", w, h));
     }
 
+    // Caller-supplied env (`--env`): base64 of shell-sourceable `export` lines.
+    // The guest applies it *after* any OCI image env, so `--env` overrides the
+    // image's values. (Image env rides in the rootfs, not the cmdline, so it
+    // never competes for the ~3000-char cmdline budget.)
+    if let Some(env) = crate::render_env_exports(&config.env) {
+        s.push_str(" vmette.env=");
+        s.push_str(&B64.encode(env.as_bytes()));
+    }
+
     s
 }
 
@@ -126,6 +135,19 @@ mod tests {
         let s = build(&c, None);
         assert!(s.contains("vmette.desktop=1"));
         assert!(s.contains("vmette.display=1024x768"));
+    }
+
+    #[test]
+    fn env_emitted_only_when_set_and_base64_encoded() {
+        let s = build(&base(), None);
+        assert!(!s.contains("vmette.env="));
+
+        let mut c = base();
+        c.env = vec![("FOO".into(), "bar".into())];
+        let s = build(&c, None);
+        // base64 of "export FOO='bar'\n"
+        let want = base64::engine::general_purpose::STANDARD.encode("export FOO='bar'\n");
+        assert!(s.contains(&format!("vmette.env={want}")));
     }
 
     #[test]

@@ -115,6 +115,10 @@ pub struct Config {
     /// MCP server so an agent's captured output isn't polluted by launcher
     /// chatter. Has no effect on guest console output.
     pub quiet: bool,
+    /// Extra environment variables exported in the guest before the exec
+    /// command runs (the CLI's `--env KEY=VALUE`). Applied *after* any OCI
+    /// image `Env`, so these override the image's values — like `docker run -e`.
+    pub env: Vec<(String, String)>,
 }
 
 impl Config {
@@ -142,6 +146,7 @@ impl Config {
             workload: WorkloadStrategy::OneShot,
             display_size: (1280, 800),
             quiet: false,
+            env: Vec::new(),
         }
     }
 
@@ -164,4 +169,37 @@ impl Config {
             }
         }
     }
+}
+
+/// Render environment `(key, value)` pairs into a shell-sourceable string of
+/// `export KEY='VALUE'` lines (one per valid pair), or `None` if no pair has a
+/// usable key. Keys must be POSIX shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`);
+/// a value is single-quoted with embedded quotes escaped, so the result is safe
+/// to `source`/`eval` in the guest with no further escaping.
+///
+/// This is the single renderer behind both env sources: the `--env` cmdline
+/// channel (caller-supplied) and the OCI rootfs provider (an image's configured
+/// `Env`). Keeping one renderer keeps their escaping and key rules identical.
+pub fn render_env_exports(pairs: &[(String, String)]) -> Option<String> {
+    let mut out = String::new();
+    for (key, val) in pairs {
+        let mut bytes = key.bytes();
+        let valid = match bytes.next() {
+            Some(first) => {
+                (first.is_ascii_alphabetic() || first == b'_')
+                    && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            }
+            None => false,
+        };
+        if !valid {
+            continue;
+        }
+        let escaped = val.replace('\'', "'\\''");
+        out.push_str("export ");
+        out.push_str(key);
+        out.push_str("='");
+        out.push_str(&escaped);
+        out.push_str("'\n");
+    }
+    (!out.is_empty()).then_some(out)
 }

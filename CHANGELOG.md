@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--env KEY=VALUE` (CLI) / `Config.env` (lib) / `vmette_config_add_env` (C
+  ABI).** Set environment variables in the guest before the exec command runs.
+  Repeatable. Applied *after* any OCI image `Env`, so `--env` overrides the
+  image's values — like `docker run -e`. The caller env rides base64-encoded on
+  the kernel cmdline (sharing the exec budget); the guest `/init` applies image
+  env then caller env. Caller and image env share one renderer
+  (`vmette::render_env_exports`), so their key rules and shell-escaping match.
 - **OCI image environment is applied in the guest.** When a rootfs comes from an
   OCI image, the image config's `Env` (notably `PATH`, so `cargo` / `node` /
   etc. are on `PATH`) is now exported before the `--exec` (or MCP `execute` /

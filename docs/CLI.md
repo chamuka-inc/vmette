@@ -38,6 +38,7 @@ a `curl | install.sh` install boots with no asset flags.
 |------|----------|-------------|
 | `--share` | TAG=PATH | Extra virtio-fs mount at `/mnt/<TAG>` in the guest. Repeatable. |
 | `--disk` | PATH | Raw block image attached as virtio-blk. Repeatable. |
+| `--env` | KEY=VALUE | Export an env var in the guest before `--exec`. Repeatable. Applied **after** any OCI image `Env`, so it overrides the image's value (like `docker run -e`). Carried base64-encoded on the cmdline (shares the ~3000-char budget with `--exec`), so keep it modest. |
 | `--exec` | CMD | Shell command to run in the guest, then `poweroff -f`. Encoded as base64 in `vmette.exec=<b64>` on the kernel cmdline (~3000 char limit). |
 | `--net` | — | Attach virtio-net with NAT. `/init` runs `udhcpc` on eth0. |
 | `--switch-root` | — | Use `switch_root` instead of `chroot` for the exec environment. Cleaner PID-1 (useful for systemd-style workloads). |
