@@ -9,11 +9,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOTFS="$HERE/assets/alpine-rootfs"
 BIN_DIR="$ROOTFS/usr/local/bin"
 
-CC="${CC:-x86_64-linux-musl-gcc}"
-if ! command -v "$CC" >/dev/null 2>&1; then
+# The guest helpers cross-compile to x86_64-linux-musl. GUEST_CC names that
+# cross toolchain — kept distinct from the host $CC so it never leaks into a
+# host/cargo build (which must keep using clang for the Apple targets).
+GUEST_CC="${GUEST_CC:-x86_64-linux-musl-gcc}"
+if ! command -v "$GUEST_CC" >/dev/null 2>&1; then
     cat >&2 <<EOF
-✗ $CC not found.
-  Install with:  brew install FiloSottile/musl-cross/musl-cross
+✗ $GUEST_CC not found. Install a macOS-hosted x86_64-linux-musl cross toolchain:
+  brew install FiloSottile/musl-cross/musl-cross                          # x86_64-linux-musl-gcc (builds from source, slow)
+  brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl  # prebuilt; then GUEST_CC=x86_64-unknown-linux-musl-gcc
 EOF
     exit 1
 fi
@@ -25,7 +29,7 @@ for name in vsock-send vsock-runner; do
     SRC="$HERE/guest/${name}.c"
     DEST="$BIN_DIR/${name}"
     echo "→ compiling $SRC → $DEST"
-    "$CC" -static -O2 -s -o "$DEST" "$SRC"
+    "$GUEST_CC" -static -O2 -s -o "$DEST" "$SRC"
     SIZE=$(stat -f%z "$DEST" 2>/dev/null || stat -c%s "$DEST")
     echo "  ✓ $DEST ($SIZE bytes)"
 done
