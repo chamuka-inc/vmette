@@ -160,6 +160,9 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the current pointer position) |
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
+| `desktop_get_clipboard` | `session_id` | the clipboard text, exact (empty if unset) |
+| `desktop_set_clipboard` | `session_id`, `text` | status text — owns the `CLIPBOARD` + `PRIMARY` selections |
+| `desktop_paste` | `session_id`, `text` | status text — set the clipboard, then Ctrl+V |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status text |
 | `desktop_exec` | `session_id`, `command` | status text (fire-and-forget) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | **PNG image content block** (the app's first painted frame) |

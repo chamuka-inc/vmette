@@ -203,6 +203,13 @@ pub struct DesktopExecArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopClipboardSetArgs {
+    pub session_id: String,
+    /// Text to place on the clipboard.
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DesktopLaunchArgs {
     pub session_id: String,
     /// Shell command that starts a GUI app, e.g. "xterm", "gimp /mnt/a.png",
@@ -675,6 +682,50 @@ impl VmetteServer {
         self.action(&args.session_id, Action::Key { keys: args.keys })
             .await?;
         Ok(ok_text("key sent".to_string()))
+    }
+
+    #[tool(
+        description = "Read the desktop clipboard and return its exact text. Pair with desktop_key 'ctrl+c' (often after 'ctrl+a') to copy text out of a GUI app verbatim, instead of OCR'ing a screenshot. Empty if the clipboard is unset."
+    )]
+    async fn desktop_get_clipboard(
+        &self,
+        Parameters(args): Parameters<DesktopSessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reply = self.action(&args.session_id, Action::GetClipboard).await?;
+        Ok(CallToolResult::success(vec![Content::text(
+            reply.text.unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(
+        description = "Put text on the desktop clipboard (CLIPBOARD + PRIMARY selections). Use desktop_paste to set-and-paste in one call; or set here, then send the focused app's paste key with desktop_key."
+    )]
+    async fn desktop_set_clipboard(
+        &self,
+        Parameters(args): Parameters<DesktopClipboardSetArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(&args.session_id, Action::SetClipboard { text: args.text })
+            .await?;
+        Ok(ok_text("clipboard set".to_string()))
+    }
+
+    #[tool(
+        description = "Set the clipboard to text and paste it with Ctrl+V into the focused app — the fast, lossless alternative to desktop_type for long or non-ASCII text. (Terminals paste with Shift+Insert; there, use desktop_set_clipboard + desktop_key.)"
+    )]
+    async fn desktop_paste(
+        &self,
+        Parameters(args): Parameters<DesktopClipboardSetArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(&args.session_id, Action::SetClipboard { text: args.text })
+            .await?;
+        self.action(
+            &args.session_id,
+            Action::Key {
+                keys: "ctrl+v".to_string(),
+            },
+        )
+        .await?;
+        Ok(ok_text("pasted".to_string()))
     }
 
     #[tool(description = "Scroll at (x, y). direction is up|down|left|right; amount is clicks.")]

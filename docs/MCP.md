@@ -260,6 +260,9 @@ look at. Full reference, protocol, and image build in
 | `desktop_drag` | `session_id`, `x`, `y` | status — press-move-release from the current pointer to `(x, y)`: text selection, sliders, drag-and-drop, drawing |
 | `desktop_type` | `session_id`, `text` | status |
 | `desktop_key` | `session_id`, `keys` (e.g. `ctrl+c`) | status |
+| `desktop_get_clipboard` | `session_id` | the clipboard text (exact; empty if unset) — read text out of a GUI app without OCR |
+| `desktop_set_clipboard` | `session_id`, `text` | status — put `text` on the clipboard (CLIPBOARD + PRIMARY) |
+| `desktop_paste` | `session_id`, `text` | status — set the clipboard then Ctrl+V; fast, lossless input vs `desktop_type` |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
 | `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | note + PNG of the app's first settled frame |

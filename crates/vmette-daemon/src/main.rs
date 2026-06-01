@@ -51,6 +51,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
+use vmette_proto::agent::Action;
 use vmette_proto::daemon::{
     ActionReply, ChangedReply, DesktopReply, DesktopRequest, ErrorReply, Frame, Request,
     SessionReply, SettleReply,
@@ -276,18 +277,33 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
             Ok(DesktopReply::Session(SessionReply { session_id }))
         }
         DesktopRequest::DesktopAction(req) => {
+            // get_clipboard returns its text as the payload; the only other
+            // payload-bearing action (screenshot) returns a PNG. Decide which
+            // before the action moves into the blocking task.
+            let want_text = matches!(req.action, Action::GetClipboard);
             let res =
                 tokio::task::spawn_blocking(move || registry.action(&req.session_id, &req.action))
                     .await
                     .context("session action task")??;
+            let (png_base64, text) = if want_text {
+                (
+                    None,
+                    res.png.map(|b| String::from_utf8_lossy(&b).into_owned()),
+                )
+            } else {
+                (
+                    res.png
+                        .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+                    None,
+                )
+            };
             Ok(DesktopReply::ActionResult(ActionReply {
                 ok: res.ok,
                 error: res.error,
                 x: res.x,
                 y: res.y,
-                png_base64: res
-                    .png
-                    .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+                png_base64,
+                text,
             }))
         }
         DesktopRequest::DesktopScreenshotSettled(req) => {

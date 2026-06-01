@@ -204,6 +204,10 @@ pub struct ActionReply {
     /// Base64 PNG for `screenshot`; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub png_base64: Option<String>,
+    /// Clipboard contents for `get_clipboard` (the response payload decoded as
+    /// UTF-8); absent for every other action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Reply to `desktop_screenshot_settled`: the captured frame, whether it
@@ -314,6 +318,7 @@ mod tests {
             x: None,
             y: None,
             png_base64: None,
+            text: None,
         }))
         .unwrap();
         assert_eq!(j, r#"{"kind":"action_result","ok":true}"#);

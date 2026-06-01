@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Desktop clipboard: `desktop_get_clipboard` / `desktop_set_clipboard` /
+  `desktop_paste` (MCP) and `vmette desktop {get,set}-clipboard / paste`
+  (CLI).** The computer-use agent can now read the desktop clipboard exactly
+  (instead of OCR'ing a screenshot) and paste text losslessly (instead of
+  synthesizing it key-by-key) — a big win for long, non-ASCII, or multi-line
+  text. `set` takes ownership of the X `CLIPBOARD` + `PRIMARY` selections in the
+  in-guest agent (so paste works via Ctrl+V in GUI apps and Shift+Insert /
+  middle-click in terminals); `get` reads `CLIPBOARD`. New `Action::SetClipboard`
+  / `Action::GetClipboard` over the agent vsock protocol; the clipboard text
+  rides the response payload (like a screenshot's PNG), surfaced as
+  `ActionReply.text`.
 - **`--env KEY=VALUE` (CLI) / `Config.env` (lib) / `vmette_config_add_env` (C
   ABI).** Set environment variables in the guest before the exec command runs.
   Repeatable. Applied *after* any OCI image `Env`, so `--env` overrides the

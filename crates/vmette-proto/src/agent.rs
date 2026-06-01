@@ -46,6 +46,14 @@ pub enum Action {
     Wait { ms: u64 },
     /// Launch a shell command in the desktop session (e.g. `"chromium &"`).
     Exec { command: String },
+    /// Replace the X clipboard (the `CLIPBOARD` and `PRIMARY` selections) with
+    /// `text`, so a subsequent paste (Ctrl+V in GUI apps, Shift+Insert /
+    /// middle-click in terminals) inserts it. Pairs with [`Action::Key`].
+    SetClipboard { text: String },
+    /// Read the X `CLIPBOARD` selection; the text is returned as the response
+    /// **payload** (UTF-8), not in the header — so arbitrary content needs no
+    /// JSON escaping. Empty when the clipboard is unset.
+    GetClipboard,
 }
 
 /// Scroll wheel direction for [`Action::Scroll`].
@@ -133,6 +141,19 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_actions_serialize_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&Action::GetClipboard).unwrap(),
+            r#"{"action":"get_clipboard"}"#
+        );
+        let a = Action::SetClipboard { text: "hi".into() };
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            r#"{"action":"set_clipboard","text":"hi"}"#
+        );
+    }
+
+    #[test]
     fn type_and_key_round_trip() {
         for a in [
             Action::Type {
@@ -144,6 +165,10 @@ mod tests {
             Action::Exec {
                 command: "chromium &".into(),
             },
+            Action::SetClipboard {
+                text: "clip".into(),
+            },
+            Action::GetClipboard,
             Action::Wait { ms: 500 },
         ] {
             let j = serde_json::to_string(&a).unwrap();

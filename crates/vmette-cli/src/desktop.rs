@@ -40,6 +40,9 @@ fn desktop_usage() -> ! {
            right-click SESSION_ID X Y                 right-click at X Y\n\
            type        SESSION_ID TEXT                type a string\n\
            key         SESSION_ID CHORD               press a chord, e.g. 'ctrl+c'\n\
+           set-clipboard SESSION_ID TEXT              put TEXT on the clipboard\n\
+           get-clipboard SESSION_ID                   print the clipboard contents\n\
+           paste       SESSION_ID TEXT                set clipboard then Ctrl+V\n\
            scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)\n\
            exec        SESSION_ID COMMAND             launch a shell command in the guest\n\
            stop        SESSION_ID                     tear the session down\n\
@@ -157,6 +160,31 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
             let s = pos(&args, 0, "SESSION_ID");
             let keys = pos(&args, 1, "CHORD");
             action(&socket, &s, Action::Key { keys }).map(|_| None)
+        }
+        "set-clipboard" => {
+            let s = pos(&args, 0, "SESSION_ID");
+            let text = pos(&args, 1, "TEXT");
+            action(&socket, &s, Action::SetClipboard { text }).map(|_| None)
+        }
+        "get-clipboard" => {
+            let s = pos(&args, 0, "SESSION_ID");
+            action(&socket, &s, Action::GetClipboard).map(|r| Some(r.text.unwrap_or_default()))
+        }
+        // Convenience: set the clipboard, then paste with Ctrl+V (GUI apps).
+        "paste" => {
+            let s = pos(&args, 0, "SESSION_ID");
+            let text = pos(&args, 1, "TEXT");
+            action(&socket, &s, Action::SetClipboard { text })
+                .and_then(|_| {
+                    action(
+                        &socket,
+                        &s,
+                        Action::Key {
+                            keys: "ctrl+v".into(),
+                        },
+                    )
+                })
+                .map(|_| None)
         }
         "scroll" => cmd_scroll(&socket, &args),
         "exec" => {

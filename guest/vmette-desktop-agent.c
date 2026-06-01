@@ -31,6 +31,7 @@
 
 #define _GNU_SOURCE
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <linux/vm_sockets.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -41,6 +42,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
 
@@ -131,6 +133,15 @@ static int send_coords(int fd, int x, int y) {
     return send_frame(fd, h, (size_t)n, NULL, 0);
 }
 
+// Success reply whose `plen` payload bytes (a PNG, clipboard text, …) follow
+// the header. `plen == 0` is the bare-ok case.
+static int send_payload(int fd, const unsigned char *payload, size_t plen) {
+    char h[64];
+    int n = snprintf(h, sizeof(h), "{\"ok\":true,\"payload_len\":%zu}", plen);
+    if (n < 0) return -1;
+    return send_frame(fd, h, (size_t)n, payload, plen);
+}
+
 // ---- minimal JSON extraction (host-controlled schema) -------------------
 // The request header is small JSON produced by serde with a known shape:
 //   {"action":"<name>", <named fields...>}
@@ -187,6 +198,15 @@ static int json_int(const char *j, const char *key, long *out) {
 static Display *g_dpy;
 static Window g_root;
 static int g_screen;
+
+// ---- clipboard (X selection) state --------------------------------------
+// An unmapped window owns the CLIPBOARD/PRIMARY selections so the agent can
+// serve paste requests; g_clip holds the bytes we serve (set_clipboard), freed
+// when another client takes ownership (SelectionClear).
+static Window g_clip_win;
+static Atom A_CLIPBOARD, A_TARGETS, A_UTF8, A_TEXT, A_INCR, A_PROP;
+static char *g_clip;
+static size_t g_clip_len;
 
 static void move_pointer(int x, int y) {
     XTestFakeMotionEvent(g_dpy, g_screen, x, y, CurrentTime);
@@ -451,12 +471,124 @@ static int do_screenshot(int fd) {
     free(rgb);
     if (!ok || pb.oom) { free(pb.data); return send_err(fd, "png encode failed"); }
 
-    char header[128];
-    int n = snprintf(header, sizeof(header),
-                     "{\"ok\":true,\"payload_len\":%zu}", pb.len);
-    int rc = send_frame(fd, header, (size_t)n, pb.data, pb.len);
+    int rc = send_payload(fd, pb.data, pb.len);
     free(pb.data);
     return rc;
+}
+
+// ---- clipboard (X selections) -------------------------------------------
+//
+// X has no clipboard store: the *owner* of a selection must stay alive and
+// answer SelectionRequest events when an app pastes. The agent is that owner —
+// g_clip_win holds CLIPBOARD + PRIMARY and serve_selection() answers requests
+// from the main loop's X-event pump. Large transfers (INCR) are not served;
+// clipboard text far beyond a single property request is uncommon.
+
+// Take ownership of `text` (a `len`-byte, NUL-terminated, heap buffer) as the
+// clipboard and own both selections, so the bytes paste in GUI apps (Ctrl+V,
+// CLIPBOARD) and terminals (Shift+Insert / middle-click, PRIMARY) alike. The
+// agent owns `text` hereafter (freed on the next set or on SelectionClear).
+static void do_set_clipboard(char *text, size_t len) {
+    free(g_clip);
+    g_clip = text;
+    g_clip_len = len;
+    XSetSelectionOwner(g_dpy, A_CLIPBOARD, g_clip_win, CurrentTime);
+    XSetSelectionOwner(g_dpy, XA_PRIMARY, g_clip_win, CurrentTime);
+    XFlush(g_dpy);
+}
+
+// Answer one selection event: serve TARGETS / UTF8_STRING / STRING / TEXT for a
+// SelectionRequest, or drop our copy on SelectionClear (we lost ownership).
+static void serve_selection(XEvent *ev) {
+    if (ev->type == SelectionClear) {
+        free(g_clip);
+        g_clip = NULL;
+        g_clip_len = 0;
+        return;
+    }
+    if (ev->type != SelectionRequest) return;
+
+    XSelectionRequestEvent *req = &ev->xselectionrequest;
+    XSelectionEvent resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.type = SelectionNotify;
+    resp.display = req->display;
+    resp.requestor = req->requestor;
+    resp.selection = req->selection;
+    resp.target = req->target;
+    resp.time = req->time;
+    // Obsolete clients send property=None meaning "use the target atom".
+    resp.property = req->property ? req->property : req->target;
+
+    if (!g_clip) {
+        resp.property = None;
+    } else if (req->target == A_TARGETS) {
+        Atom targets[] = {A_TARGETS, A_UTF8, XA_STRING, A_TEXT};
+        XChangeProperty(g_dpy, req->requestor, resp.property, XA_ATOM, 32,
+                        PropModeReplace, (unsigned char *)targets,
+                        (int)(sizeof(targets) / sizeof(targets[0])));
+    } else if (req->target == A_UTF8 || req->target == XA_STRING ||
+               req->target == A_TEXT) {
+        XChangeProperty(g_dpy, req->requestor, resp.property, req->target, 8,
+                        PropModeReplace, (unsigned char *)g_clip,
+                        (int)g_clip_len);
+    } else {
+        resp.property = None; // unsupported target
+    }
+    XSendEvent(g_dpy, req->requestor, False, 0, (XEvent *)&resp);
+    XFlush(g_dpy);
+}
+
+// Read the CLIPBOARD selection and reply with its text as the frame payload.
+static int do_get_clipboard(int fd) {
+    // Fast path: we own it, so answer from our own copy without a round-trip.
+    if (g_clip && XGetSelectionOwner(g_dpy, A_CLIPBOARD) == g_clip_win) {
+        return send_payload(fd, (unsigned char *)g_clip, g_clip_len);
+    }
+    // Otherwise ask the current owner to convert into our scratch property and
+    // wait for the SelectionNotify, serving any requests that arrive meanwhile.
+    XDeleteProperty(g_dpy, g_clip_win, A_PROP);
+    XConvertSelection(g_dpy, A_CLIPBOARD, A_UTF8, A_PROP, g_clip_win,
+                      CurrentTime);
+    XFlush(g_dpy);
+    int xfd = ConnectionNumber(g_dpy);
+    // Bounded so a missing or buggy owner can't hang the agent: block on the X
+    // fd (no busy spin), up to ~2s total.
+    for (int tries = 0; tries < 20; tries++) {
+        while (XPending(g_dpy)) {
+            XEvent ev;
+            XNextEvent(g_dpy, &ev);
+            if (ev.type == SelectionNotify &&
+                ev.xselection.requestor == g_clip_win &&
+                ev.xselection.selection == A_CLIPBOARD) {
+                if (ev.xselection.property == None)
+                    return send_payload(fd, NULL, 0); // empty / no owner
+                Atom type;
+                int format;
+                unsigned long nitems, after;
+                unsigned char *data = NULL;
+                XGetWindowProperty(g_dpy, g_clip_win, A_PROP, 0, ~0L, True,
+                                   AnyPropertyType, &type, &format, &nitems,
+                                   &after, &data);
+                if (type == A_INCR) {
+                    if (data) XFree(data);
+                    return send_err(fd, "clipboard too large (INCR unsupported)");
+                }
+                size_t len = (data && format == 8) ? (size_t)nitems : 0;
+                int rc = send_payload(fd, data, len);
+                if (data) XFree(data);
+                return rc;
+            }
+            serve_selection(&ev);
+        }
+        // Block until the X connection has data or 100ms passes, then re-drain.
+        fd_set r;
+        FD_ZERO(&r);
+        FD_SET(xfd, &r);
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+        select(xfd + 1, &r, NULL, NULL, &tv);
+    }
+    return send_err(fd, "clipboard read timed out");
 }
 
 // ---- request dispatch ---------------------------------------------------
@@ -542,6 +674,20 @@ static int handle(int fd, const char *json) {
             return send_err(fd, "missing command");
         launch_detached(cmd);
         return send_ok(fd);
+    } else if (!strcmp(action, "set_clipboard")) {
+        // The decoded text can't exceed the header length; size the buffer to
+        // it so large pastes aren't truncated by a fixed cap.
+        size_t cap = strlen(json) + 1;
+        char *text = (char *)malloc(cap);
+        if (!text) return send_err(fd, "oom");
+        if (!json_str(json, "text", text, cap)) {
+            free(text);
+            return send_err(fd, "missing text");
+        }
+        do_set_clipboard(text, strlen(text)); // takes ownership of `text`
+        return send_ok(fd);
+    } else if (!strcmp(action, "get_clipboard")) {
+        return do_get_clipboard(fd);
     }
     return send_err(fd, "unknown action");
 }
@@ -563,6 +709,17 @@ int main(int argc, char **argv) {
     }
     g_screen = DefaultScreen(g_dpy);
     g_root = RootWindow(g_dpy, g_screen);
+
+    // Unmapped 1x1 window that owns the clipboard selections; intern the atoms
+    // serve_selection()/do_get_clipboard() need. (XA_PRIMARY/XA_STRING/XA_ATOM
+    // are predefined.)
+    g_clip_win = XCreateSimpleWindow(g_dpy, g_root, 0, 0, 1, 1, 0, 0, 0);
+    A_CLIPBOARD = XInternAtom(g_dpy, "CLIPBOARD", False);
+    A_TARGETS = XInternAtom(g_dpy, "TARGETS", False);
+    A_UTF8 = XInternAtom(g_dpy, "UTF8_STRING", False);
+    A_TEXT = XInternAtom(g_dpy, "TEXT", False);
+    A_INCR = XInternAtom(g_dpy, "INCR", False);
+    A_PROP = XInternAtom(g_dpy, "VMETTE_CLIP", False); // scratch prop for get
 
     // Disable keyboard auto-repeat globally. If a synthetic key's press/release
     // pair straddles a slow round-trip, the server can inject spurious repeat
@@ -586,19 +743,51 @@ int main(int argc, char **argv) {
     fprintf(stderr, "agent: connected to host:%u, serving on %s\n",
             port, display);
 
+    // Multiplex the vsock request stream and the X connection: requests are
+    // handled as before, while SelectionRequest events (from an app pasting
+    // what set_clipboard owns) are served between requests via serve_selection.
+    int xfd = ConnectionNumber(g_dpy);
     for (;;) {
-        unsigned char lenbuf[4];
-        if (read_exact(fd, lenbuf, 4) < 0) break; // host closed
-        uint32_t hlen = (uint32_t)lenbuf[0] | ((uint32_t)lenbuf[1] << 8) |
-                        ((uint32_t)lenbuf[2] << 16) | ((uint32_t)lenbuf[3] << 24);
-        if (hlen == 0 || hlen > (1u << 20)) break;
-        char *hdr = (char *)malloc(hlen + 1);
-        if (!hdr) break;
-        if (read_exact(fd, hdr, hlen) < 0) { free(hdr); break; }
-        hdr[hlen] = '\0';
-        int rc = handle(fd, hdr);
-        free(hdr);
-        if (rc < 0) break; // write failed → host gone
+        // Serve any X events already queued before blocking.
+        while (XPending(g_dpy)) {
+            XEvent ev;
+            XNextEvent(g_dpy, &ev);
+            serve_selection(&ev);
+        }
+
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        FD_SET(xfd, &rfds);
+        int maxfd = (fd > xfd ? fd : xfd) + 1;
+        if (select(maxfd, &rfds, NULL, NULL, NULL) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        if (FD_ISSET(xfd, &rfds)) {
+            while (XPending(g_dpy)) {
+                XEvent ev;
+                XNextEvent(g_dpy, &ev);
+                serve_selection(&ev);
+            }
+        }
+
+        if (FD_ISSET(fd, &rfds)) {
+            unsigned char lenbuf[4];
+            if (read_exact(fd, lenbuf, 4) < 0) break; // host closed
+            uint32_t hlen = (uint32_t)lenbuf[0] | ((uint32_t)lenbuf[1] << 8) |
+                            ((uint32_t)lenbuf[2] << 16) |
+                            ((uint32_t)lenbuf[3] << 24);
+            if (hlen == 0 || hlen > (1u << 20)) break;
+            char *hdr = (char *)malloc(hlen + 1);
+            if (!hdr) break;
+            if (read_exact(fd, hdr, hlen) < 0) { free(hdr); break; }
+            hdr[hlen] = '\0';
+            int rc = handle(fd, hdr);
+            free(hdr);
+            if (rc < 0) break; // write failed → host gone
+        }
     }
 
     close(fd);
