@@ -191,6 +191,16 @@ fn parse_args() -> ParsedArgs {
                     eprintln!("error: --env expects KEY=VALUE, got '{}'", s);
                     usage();
                 });
+                // Reject a bad key here rather than silently dropping it at
+                // render time (the guest would just never see the var).
+                if !vmette::is_valid_env_key(k) {
+                    eprintln!(
+                        "error: --env key must be a shell identifier \
+                         ([A-Za-z_][A-Za-z0-9_]*), got '{}'",
+                        k
+                    );
+                    usage();
+                }
                 env.push((k.into(), val.into()));
                 i += 2;
             }

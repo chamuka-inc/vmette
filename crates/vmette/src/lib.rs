@@ -180,18 +180,14 @@ impl Config {
 /// This is the single renderer behind both env sources: the `--env` cmdline
 /// channel (caller-supplied) and the OCI rootfs provider (an image's configured
 /// `Env`). Keeping one renderer keeps their escaping and key rules identical.
+///
+/// Cross-crate internal helper (used by `vmette-cli` and `vmette-provider-oci`);
+/// `#[doc(hidden)]` — not a stability-guaranteed public API.
+#[doc(hidden)]
 pub fn render_env_exports(pairs: &[(String, String)]) -> Option<String> {
     let mut out = String::new();
     for (key, val) in pairs {
-        let mut bytes = key.bytes();
-        let valid = match bytes.next() {
-            Some(first) => {
-                (first.is_ascii_alphabetic() || first == b'_')
-                    && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            }
-            None => false,
-        };
-        if !valid {
+        if !is_valid_env_key(key) {
             continue;
         }
         let escaped = val.replace('\'', "'\\''");
@@ -202,4 +198,53 @@ pub fn render_env_exports(pairs: &[(String, String)]) -> Option<String> {
         out.push_str("'\n");
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// True if `key` is a POSIX shell identifier (`[A-Za-z_][A-Za-z0-9_]*`) — the
+/// rule an env var name must satisfy for `export KEY=…` to accept it. Shared so
+/// the `--env` CLI can reject a bad key up front (clear error) using the *same*
+/// rule [`render_env_exports`] uses to skip one (a silently-dropped var is a
+/// confusing way to learn the key was invalid).
+///
+/// Cross-crate internal helper; `#[doc(hidden)]`.
+#[doc(hidden)]
+pub fn is_valid_env_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    matches!(bytes.next(), Some(c) if c.is_ascii_alphabetic() || c == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::{is_valid_env_key, render_env_exports};
+
+    #[test]
+    fn valid_env_keys() {
+        assert!(is_valid_env_key("PATH"));
+        assert!(is_valid_env_key("_x"));
+        assert!(is_valid_env_key("A1_B2"));
+        assert!(!is_valid_env_key("")); // empty
+        assert!(!is_valid_env_key("1LEAD")); // leading digit
+        assert!(!is_valid_env_key("FOO-BAR")); // dash
+        assert!(!is_valid_env_key("FOO BAR")); // space
+        assert!(!is_valid_env_key("a=b")); // contains '='
+    }
+
+    #[test]
+    fn render_escapes_and_skips_invalid() {
+        let pairs = vec![
+            ("PATH".into(), "/a:/b".into()),
+            ("WEIRD".into(), "it's".into()),
+            ("HAS".into(), "a=b".into()),   // value may contain '='
+            ("BAD-KEY".into(), "x".into()), // dropped
+        ];
+        let out = render_env_exports(&pairs).expect("some env");
+        assert!(out.contains("export PATH='/a:/b'\n"));
+        assert!(out.contains("export HAS='a=b'\n"));
+        assert!(out.contains(r"export WEIRD='it'\''s'"));
+        assert!(!out.contains("BAD-KEY"));
+        // All-invalid renders to None.
+        assert!(render_env_exports(&[("1BAD".into(), "x".into())]).is_none());
+        assert!(render_env_exports(&[]).is_none());
+    }
 }
