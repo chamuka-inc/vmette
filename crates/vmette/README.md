@@ -22,10 +22,12 @@ This crate is the core library. It exposes three faces from one build:
 ```rust
 use vmette::{Config, run};
 
-let mut cfg = Config::new();
-cfg.set_exec("echo hello from the guest");
-let out = run(cfg)?;
-assert_eq!(out.exit_code, Some(0));
+// Boot a guest from a kernel + initramfs and run a one-shot command.
+let mut cfg = Config::new("vmlinuz-virt", "initramfs-vmette");
+cfg.exec_cmd = Some("echo hello from the guest".into());
+
+let out = run(&cfg)?;
+assert_eq!(out.exit_code, 0);
 ```
 
 Rootfs comes from a pluggable provider (local directory, OCI/Docker image,
