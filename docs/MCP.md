@@ -386,3 +386,6 @@ What the server **does not** isolate:
 | `workspace_create` returns "workspace cap reached" | Destroy idle workspaces or raise `--workspace-cap`. |
 | `desktop_*` tools fail with "connect … failed (is vmetted running?)" | Start the daemon (`vmetted &`); the desktop tools route through it. |
 | `desktop_start` returns "session cap reached" | Stop an idle desktop session, or wait for idle eviction (30 min). |
+| `cargo`/`node`/etc. "not found" in a toolchain image | The image's configured `Env` (incl. `PATH`) is applied automatically. If the image was extracted by an older vmette it lacks the env file — clear its cache (`rm -rf ~/Library/Caches/vmette/oci/<image>`) so it re-extracts. |
+| `No space left on device` mid-build | The guest's writable `/` is a RAM-backed tmpfs overlay (~half the guest RAM). Route large writes to the workspace mount (`/mnt/work`) — e.g. `CARGO_HOME` and the build target dir — rather than the rootfs. |
+| Linker error: `cannot find …rcgu.o` during a native compile | Heavy parallel codegen writing many object files to the virtio-fs share can race. Build with a single codegen unit: `RUSTFLAGS="-C codegen-units=1"` (or the equivalent for your toolchain). |

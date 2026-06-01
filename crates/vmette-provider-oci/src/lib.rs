@@ -578,6 +578,11 @@ pub async fn pull_with_options(
         extract_layer(&layer.data, media, &rootfs)?;
     }
 
+    // Surface the image's configured environment (PATH, etc.) to the guest so
+    // a `docker`-style toolchain image works without the caller re-deriving
+    // PATH — the guest `/init` sources this before running the exec.
+    write_image_env(&rootfs, &image.config.data);
+
     // Atomic marker write: stage to a temp file then rename, so a crash
     // between writes can't leave a truncated marker that future runs
     // mistake for a complete extraction.
@@ -587,6 +592,47 @@ pub async fn pull_with_options(
     write_ref_entry(&ref_file, &manifest_digest)?;
     info!(path = %rootfs.display(), "image ready");
     Ok(rootfs)
+}
+
+/// Write the image config's `Env` entries into the extracted rootfs as a
+/// shell-sourceable `/.vmette-image-env` (one `export KEY='VALUE'` per line).
+/// The guest `/init` sources it before the exec, so an image's configured
+/// `PATH` (cargo, node, …) and other env are in scope — matching how
+/// `docker run` applies the image's env. Best-effort: a malformed config or a
+/// write failure is silently ignored (the env is a convenience, not required).
+fn write_image_env(rootfs: &Path, config_blob: &[u8]) {
+    if let Some(out) = render_image_env(config_blob) {
+        let _ = std::fs::write(rootfs.join(".vmette-image-env"), out);
+    }
+}
+
+/// Render an OCI image config's `Env` array into shell `export KEY='VALUE'`
+/// lines. Returns `None` when the blob is unparseable or carries no usable
+/// entries. Keys must be shell identifiers (`[A-Za-z0-9_]`); values are
+/// single-quoted with embedded quotes escaped, so metacharacters are inert
+/// when the guest sources the file. Pure — unit-tested.
+fn render_image_env(config_blob: &[u8]) -> Option<String> {
+    let cfg = serde_json::from_slice::<serde_json::Value>(config_blob).ok()?;
+    let env = cfg
+        .get("config")
+        .and_then(|c| c.get("Env"))
+        .and_then(|e| e.as_array())?;
+    let mut out = String::new();
+    for entry in env {
+        let Some((key, val)) = entry.as_str().and_then(|kv| kv.split_once('=')) else {
+            continue;
+        };
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            continue;
+        }
+        let escaped = val.replace('\'', "'\\''");
+        out.push_str("export ");
+        out.push_str(key);
+        out.push_str("='");
+        out.push_str(&escaped);
+        out.push_str("'\n");
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn extracted_path(cache_root: &Path, image_ref: &str, digest: &str) -> PathBuf {
@@ -807,6 +853,26 @@ mod tests {
         assert_eq!(sanitize_ref("alpine:3.20"), "alpine_3.20");
         assert_eq!(sanitize_ref("ghcr.io/foo/bar:tag"), "ghcr.io_foo_bar_tag");
         assert_eq!(sanitize_ref("python:3.12-alpine"), "python_3.12-alpine");
+    }
+
+    #[test]
+    fn image_env_renders_exports_and_escapes() {
+        let blob = br#"{"config":{"Env":["PATH=/usr/local/cargo/bin:/bin","RUST_VERSION=1.96.0","BAD KEY=x","WEIRD=it's"]}}"#;
+        let out = render_image_env(blob).expect("some env");
+        assert!(out.contains("export PATH='/usr/local/cargo/bin:/bin'\n"));
+        assert!(out.contains("export RUST_VERSION='1.96.0'\n"));
+        // Non-identifier key is dropped.
+        assert!(!out.contains("BAD KEY"));
+        // Single quotes in the value are escaped so sourcing stays inert.
+        assert!(out.contains(r"export WEIRD='it'\''s'"));
+    }
+
+    #[test]
+    fn image_env_none_when_absent_or_unparseable() {
+        assert!(render_image_env(b"{}").is_none());
+        assert!(render_image_env(br#"{"config":{}}"#).is_none());
+        assert!(render_image_env(br#"{"config":{"Env":[]}}"#).is_none());
+        assert!(render_image_env(b"not json at all").is_none());
     }
 
     #[test]

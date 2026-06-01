@@ -313,6 +313,7 @@ if [ "$USE_SWITCH_ROOT" = "1" ]; then
         cat > "$RUNNER" 2>/dev/null <<RUNNER_EOF
 #!/bin/sh
 export VMETTE_VSOCK_PORT='$VMETTE_VSOCK_PORT'
+[ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null
 /bin/sh -c '$(printf '%s' "$USER_CMD" | sed "s/'/'\\\\''/g")'
 RC=\$?
 sync
@@ -336,7 +337,10 @@ if [ -z "$B64" ]; then
     RC=$?
 else
     log "exec: $USER_CMD"
-    chroot /newroot /bin/sh -c "$USER_CMD"
+    # Source the image's env (PATH etc., written by the OCI provider) if present,
+    # then run the user command. $USER_CMD is passed as a positional arg so it
+    # needs no re-escaping here.
+    chroot /newroot /bin/sh -c '[ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null; exec /bin/sh -c "$1"' vmette "$USER_CMD"
     RC=$?
     log "exit=$RC"
 fi

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **OCI image environment is applied in the guest.** When a rootfs comes from an
+  OCI image, the image config's `Env` (notably `PATH`, so `cargo` / `node` /
+  etc. are on `PATH`) is now exported before the `--exec` (or MCP `execute` /
+  `workspace_run`) command runs — matching how `docker run` applies the image's
+  configured env. The OCI provider writes the env into the extracted rootfs and
+  the guest `/init` sources it; non-OCI rootfses (dir / tar / squashfs) are
+  unaffected. Images cached by an older vmette must be re-pulled to pick this up.
+
 ## [0.1.1] — 2026-06-01
 
 ### Fixed
@@ -156,5 +168,6 @@ and an MCP server.
 - Desktop sessions are software-rendered (no GPU) — fine for agentic GUI
   control and UI testing, not video/WebGL/3D.
 
+[Unreleased]: https://github.com/chamuka-inc/vmette/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/chamuka-inc/vmette/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/chamuka-inc/vmette/releases/tag/v0.1.0
