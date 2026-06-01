@@ -11,6 +11,10 @@ network — that is *not* your machine. The isolation boundary is the hypervisor
 not a container: the guest cannot reach the host filesystem, your SSH keys, your
 credentials, or your network unless you explicitly grant it.
 
+<p align="center">
+  <img src="vmette-demo.gif" alt="vmette booting a Linux guest, propagating its exit code to the host, and enforcing default-deny networking until --net is passed" width="800">
+</p>
+
 ## The problem
 
 Coding agents and computer-use agents increasingly run untrusted code and take
