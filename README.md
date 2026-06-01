@@ -225,8 +225,24 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 
 ## Use it (AI agents via MCP)
 
+`vmette-mcp` is a Model Context Protocol server that hands any MCP-aware agent
+host a sandboxed machine. Install it, then point your agent at it:
+
+```sh
+curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
+```
+
+**Claude Code** — one command, no config file:
+
+```sh
+claude mcp add vmette --scope user -- vmette-mcp --allow-network
+```
+
+**Claude Desktop, Cursor, Cline, Zed, Goose** — point the host at the
+`vmette-mcp` command. JSON example (Claude Desktop's
+`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
 ```jsonc
-// ~/Library/Application Support/Claude/claude_desktop_config.json
 { "mcpServers": {
     "vmette": {
       "command": "vmette-mcp",
@@ -234,17 +250,15 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 }}}
 ```
 
-`vmette-mcp` is a Model Context Protocol server that exposes vmette to
-any MCP-aware agent host — Claude Desktop, Cursor, Cline, Zed, Goose,
-etc. It ships an `execute` tool, `fetch_url`, a `workspace_*` family
-(each call boots a fresh microVM), and a `desktop_*` family for
-computer use. This is the agent's whole world: it runs inside the VM, so
-it never touches your real filesystem unless you explicitly share a
-directory into it, and it has no network egress unless you start the
-server with `--allow-network`.
+It ships an `execute` tool, `fetch_url`, a `workspace_*` family (each call
+boots a fresh microVM), and a `desktop_*` family for computer use. This is the
+agent's whole world: it runs inside the VM, so it never touches your real
+filesystem unless you explicitly share a directory into it, and it has no
+network egress unless you start the server with `--allow-network`.
 
-See [`docs/MCP.md`](docs/MCP.md) for the full tool reference, security
-model, and client configs.
+Per-host setup snippets (Claude Code, Claude Desktop, Cursor, Cline, Zed,
+Goose) plus the full tool reference and security model:
+[`docs/MCP.md`](docs/MCP.md).
 
 ## Use it (desktop computer use)
 

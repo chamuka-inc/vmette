@@ -35,6 +35,36 @@ ls target/release/vmette-mcp
 
 ## Client configuration
 
+Every client launches the same `vmette-mcp` binary over stdio. First install it
+so it's on your `PATH`:
+
+```sh
+curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
+vmette-mcp --help          # confirm it's on PATH
+```
+
+The kernel + initramfs ship with the install and are auto-discovered — no asset
+flags needed. Common flags (all optional):
+
+- `--allow-network` — permit guest egress; omit for default-deny (then
+  `network: true` calls are refused, not silently run offline).
+- `--default-image <ref>` — image used by `execute` / `workspace_*` when a call
+  doesn't name one (e.g. `python:3.12-alpine`).
+- `--workspace-cap <n>` — max concurrent live workspaces (default 8).
+
+### Claude Code (CLI)
+
+One command — no JSON to edit:
+
+```sh
+claude mcp add vmette --scope user -- vmette-mcp --allow-network   # all projects
+claude mcp add vmette -- vmette-mcp --allow-network                # this project only
+```
+
+Verify with `claude mcp list` (look for `vmette … ✓ Connected`) or `/mcp` inside
+a session. Remove with `claude mcp remove vmette`. Everything after `--` is the
+launch command, so add flags there: `… -- vmette-mcp --default-image python:3.12-alpine --allow-network`.
+
 ### Claude Desktop
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -72,13 +102,41 @@ any outbound HTTP calls.
 
 ### Cline (VS Code)
 
-`Cline > Settings > MCP Servers`, add:
+`Cline > Settings > MCP Servers > Configure`, add under `mcpServers`:
 
 ```jsonc
-{ "vmette": {
-    "command": "vmette-mcp",
-    "args": ["--allow-network"]
-}}
+{ "mcpServers": {
+    "vmette": {
+      "command": "vmette-mcp",
+      "args": ["--allow-network"]
+}}}
+```
+
+### Zed
+
+`~/.config/zed/settings.json` → `context_servers`:
+
+```jsonc
+{ "context_servers": {
+    "vmette": {
+      "source": "custom",
+      "command": "vmette-mcp",
+      "args": ["--allow-network"]
+}}}
+```
+
+### Goose
+
+Add an stdio extension to `~/.config/goose/config.yaml` (or run
+`goose configure` → *Add Extension* → *Command-line (stdio)*):
+
+```yaml
+extensions:
+  vmette:
+    type: stdio
+    cmd: vmette-mcp
+    args: ["--allow-network"]
+    enabled: true
 ```
 
 ### Any other MCP host
