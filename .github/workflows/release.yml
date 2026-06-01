@@ -6,6 +6,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# softprops/action-gh-release creates the GitHub release, which needs
+# contents: write. Without this the GITHUB_TOKEN runs at the repo's read-only
+# default and the release step fails with 403 "Resource not accessible by
+# integration".
+permissions:
+  contents: write
+
 jobs:
   build:
     name: build universal + dist
