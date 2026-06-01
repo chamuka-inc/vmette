@@ -64,7 +64,7 @@ long-lived daemon, and an MCP server for agent hosts.
 curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
 ```
 
-Installs to `~/.local/share/vmette/`, symlinks `~/.local/bin/{vmette,vmetted}`.
+Installs to `~/.local/share/vmette/`, symlinks `~/.local/bin/{vmette,vmetted,vmette-mcp}`.
 macOS-only (any version with VZ — i.e. 11+; tested on 14.7 Intel).
 
 Or build from source:
@@ -182,8 +182,16 @@ int main(int argc, char **argv) {
 }
 ```
 
-Link with `-L lib -lvmette`. The header is auto-generated from
-`crates/vmette/src/ffi.rs` via cbindgen and checked in at
+Compile and link against the shipped library and header:
+
+```sh
+cc -I include -L lib -lvmette -Wl,-rpath,lib -o demo demo.c
+```
+
+The `-Wl,-rpath,lib` matters: `libvmette.dylib` has the install name
+`@rpath/libvmette.dylib`, so the binary needs an rpath pointing at the directory
+that holds the dylib (here `lib`) to find it at runtime. The header is
+auto-generated from `crates/vmette/src/ffi.rs` via cbindgen and checked in at
 `crates/vmette/include/vmette.h`.
 
 See [`crates/vmette/examples/minimal.c`](crates/vmette/examples/minimal.c)
@@ -220,6 +228,10 @@ Output:
 {"kind":"stdout","data":"from daemon\r\n"}
 {"kind":"exit","code":17}
 ```
+
+(The stream also carries the launcher banner as `stderr` frames and the guest's
+`[init]`/boot lines as `stdout` frames; only the meaningful frames are shown
+here. The MCP server slices these down to the command's own output.)
 
 See [`docs/DAEMON.md`](docs/DAEMON.md).
 

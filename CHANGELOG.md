@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **C ABI: `libvmette.dylib` now carries an `@rpath` install name.** The cdylib
+  was stamped with its absolute build-output path as its install name
+  (`LC_ID_DYLIB`), so a binary linked against the shipped library failed at
+  runtime with `dyld: Library not loaded` on any machine other than the one it
+  was built on. It is now `@rpath/libvmette.dylib`; link C consumers with
+  `-Wl,-rpath,<dir-holding-the-dylib>` (as `docs/API.md` already shows).
+
 ## [0.1.0] — 2026-06-01
 
 Initial release. A headless Linux microVM sandbox for macOS built on Apple's
@@ -145,4 +156,5 @@ and an MCP server.
 - Desktop sessions are software-rendered (no GPU) — fine for agentic GUI
   control and UI testing, not video/WebGL/3D.
 
+[Unreleased]: https://github.com/chamuka-inc/vmette/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/chamuka-inc/vmette/releases/tag/v0.1.0

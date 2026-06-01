@@ -14,6 +14,16 @@ fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
+    // The cdylib (`libvmette.dylib`) is consumed by non-Rust callers over the C
+    // ABI. By default the macOS linker stamps its install name (LC_ID_DYLIB)
+    // with the absolute build-output path, so a binary that links `-lvmette`
+    // bakes in a path that only exists on the build machine and fails at
+    // runtime with `dyld: Library not loaded`. Stamp it `@rpath/...` instead so
+    // consumers resolve it through an rpath (`-Wl,-rpath,<dir-holding-the-dylib>`).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libvmette.dylib");
+    }
+
     #[cfg(feature = "regenerate-header")]
     regenerate_header();
 }
