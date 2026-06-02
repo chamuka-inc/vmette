@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The mouse pointer is now drawn in desktop screenshots and the live view.**
+  `XGetImage` does not include the X cursor (the server draws it as a separate
+  overlay), so captures had no pointer — it was invisible in `desktop_view`
+  (you saw clicks land but never saw the cursor move) and absent from
+  `desktop_screenshot`. The in-guest agent now composites the real cursor
+  sprite (its current shape + position, via XFixes) into every captured frame.
+
 ## [0.5.0] — 2026-06-02
 
 ### Added
