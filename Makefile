@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish assets init guest-bin desktop-image run shell test test-desktop test-view clean
+.PHONY: help build header universal dist publish release assets init guest-bin desktop-image run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -29,6 +29,9 @@ publish:       ## Publish the vmette library crates to crates.io (in dep order)
 	cargo publish $(FLAGS) -p vmette-provider-squashfs
 	cargo publish $(FLAGS) -p vmette-provider-tar
 	cargo publish $(FLAGS) -p vmette-providers
+
+release:       ## Cut a release: make release VERSION=X.Y.Z [DRY_RUN=1] [YES=1] — bumps, gates, tags, publishes, pushes
+	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" RELEASE_YES="$(YES)" bash scripts/release.sh
 
 universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	@rustup target add x86_64-apple-darwin aarch64-apple-darwin

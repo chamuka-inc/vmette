@@ -26,6 +26,25 @@ make test                   # cargo tests + end-to-end VM smoke
 `make desktop-image` exports the computer-use rootfs to
 `assets/vmette-desktop-rootfs.tar`, which the CLI/MCP auto-discover.
 
+## Cutting a release
+
+```sh
+make release VERSION=0.5.0 DRY_RUN=1   # preflight + gates + plan; change nothing
+make release VERSION=0.5.0             # cut it (prompts before the irreversible publish)
+make release VERSION=0.5.0 YES=1       # skip the prompt (unattended)
+```
+
+`scripts/release.sh` runs the whole playbook: preflight (on `main`, clean tree,
+in sync with origin, version newer, tag free, `[Unreleased]` non-empty, crates.io
+creds), then the lockstep version bump (workspace + the 7 internal dep pins) +
+`cargo update -w`, CHANGELOG `[Unreleased]` → `[VERSION]`, gates
+(`fmt`/`clippy -D warnings`/`test`), the `release: vX.Y.Z` commit + tag, and —
+behind a confirmation — `cargo publish` of the 7 libs in dep order followed by
+the `main` + tag push that fires `release.yml` (tarball/GitHub Release) and
+`desktop-image.yml`. Everything before publish is local and reversible; a
+declined or failed run leaves the commit + tag for inspection (undo with
+`git reset --hard HEAD~1 && git tag -d vX.Y.Z`).
+
 ## Layout reminder
 
 ```
