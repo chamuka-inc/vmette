@@ -16,9 +16,10 @@ vmette desktop <command> [options]              # drive a persistent desktop ses
 
 `--kernel` and `--initramfs` are optional and auto-discovered. When
 omitted, vmette searches, in order: `$VMETTE_ASSETS_DIR`, `./assets`
-(repo checkout), the install prefix beside the binary, and
-`~/.local/share/vmette/assets`. The release tarball ships both there, so
-a `curl | install.sh` install boots with no asset flags.
+(repo checkout), and `<install-prefix>/assets` (the `assets` dir that is
+a sibling of the binary's `bin/`). The release tarball ships both under
+`<prefix>/assets`, so a `curl | install.sh` install boots with no asset
+flags.
 
 | Flag | Argument | Description |
 |------|----------|-------------|
@@ -82,6 +83,9 @@ vmette desktop double-click SESSION_ID X Y                double left-click at X
 vmette desktop right-click SESSION_ID X Y                 right-click at X Y
 vmette desktop type        SESSION_ID TEXT                type a string
 vmette desktop key         SESSION_ID CHORD              press a chord, e.g. 'ctrl+c'
+vmette desktop set-clipboard SESSION_ID TEXT             put TEXT on the clipboard
+vmette desktop get-clipboard SESSION_ID                  print the clipboard contents
+vmette desktop paste       SESSION_ID TEXT               set clipboard then Ctrl+V
 vmette desktop scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)
 vmette desktop exec        SESSION_ID COMMAND             launch a shell command in the guest
 vmette desktop stop        SESSION_ID                     tear the session down

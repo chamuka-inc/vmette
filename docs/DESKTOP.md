@@ -248,6 +248,8 @@ JSON shape is `{"action": "<name>", ...fields}`.
 | `type` | `text` | Type a UTF-8 string via synthetic key events. |
 | `key` | `keys` | Press a chord, e.g. `"ctrl+c"`, `"Return"`, `"alt+Tab"`. |
 | `scroll` | `x`, `y`, `direction`, `amount` | Scroll `amount` clicks (`up`/`down`/`left`/`right`). |
+| `set_clipboard` | `text` | Own the `CLIPBOARD` + `PRIMARY` selections with `text`. |
+| `get_clipboard` | — | Read clipboard text; returned as the response payload (UTF-8). |
 | `wait` | `ms` | Sleep guest-side to let the UI settle. |
 | `exec` | `command` | Launch a shell command (e.g. `"chromium &"`). |
 

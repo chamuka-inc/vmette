@@ -163,10 +163,10 @@ fn main() {
 
 ```toml
 [dependencies]
-vmette                   = "0.1"
-vmette-provider-oci      = "0.1"
-vmette-provider-tar      = "0.1"  # optional; drop if you only need oci + dir
-vmette-provider-squashfs = "0.1"  # optional; squashfs+ block images
+vmette                   = "0.2"
+vmette-provider-oci      = "0.2"
+vmette-provider-tar      = "0.2"  # optional; drop if you only need oci + dir
+vmette-provider-squashfs = "0.2"  # optional; squashfs+ block images
 ```
 
 See [`crates/vmette/examples/minimal.rs`](crates/vmette/examples/minimal.rs).
@@ -382,9 +382,10 @@ Makefile                 help | build | universal | dist | test | run | shell | 
   `#if defined(__arm64__)` in the SDK headers. On Intel, attempting
   `--build-snapshot` / `--resume-snapshot` returns
   `VmetteStatus::SnapshotUnsupported` (CLI exits 1 with a clear message).
-- **Daemon's snapshot pool is also Apple-Silicon-only.** v0.1 of vmetted
+- **Daemon's snapshot pool is also Apple-Silicon-only.** `vmetted` today
   spawns a fresh `vmette` subprocess per request; the snapshot-warm-pool
-  optimization is on the roadmap for v0.2 once it lands on aarch64.
+  optimization is a planned future optimization (aarch64 only), not yet
+  implemented.
 - **Guest assets are currently x86_64-only.** The repack pipeline
   references `linux-virt-x86_64.apk`. arm64 needs a parallel
   `linux-virt-aarch64.apk` + `aarch64-linux-musl-gcc` install. Plumbing

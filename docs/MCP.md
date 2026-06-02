@@ -327,8 +327,10 @@ What the server **does** isolate:
   workspace dir is under `$TMPDIR/vmette-mcp-<pid>/` and is removed
   when the MCP session ends gracefully. Ungraceful exits (SIGKILL,
   panic-abort) leave the dir on disk; the next `vmette-mcp` startup
-  reaps orphans whose owning PID is dead or whose mtime is older than
-  24 hours, so disk pressure doesn't accumulate indefinitely.
+  reaps orphans whose owning PID is dead (and the dir is at least 60s
+  old, a grace window against racing a just-started peer and against PID
+  reuse) or whose mtime is older than 24 hours, so disk pressure doesn't
+  accumulate indefinitely.
 - `workspace_write` and `workspace_read` walk the path with `openat(...,
   O_DIRECTORY | O_NOFOLLOW)` at every component, and `mkdirat` for
   any missing intermediate (mkdirat fails atomically if the name

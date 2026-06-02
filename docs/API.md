@@ -14,7 +14,7 @@ mechanical shim over the Rust one, defined in
 
 ```toml
 [dependencies]
-vmette = "0.1"
+vmette = "0.2"
 ```
 
 ```rust
@@ -67,7 +67,9 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
 
 - `Config` — fields are `pub`; populate directly after `Config::new`.
   `set_rootfs_artifact(artifact, force_read_only)` applies a resolved
-  `RootfsArtifact` to the right field for you.
+  `RootfsArtifact` to the right field for you. `env: Vec<(String, String)>`
+  carries guest env vars (the CLI's `--env`), applied *after* any OCI image
+  `Env` so they override the image's values.
 - `VsockPort` — `Disabled` | `Auto` | `Fixed(u32)`.
 - `RootfsShare { path, read_only }` — a host directory shared over
   virtio-fs; held in `Config.rootfs_share`.
@@ -193,14 +195,17 @@ dylib's.
 | `void vmette_config_set_rootfs_share(cfg, path, bool ro);` | |
 | `void vmette_config_add_share(cfg, tag, path);` | Repeatable. |
 | `void vmette_config_add_disk(cfg, path);` | Repeatable. |
+| `void vmette_config_add_env(cfg, key, value);` | Append a guest env var (overrides OCI image `Env`). Repeatable. |
 | `void vmette_config_set_exec(cfg, cmd);` | |
 | `void vmette_config_set_net(cfg, bool);` | |
 | `void vmette_config_set_switch_root(cfg, bool);` | |
 | `void vmette_config_set_vsock_port(cfg, int32_t);` | -1 disable / 0 auto / >0 fixed |
 | `void vmette_config_set_guest_vsock_port(cfg, uint32_t);` | snapshot mode only |
 | `void vmette_config_set_timeout(cfg, uint32_t);` | 0 = no timeout |
-| `void vmette_config_set_vcpus(cfg, uint8_t);` | clamped to ≥1 |
-| `void vmette_config_set_mem_mib(cfg, uint64_t);` | clamped to ≥64 |
+| `void vmette_config_set_vcpus(cfg, uint8_t);` | not clamped; a value VZ rejects (e.g. 0) surfaces as `InvalidConfig` from `vmette_run` |
+| `void vmette_config_set_mem_mib(cfg, uint64_t);` | not clamped; a value VZ rejects surfaces as `InvalidConfig` from `vmette_run` |
+| `void vmette_config_set_build_snapshot(cfg, path);` | Apple Silicon only; see snapshot section. |
+| `void vmette_config_set_resume_snapshot(cfg, path);` | Apple Silicon only; requires an exec command. |
 | `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Normally never returns; see above. |
 | `int32_t vmette_run_output_exit_code(out);` | |
 | `void vmette_run_output_free(out);` | |

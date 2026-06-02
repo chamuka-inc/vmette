@@ -81,7 +81,8 @@ canonical entitlements are in `entitlements.plist`.
 
 The Makefile ad-hoc signs (`codesign --sign -`) which is sufficient
 for local use. For a distributed tarball/brew bottle/PKG installer you
-need a Developer ID ($99/yr) and notarization; not blocking v0.1.0.
+need a Developer ID ($99/yr) and notarization; the shipped releases are
+ad-hoc signed.
 
 Any cargo invocation invalidates the existing signature, so the
 smoke runner re-codesigns unconditionally. If you see
@@ -99,7 +100,7 @@ re-run `codesign --sign - --force --entitlements entitlements.plist --options=ru
 
 `scripts/build-initramfs.sh` extracts busybox from the netboot
 initramfs, swaps in the apk's module tree, injects
-`scripts/custom-init.sh` as `/init`, and repacks via `bsdcpio + gzip`.
+`scripts/custom-init.sh` as `/init`, and repacks via `cpio + gzip`.
 
 `scripts/build-vsock-send.sh` cross-compiles `guest/vsock-send.c` and
 `guest/vsock-runner.c` statically with musl, drops them at
@@ -135,5 +136,5 @@ Path forward (untested):
 3. `make dist` → tarball + SHA256SUMS
 4. `softprops/action-gh-release` uploads artifacts + `scripts/install.sh`
 
-Verified-not-yet: no live tag has been pushed; this is a paper trail
-of the intended CI shape.
+This pipeline is live: tags through `v0.2.0` have been pushed and their
+release artifacts published (the library crates are also on crates.io).

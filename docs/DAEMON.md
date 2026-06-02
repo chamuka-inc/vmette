@@ -5,8 +5,8 @@ the same protocol:
 
 - **Stateless runs** — one guest run per connection, dispatched by
   spawning the `vmette` CLI as a subprocess (the schema below). A
-  warm-snapshot pool to replace the per-request cold boot is on the
-  roadmap for v0.2 (Apple Silicon).
+  warm-snapshot pool to replace the per-request cold boot is a planned
+  future optimization (Apple Silicon); it is not yet implemented.
 - **Stateful desktop sessions** — `desktop_*` requests that drive a
   persistent in-process VM held across connections (see
   [Desktop session requests](#desktop-session-requests)).
@@ -69,6 +69,11 @@ Line-delimited JSON. One request per connection.
 `switch_root` are optional. `vsock_port` is `-1` (disable) / `0`
 (auto) / `>0` (fixed), defaulting to `0`. `vcpus` defaults to 1,
 `mem_mib` to 512.
+
+The daemon run schema has no `env` field — the CLI's `--env KEY=VALUE`
+(and `Config.env`) is not yet wired through `vmetted`. A daemon client
+that needs guest env vars must bake them into the `exec` command itself
+(e.g. `exec: "FOO=bar mycmd"`).
 
 ### Response stream
 
@@ -141,18 +146,22 @@ Each request is still one JSON object per connection, tagged by `kind`:
 
 | `kind` | Key fields | Reply |
 |--------|-----------|-------|
-| `desktop_start` | `kernel`, `initramfs`, `image?`, `size?` (`"WxH"`), `net?`, `offline?`, `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
-| `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"type":"screenshot"}`, mouse/key/type/scroll/exec) | `{"kind":"action_result","ok":true,"x?":…,"y?":…,"png_base64?":"…"}` |
+| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
+| `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll/exec) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…"}` (`text` carries the clipboard for `get_clipboard`) |
 | `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; small default, larger for launches) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
-| `desktop_what_changed` | `session_id` | fresh frame + damage region |
+| `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved) |
 | `desktop_stop` | `session_id` | `{"kind":"stopped"}` |
 
 A daemon-side failure on any kind returns `{"kind":"error","message":"…"}`.
 
-## v0.1 vs v0.2
+## Today vs the warm-pool roadmap
 
-| Feature | v0.1 (now) | v0.2 (roadmap, aarch64 only) |
-|---------|------------|------------------------------|
+The stateless run path today spawns a `vmette` subprocess per request
+(full cold boot). A warm-snapshot pool is a planned optimization, not
+yet shipped (aarch64 only, since snapshot/restore is Apple-Silicon-only):
+
+| Feature | Today | Warm-pool roadmap (aarch64 only) |
+|---------|-------|----------------------------------|
 | Per-request cost | ~1 s (full cold boot) | ~50 ms (snapshot resume) |
 | Implementation | subprocess spawn per request | in-process warm-snapshot pool |
 | Library API | unchanged | adds `OutputSink` trait for non-stdio output |
@@ -165,4 +174,4 @@ A daemon-side failure on any kind returns `{"kind":"error","message":"…"}`.
 | Many short-lived invocations from a long-lived process | `vmetted` |
 | Persistent desktop / computer-use sessions | `vmetted` (`desktop_*`) |
 | Library embedding from Rust/C | link `libvmette` directly |
-| Future warm-VM pool (aarch64) | `vmetted` v0.2 |
+| Future warm-VM pool (aarch64) | `vmetted` (roadmap) |
