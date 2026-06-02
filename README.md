@@ -301,11 +301,19 @@ vmette desktop screenshot "$SID" --out shot.png && open shot.png
 vmette desktop exec "$SID" 'xterm &'
 vmette desktop click "$SID" 640 400
 vmette desktop type  "$SID" 'echo hello'
+open "$(vmette desktop view "$SID")"        # watch & drive it live over VNC
 vmette desktop stop  "$SID"
 ```
 
+You can **watch — and take over —** a session live: `vmette desktop view`
+(or the `desktop_view` MCP tool) returns a loopback `vnc://host:port` you open
+with any VNC client (macOS Screen Sharing via `open vnc://…`). The daemon
+streams the screen and forwards your mouse/keyboard as the same actions the
+agent uses, so a human and the agent share one display.
+
 The same capability is exposed to agents through the MCP `desktop_*`
-tools (`desktop_screenshot` returns a PNG image block). See
+tools (`desktop_screenshot` returns a PNG image block; `desktop_view` returns
+a VNC address). See
 [`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol,
 action reference, and image build.
 
@@ -348,6 +356,7 @@ crates/
   vmette-cli/            `vmette` CLI binary (registers dir/squashfs/tar/oci providers)
   vmette-daemon/         `vmetted` UNIX-socket dispatcher (tokio + JSON)
                          + desktop session registry (stateful, in-process VMs)
+                         + live VNC view (RFB codec + per-session bridge)
   vmette-mcp/            `vmette-mcp` Model Context Protocol server for AI agents
 guest/                   C sources cross-compiled for the Linux guest
   vsock-send.c           pipe stdin → AF_VSOCK → host listener

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish assets init guest-bin desktop-image run shell test test-desktop clean
+.PHONY: help build header universal dist publish assets init guest-bin desktop-image run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -83,6 +83,9 @@ test:          ## Run cargo unit tests + end-to-end one-shot VM smoke
 
 test-desktop:  ## End-to-end desktop smoke: boots a real Xvfb desktop VM via vmetted (builds the rootfs image once if missing)
 	bash tests/desktop.sh
+
+test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and drives it with an RFB client
+	bash tests/view.sh
 
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin

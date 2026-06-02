@@ -34,7 +34,7 @@ crates/vmette-proto/             leaf wire contracts (serde only): agent + daemo
 crates/vmette-providers/         aggregator exposing default_registry() (Dir→Squashfs→Tar→Oci)
 crates/vmette-assets/            shared boot-asset (kernel + initramfs) discovery
 crates/vmette-cli/               `vmette` CLI binary
-crates/vmette-daemon/            `vmetted` UNIX-socket daemon + stateful desktop registry
+crates/vmette-daemon/            `vmetted` UNIX-socket daemon + stateful desktop registry + live VNC view (RFB)
 crates/vmette-mcp/               `vmette-mcp` MCP server for AI agents
 crates/vmette-provider-oci/      OCI/Docker image rootfs provider
 crates/vmette-provider-squashfs/ squashfs block-image rootfs provider
