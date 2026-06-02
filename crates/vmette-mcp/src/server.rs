@@ -35,9 +35,10 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 use vmette_proto::agent::{Action, ScrollDirection};
 use vmette_proto::daemon::ActionReply;
+use vmette_proto::ShareMount;
 
 use crate::daemon_client::DaemonClient;
-use crate::sandbox::{RunReply, RunRequest, Sandbox, Share};
+use crate::sandbox::{RunReply, RunRequest, Sandbox};
 use crate::workspace::{open_for_read, open_for_write, WorkspaceState};
 
 const DEFAULT_TIMEOUT_S: u32 = 30;
@@ -449,7 +450,7 @@ impl VmetteServer {
         let req = RunRequest {
             rootfs: ws.image.clone(),
             exec,
-            shares: vec![Share {
+            shares: vec![ShareMount {
                 tag: "work".into(),
                 path: ws.dir.clone(),
             }],

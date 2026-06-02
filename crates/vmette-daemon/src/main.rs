@@ -14,15 +14,15 @@
 //!
 //! Per connection:
 //!
-//!   client → daemon : one JSON object on a single line:
+//!   client → daemon : one JSON object on a single line. Only kernel,
+//!   initramfs, rootfs, and exec are required; omitted optional fields take
+//!   the `vmette` CLI's own default (the daemon never re-spells them):
 //!       { "kernel": "/path", "initramfs": "/path",
 //!         "rootfs": "/path/to/dir | alpine:3.20 | tar+https://... | oci://...",
-//!         "rootfs_ro": false, "offline": false,
-//!         "shares": [{"tag":"host", "path":"/p"}],
 //!         "exec": "echo hi",
-//!         "net": false, "switch_root": false,
-//!         "vsock_port": 0, "guest_vsock_port": 1025,
-//!         "timeout_seconds": 0, "vcpus": 1, "mem_mib": 512 }
+//!         "rootfs_ro": false, "offline": false, "net": false,
+//!         "shares": [{"tag":"host", "path":"/p"}],
+//!         "vcpus": 1, "mem_mib": 512 }
 //!
 //!   daemon → client : streamed JSON objects, one per line:
 //!       { "kind": "stdout", "data": "..." }
@@ -51,7 +51,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
-use vmette_proto::agent::Action;
+use vmette_proto::agent::{Action, ResponseHeader};
 use vmette_proto::daemon::{
     ActionReply, ChangedReply, DesktopReply, DesktopRequest, ErrorReply, Frame, Request,
     SessionReply, SettleReply,
@@ -74,13 +74,38 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 // `mem_mib`, `size`) are owned by the `registry` module (imported above). The
 // `image` is resolved client-side, so the dispatch passes it through verbatim.
 
-/// Parse "WIDTHxHEIGHT" → (w, h); default 1280x800 on absence/parse error.
-fn parse_size(s: Option<&str>) -> (u32, u32) {
-    s.and_then(|s| {
-        let (w, h) = s.split_once(['x', 'X'])?;
-        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-    })
-    .unwrap_or((1280, 800))
+/// Parse "WIDTHxHEIGHT" → `Some((w, h))`; `None` on absence or parse error, so
+/// the desktop `Config` default applies as the single owner of that geometry.
+fn parse_size(s: Option<&str>) -> Option<(u32, u32)> {
+    let (w, h) = s?.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Re-encode a desktop action's raw response (the agent's [`ResponseHeader`]
+/// plus the optional binary payload) into the wire [`ActionReply`]. `want_text`
+/// routes the payload: a clipboard read returns it as decoded UTF-8 `text`,
+/// every other payload-bearing action (a screenshot) as a base64 PNG. The lone
+/// owner of the vsock→socket payload encoding — kept pure so it is unit-tested.
+fn action_reply(header: ResponseHeader, payload: Option<Vec<u8>>, want_text: bool) -> ActionReply {
+    let (png_base64, text) = if want_text {
+        (
+            None,
+            payload.map(|b| String::from_utf8_lossy(&b).into_owned()),
+        )
+    } else {
+        (
+            payload.map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            None,
+        )
+    };
+    ActionReply {
+        ok: header.ok,
+        error: header.error,
+        x: header.x,
+        y: header.y,
+        png_base64,
+        text,
+    }
 }
 
 fn default_socket_path() -> PathBuf {
@@ -259,13 +284,11 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
     let req: DesktopRequest = serde_json::from_str(line).context("parse desktop request")?;
     match req {
         DesktopRequest::DesktopStart(req) => {
-            let (width, height) = parse_size(req.size.as_deref());
             let params = StartParams {
                 kernel: req.kernel,
                 initramfs: req.initramfs,
                 image: req.image,
-                width,
-                height,
+                display_size: parse_size(req.size.as_deref()),
                 net: req.net,
                 offline: req.offline,
                 vcpus: req.vcpus.unwrap_or(DEFAULT_DESKTOP_VCPUS),
@@ -281,30 +304,13 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
             // payload-bearing action (screenshot) returns a PNG. Decide which
             // before the action moves into the blocking task.
             let want_text = matches!(req.action, Action::GetClipboard);
-            let res =
+            let (header, payload) =
                 tokio::task::spawn_blocking(move || registry.action(&req.session_id, &req.action))
                     .await
                     .context("session action task")??;
-            let (png_base64, text) = if want_text {
-                (
-                    None,
-                    res.png.map(|b| String::from_utf8_lossy(&b).into_owned()),
-                )
-            } else {
-                (
-                    res.png
-                        .map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
-                    None,
-                )
-            };
-            Ok(DesktopReply::ActionResult(ActionReply {
-                ok: res.ok,
-                error: res.error,
-                x: res.x,
-                y: res.y,
-                png_base64,
-                text,
-            }))
+            Ok(DesktopReply::ActionResult(action_reply(
+                header, payload, want_text,
+            )))
         }
         DesktopRequest::DesktopScreenshotSettled(req) => {
             let timeout =
@@ -344,39 +350,10 @@ async fn run_workload(
     mut write_half: tokio::net::unix::OwnedWriteHalf,
     vmette_bin: PathBuf,
 ) -> Result<()> {
-    // Translate Request → vmette CLI flags
+    // Translate Request → vmette CLI flags via the single owner of that
+    // mapping in `vmette-proto`; the MCP sandbox path renders the same way.
     let mut cmd = Command::new(&vmette_bin);
-    cmd.arg("--kernel").arg(&req.kernel);
-    cmd.arg("--initramfs").arg(&req.initramfs);
-    cmd.arg("--rootfs").arg(&req.rootfs);
-    if req.rootfs_ro {
-        cmd.arg("--rootfs-ro");
-    }
-    if req.offline {
-        cmd.arg("--offline");
-    }
-    for s in &req.shares {
-        cmd.arg("--share")
-            .arg(format!("{}={}", s.tag, s.path.display()));
-    }
-    for d in &req.disks {
-        cmd.arg("--disk").arg(d);
-    }
-    cmd.arg("--exec").arg(&req.exec);
-    if req.net {
-        cmd.arg("--net");
-    }
-    if req.switch_root {
-        cmd.arg("--switch-root");
-    }
-    cmd.arg("--vsock-port").arg(req.vsock_port.to_string());
-    cmd.arg("--guest-vsock-port")
-        .arg(req.guest_vsock_port.to_string());
-    if let Some(t) = req.timeout_seconds {
-        cmd.arg("--timeout").arg(t.to_string());
-    }
-    cmd.arg("--vcpus").arg(req.vcpus.to_string());
-    cmd.arg("--mem-mib").arg(req.mem_mib.to_string());
+    cmd.args(req.to_cli_args());
 
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
@@ -500,4 +477,60 @@ async fn write_frame<W: AsyncWriteExt + Unpin>(w: &mut W, frame: &Frame) -> Resu
     json.push(b'\n');
     w.write_all(&json).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_size_parses_and_rejects() {
+        assert_eq!(parse_size(Some("1024x768")), Some((1024, 768)));
+        assert_eq!(parse_size(Some("800X600")), Some((800, 600))); // capital X
+        assert_eq!(parse_size(Some(" 1280 x 800 ")), Some((1280, 800))); // trimmed
+                                                                         // Absent or unparseable → None, so the desktop Config default applies
+                                                                         // as the single owner of the geometry (no daemon-side 1280x800 literal).
+        assert_eq!(parse_size(None), None);
+        assert_eq!(parse_size(Some("garbage")), None);
+        assert_eq!(parse_size(Some("1024x")), None);
+        assert_eq!(parse_size(Some("x768")), None);
+    }
+
+    #[test]
+    fn action_reply_screenshot_payload_is_base64_png() {
+        let r = action_reply(ResponseHeader::ok(), Some(vec![1, 2, 3]), false);
+        assert!(r.ok);
+        assert_eq!(r.text, None);
+        assert_eq!(r.png_base64.as_deref(), Some("AQID")); // base64 of [1,2,3]
+    }
+
+    #[test]
+    fn action_reply_clipboard_payload_is_text() {
+        let r = action_reply(ResponseHeader::ok(), Some(b"hello".to_vec()), true);
+        assert_eq!(r.text.as_deref(), Some("hello"));
+        assert_eq!(r.png_base64, None);
+    }
+
+    #[test]
+    fn action_reply_without_payload_carries_neither() {
+        let r = action_reply(ResponseHeader::ok(), None, false);
+        assert!(r.ok);
+        assert_eq!(r.png_base64, None);
+        assert_eq!(r.text, None);
+    }
+
+    #[test]
+    fn action_reply_forwards_header_fields() {
+        let header = ResponseHeader {
+            ok: false,
+            error: Some("boom".into()),
+            x: Some(640),
+            y: Some(400),
+            payload_len: 0,
+        };
+        let r = action_reply(header, None, false);
+        assert!(!r.ok);
+        assert_eq!(r.error.as_deref(), Some("boom"));
+        assert_eq!((r.x, r.y), (Some(640), Some(400)));
+    }
 }

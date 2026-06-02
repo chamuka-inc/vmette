@@ -46,7 +46,7 @@ use anyhow::{anyhow, bail, Context as _, Result};
 use rand::Rng;
 use vmette::provider::Context;
 use vmette::{Action, Config, Session, SessionClient, SessionEnd, StopHandle};
-use vmette_proto::Rect;
+use vmette_proto::{Rect, ResponseHeader};
 
 use vmette_daemon::settle::{Frame, SettleConfig, SettleDetector, SettleState};
 
@@ -102,22 +102,12 @@ pub struct StartParams {
     pub kernel: PathBuf,
     pub initramfs: PathBuf,
     pub image: String,
-    pub width: u32,
-    pub height: u32,
+    /// Xvfb framebuffer `(w, h)`; `None` takes [`Config`]'s desktop default.
+    pub display_size: Option<(u32, u32)>,
     pub net: bool,
     pub offline: bool,
     pub vcpus: u8,
     pub mem_mib: u64,
-}
-
-/// The result of a desktop action: the agent's response header fields plus an
-/// optional PNG payload (present for `screenshot`).
-pub struct ActionResult {
-    pub ok: bool,
-    pub error: Option<String>,
-    pub x: Option<i32>,
-    pub y: Option<i32>,
-    pub png: Option<Vec<u8>>,
 }
 
 /// The result of a "screenshot once settled" request: the captured frame plus
@@ -207,12 +197,17 @@ impl Registry {
 
         let mut cfg = Config::new(params.kernel, params.initramfs);
         cfg.workload = vmette::WorkloadStrategy::Agent;
-        cfg.display_size = (params.width, params.height);
+        if let Some(size) = params.display_size {
+            cfg.display_size = size;
+        }
         cfg.net = params.net;
         cfg.vcpus = params.vcpus;
         cfg.mem_mib = params.mem_mib;
         // Writable share: the entrypoint writes Xvfb/openbox logs under /var.
         cfg.set_rootfs_artifact(artifact, false);
+        // The detector sizes itself off the resolved framebuffer (the request's
+        // size or Config's default), captured before `cfg` moves to the thread.
+        let (disp_w, disp_h) = cfg.display_size;
         // vsock_port stays Auto (Session resolves it); the cmdline emits
         // vmette.desktop=1 + vmette.display + vmette.vsock_port for the agent.
 
@@ -242,8 +237,8 @@ impl Registry {
             .map_err(|e| anyhow!("session failed to start: {e}"))?;
 
         let detector = Arc::new(Mutex::new(SettleDetector::new(
-            params.width,
-            params.height,
+            disp_w,
+            disp_h,
             SettleConfig::default(),
         )));
 
@@ -280,9 +275,12 @@ impl Registry {
         Ok(id)
     }
 
-    /// Run one desktop action against a live session. Blocking (round-trips
-    /// over vsock) — call from `spawn_blocking`.
-    pub fn action(&self, id: &str, action: &Action) -> Result<ActionResult> {
+    /// Run one desktop action against a live session, returning the agent's
+    /// raw [`ResponseHeader`] plus the binary payload (the screenshot PNG or
+    /// clipboard bytes) when the action produced one. The caller owns the
+    /// vsock→socket re-encoding; we add no redundant intermediate type.
+    /// Blocking (round-trips over vsock) — call from `spawn_blocking`.
+    pub fn action(&self, id: &str, action: &Action) -> Result<(ResponseHeader, Option<Vec<u8>>)> {
         // Clone the cheap Send client out under the lock, then release it so
         // the (potentially slow) GUI round-trip doesn't serialize the whole
         // registry.
@@ -297,17 +295,8 @@ impl Registry {
         let (header, payload) = client
             .request(action)
             .with_context(|| format!("desktop action on session {id}"))?;
-        Ok(ActionResult {
-            ok: header.ok,
-            error: header.error,
-            x: header.x,
-            y: header.y,
-            png: if payload.is_empty() {
-                None
-            } else {
-                Some(payload)
-            },
-        })
+        let payload = (!payload.is_empty()).then_some(payload);
+        Ok((header, payload))
     }
 
     /// Poll the desktop until it has been *continuously settled* for

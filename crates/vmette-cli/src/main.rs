@@ -101,11 +101,13 @@ fn parse_args() -> ParsedArgs {
     let mut switch_root = false;
     let mut net = false;
     let mut quiet = false;
-    let mut vsock_port = VsockPort::Auto;
-    let mut guest_vsock_port: u32 = 1025;
+    // `None` = flag absent → defer to Config::new, the single owner of these
+    // defaults (so the literal 1/512/1025/Auto live in exactly one place).
+    let mut vsock_port: Option<VsockPort> = None;
+    let mut guest_vsock_port: Option<u32> = None;
     let mut timeout_seconds: Option<u32> = None;
-    let mut vcpus: u8 = 1;
-    let mut mem_mib: u64 = 512;
+    let mut vcpus: Option<u8> = None;
+    let mut mem_mib: Option<u64> = None;
     let mut build_snapshot: Option<PathBuf> = None;
     let mut resume_snapshot: Option<PathBuf> = None;
 
@@ -229,26 +231,26 @@ fn parse_args() -> ParsedArgs {
             "--vsock-port" => {
                 let v = take(i, "--vsock-port", false);
                 let n: i64 = parse_num::<i64>("--vsock-port", &v);
-                vsock_port = match n {
+                vsock_port = Some(match n {
                     n if n < 0 => VsockPort::Disabled,
                     0 => VsockPort::Auto,
                     n => VsockPort::Fixed(n as u32),
-                };
+                });
                 i += 2;
             }
             "--guest-vsock-port" => {
                 let v = take(i, "--guest-vsock-port", false);
-                guest_vsock_port = parse_num::<u32>("--guest-vsock-port", &v);
+                guest_vsock_port = Some(parse_num::<u32>("--guest-vsock-port", &v));
                 i += 2;
             }
             "--vcpus" => {
                 let v = take(i, "--vcpus", false);
-                vcpus = parse_num::<u8>("--vcpus", &v);
+                vcpus = Some(parse_num::<u8>("--vcpus", &v));
                 i += 2;
             }
             "--mem-mib" => {
                 let v = take(i, "--mem-mib", false);
-                mem_mib = parse_num::<u64>("--mem-mib", &v);
+                mem_mib = Some(parse_num::<u64>("--mem-mib", &v));
                 i += 2;
             }
             "--build-snapshot" => {
@@ -314,11 +316,20 @@ fn parse_args() -> ParsedArgs {
     c.switch_root = switch_root;
     c.net = net;
     c.quiet = quiet;
-    c.vsock_port = vsock_port;
-    c.guest_vsock_port = guest_vsock_port;
+    // Only override Config::new's defaults when the flag was actually given.
+    if let Some(v) = vsock_port {
+        c.vsock_port = v;
+    }
+    if let Some(v) = guest_vsock_port {
+        c.guest_vsock_port = v;
+    }
     c.timeout_seconds = timeout_seconds;
-    c.vcpus = vcpus;
-    c.mem_mib = mem_mib;
+    if let Some(v) = vcpus {
+        c.vcpus = v;
+    }
+    if let Some(v) = mem_mib {
+        c.mem_mib = v;
+    }
     c.build_snapshot = build_snapshot;
     c.resume_snapshot = resume_snapshot;
     ParsedArgs {

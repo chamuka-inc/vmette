@@ -15,9 +15,11 @@
 //!
 //! Fields with a server-side default are modelled as [`Option`] and skipped on
 //! the wire when absent: a client expresses "unspecified" as `None`, and the
-//! daemon owns the one true default. (The legacy `Request` keeps `serde`
-//! default functions instead — it has no in-repo client that constructs it.)
+//! daemon owns the one true default. The stateless [`Request`] follows the same
+//! rule — its optional fields render to argv only when set (see
+//! [`Request::to_cli_args`]), letting the `vmette` CLI own the lone default.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +31,13 @@ use crate::mount::ShareMount;
 // ---- stateless run path -------------------------------------------------
 
 /// One stateless run request: boot a one-shot microVM, relay its output. The
-/// daemon translates this into `vmette` CLI flags. Carries no `kind` tag.
+/// daemon (and the MCP sandbox path) render this to `vmette` CLI flags via
+/// [`Request::to_cli_args`]. Carries no `kind` tag.
+///
+/// Fields with a binary-side default are modelled as [`Option`] and omitted
+/// from the rendered argv when `None`, so the `vmette` CLI applies the one true
+/// default and no value is spelled twice. `kernel`, `initramfs`, `rootfs`, and
+/// `exec` are always required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub kernel: PathBuf,
@@ -50,27 +58,78 @@ pub struct Request {
     pub net: bool,
     #[serde(default)]
     pub switch_root: bool,
-    /// -1 disable, 0 auto, >0 fixed
-    #[serde(default)]
-    pub vsock_port: i32,
-    #[serde(default = "default_guest_vsock_port")]
-    pub guest_vsock_port: u32,
-    #[serde(default)]
+    /// vsock port: -1 disable, 0 auto, >0 fixed. `None` → CLI default (auto).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vsock_port: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_vsock_port: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u32>,
-    #[serde(default = "default_vcpus")]
-    pub vcpus: u8,
-    #[serde(default = "default_mem_mib")]
-    pub mem_mib: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_mib: Option<u64>,
 }
 
-fn default_guest_vsock_port() -> u32 {
-    1025
-}
-fn default_vcpus() -> u8 {
-    1
-}
-fn default_mem_mib() -> u64 {
-    512
+impl Request {
+    /// Render this request to the `vmette` CLI argv — the single owner of the
+    /// `Request` → command-line mapping, shared by the daemon's subprocess
+    /// dispatch and the MCP sandbox so the two cannot drift. Unset optional
+    /// fields are omitted, letting the CLI apply its own default.
+    pub fn to_cli_args(&self) -> Vec<OsString> {
+        // The always-present flags; the optional ones are pushed below.
+        let mut a: Vec<OsString> = vec![
+            "--kernel".into(),
+            self.kernel.clone().into_os_string(),
+            "--initramfs".into(),
+            self.initramfs.clone().into_os_string(),
+            "--rootfs".into(),
+            self.rootfs.clone().into(),
+        ];
+        if self.rootfs_ro {
+            a.push("--rootfs-ro".into());
+        }
+        if self.offline {
+            a.push("--offline".into());
+        }
+        for s in &self.shares {
+            a.push("--share".into());
+            a.push(format!("{}={}", s.tag, s.path.display()).into());
+        }
+        for d in &self.disks {
+            a.push("--disk".into());
+            a.push(d.clone().into_os_string());
+        }
+        a.push("--exec".into());
+        a.push(self.exec.clone().into());
+        if self.net {
+            a.push("--net".into());
+        }
+        if self.switch_root {
+            a.push("--switch-root".into());
+        }
+        if let Some(p) = self.vsock_port {
+            a.push("--vsock-port".into());
+            a.push(p.to_string().into());
+        }
+        if let Some(p) = self.guest_vsock_port {
+            a.push("--guest-vsock-port".into());
+            a.push(p.to_string().into());
+        }
+        if let Some(t) = self.timeout_seconds {
+            a.push("--timeout".into());
+            a.push(t.to_string().into());
+        }
+        if let Some(v) = self.vcpus {
+            a.push("--vcpus".into());
+            a.push(v.to_string().into());
+        }
+        if let Some(m) = self.mem_mib {
+            a.push("--mem-mib".into());
+            a.push(m.to_string().into());
+        }
+        a
+    }
 }
 
 /// One streamed reply line from the stateless run path. The daemon emits many
@@ -239,14 +298,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_request_applies_defaults() {
+    fn run_request_leaves_unset_optionals_none() {
         let req: Request =
             serde_json::from_str(r#"{"kernel":"/k","initramfs":"/i","rootfs":"/r","exec":"echo"}"#)
                 .unwrap();
-        assert_eq!(req.guest_vsock_port, 1025);
-        assert_eq!(req.vcpus, 1);
-        assert_eq!(req.mem_mib, 512);
+        assert_eq!(req.vsock_port, None);
+        assert_eq!(req.guest_vsock_port, None);
+        assert_eq!(req.vcpus, None);
+        assert_eq!(req.mem_mib, None);
         assert!(!req.net);
+    }
+
+    #[test]
+    fn to_cli_args_omits_unset_optionals() {
+        let req: Request =
+            serde_json::from_str(r#"{"kernel":"/k","initramfs":"/i","rootfs":"/r","exec":"echo"}"#)
+                .unwrap();
+        let args: Vec<String> = req
+            .to_cli_args()
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--kernel",
+                "/k",
+                "--initramfs",
+                "/i",
+                "--rootfs",
+                "/r",
+                "--exec",
+                "echo"
+            ]
+        );
+        // No defaulted scalar flags appear — the CLI owns those defaults.
+        assert!(!args
+            .iter()
+            .any(|a| a == "--vcpus" || a == "--mem-mib" || a == "--vsock-port"));
+    }
+
+    #[test]
+    fn to_cli_args_renders_set_fields() {
+        let req = Request {
+            kernel: "/k".into(),
+            initramfs: "/i".into(),
+            rootfs: "/r".into(),
+            rootfs_ro: true,
+            offline: true,
+            shares: vec![ShareMount {
+                tag: "work".into(),
+                path: "/tmp/x".into(),
+            }],
+            disks: vec!["/d.img".into()],
+            exec: "echo hi".into(),
+            net: true,
+            switch_root: true,
+            vsock_port: Some(0),
+            guest_vsock_port: Some(1025),
+            timeout_seconds: Some(30),
+            vcpus: Some(2),
+            mem_mib: Some(1024),
+        };
+        let args: Vec<String> = req
+            .to_cli_args()
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--share" && w[1] == "work=/tmp/x"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--disk" && w[1] == "/d.img"));
+        assert!(args.contains(&"--rootfs-ro".to_string()));
+        assert!(args.contains(&"--net".to_string()));
+        assert!(args.contains(&"--switch-root".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "--vcpus" && w[1] == "2"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--mem-mib" && w[1] == "1024"));
     }
 
     #[test]

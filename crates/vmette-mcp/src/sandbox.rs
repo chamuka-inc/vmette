@@ -17,6 +17,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use vmette_proto::daemon::Request;
+use vmette_proto::ShareMount;
 
 /// Hard cap on captured stdout + stderr per call (each stream). A
 /// runaway agent (e.g. `yes | head -c 10G`) can otherwise OOM the
@@ -83,19 +85,13 @@ const HOST_TIMEOUT_GRACE_SECS: u64 = 5;
 /// Used when the caller passed no per-request timeout.
 const HOST_TIMEOUT_DEFAULT_SECS: u64 = 60;
 
-/// A virtio-fs share to mount in the guest: `<tag>` → `<path>` (rw).
-#[derive(Debug, Clone)]
-pub struct Share {
-    pub tag: String,
-    pub path: PathBuf,
-}
-
-/// Per-call request describing how to boot the microVM.
+/// Per-call request describing how to boot the microVM. A virtio-fs share is
+/// the workspace-wide [`ShareMount`] (`<tag>` → `<path>`, mounted rw).
 #[derive(Debug, Clone)]
 pub struct RunRequest {
     pub rootfs: String,
     pub exec: String,
-    pub shares: Vec<Share>,
+    pub shares: Vec<ShareMount>,
     pub net: bool,
     pub timeout_seconds: Option<u32>,
     /// Force `--offline` even when network would otherwise be allowed.
@@ -180,27 +176,33 @@ impl Sandbox {
     }
 
     async fn run_inner(&self, req: &RunRequest) -> Result<RunReply> {
+        // Render the run flags through the single `Request → argv` owner in
+        // `vmette-proto` (shared with the daemon). The fields the MCP sandbox
+        // never sets (vsock ports, cpu/mem, switch-root, disks) stay `None`, so
+        // the CLI applies its own defaults — exactly as before. `--exec` is the
+        // marker-wrapped command; `--quiet` is appended below.
+        let run = Request {
+            kernel: self.kernel.clone(),
+            initramfs: self.initramfs.clone(),
+            rootfs: req.rootfs.clone(),
+            rootfs_ro: false,
+            offline: req.offline,
+            shares: req.shares.clone(),
+            disks: Vec::new(),
+            exec: wrap_exec(&req.exec),
+            net: req.net,
+            switch_root: false,
+            vsock_port: None,
+            guest_vsock_port: None,
+            timeout_seconds: req.timeout_seconds,
+            vcpus: None,
+            mem_mib: None,
+        };
         let mut cmd = Command::new(&self.vmette_bin);
-        cmd.arg("--kernel").arg(&self.kernel);
-        cmd.arg("--initramfs").arg(&self.initramfs);
-        cmd.arg("--rootfs").arg(&req.rootfs);
-        if req.offline {
-            cmd.arg("--offline");
-        }
-        if req.net {
-            cmd.arg("--net");
-        }
-        if let Some(t) = req.timeout_seconds {
-            cmd.arg("--timeout").arg(t.to_string());
-        }
-        for s in &req.shares {
-            cmd.arg("--share")
-                .arg(format!("{}={}", s.tag, s.path.display()));
-        }
+        cmd.args(run.to_cli_args());
         // `--quiet` drops vmette's config banner + "guest stopped" lines from
         // stderr; the agent only wants the guest's output, not the launcher's.
         cmd.arg("--quiet");
-        cmd.arg("--exec").arg(wrap_exec(&req.exec));
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
