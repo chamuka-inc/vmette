@@ -45,6 +45,7 @@
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
+#include <X11/extensions/Xfixes.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO
@@ -440,9 +441,48 @@ static int mask_shift(unsigned long mask) {
     return s;
 }
 
+// Composite the X pointer sprite onto the captured RGB buffer. XGetImage does
+// NOT include the cursor — the X server draws it as a separate overlay — so a
+// raw screenshot has no pointer, leaving it invisible in the live view and in
+// the agent's own screenshots. XFixes hands us the sprite (premultiplied-alpha
+// ARGB) and its on-screen position; we alpha-blend it over the frame. Best
+// effort: if XFixes is unavailable or no cursor is set, the frame is unchanged.
+static void composite_cursor(unsigned char *rgb, int w, int h) {
+    XFixesCursorImage *ci = XFixesGetCursorImage(g_dpy);
+    if (!ci) return;
+    int ox = (int)ci->x - (int)ci->xhot;  // sprite top-left on screen
+    int oy = (int)ci->y - (int)ci->yhot;
+    for (int cy = 0; cy < (int)ci->height; cy++) {
+        int sy = oy + cy;
+        if (sy < 0 || sy >= h) continue;
+        for (int cx = 0; cx < (int)ci->width; cx++) {
+            int sx = ox + cx;
+            if (sx < 0 || sx >= w) continue;
+            // Each pixel is 32-bit premultiplied-alpha ARGB in the low bits of
+            // an `unsigned long`.
+            unsigned long p = ci->pixels[(size_t)cy * ci->width + cx];
+            unsigned a = (p >> 24) & 0xff;
+            if (!a) continue;  // fully transparent — leave the frame pixel
+            unsigned cr = (p >> 16) & 0xff;  // colours already premultiplied
+            unsigned cg = (p >> 8) & 0xff;
+            unsigned cb = p & 0xff;
+            size_t o = ((size_t)sy * w + sx) * 3;
+            unsigned ia = 255 - a;  // "over": out = src + dst*(1-a)
+            unsigned r = cr + rgb[o + 0] * ia / 255;
+            unsigned g = cg + rgb[o + 1] * ia / 255;
+            unsigned b = cb + rgb[o + 2] * ia / 255;
+            rgb[o + 0] = r > 255 ? 255 : (unsigned char)r;
+            rgb[o + 1] = g > 255 ? 255 : (unsigned char)g;
+            rgb[o + 2] = b > 255 ? 255 : (unsigned char)b;
+        }
+    }
+    XFree(ci);
+}
+
 static int do_screenshot(int fd) {
     XWindowAttributes wa;
-    XGetWindowAttributes(g_dpy, g_root, &wa);
+    if (!XGetWindowAttributes(g_dpy, g_root, &wa))
+        return send_err(fd, "XGetWindowAttributes failed");
     int w = wa.width, h = wa.height;
 
     XImage *img = XGetImage(g_dpy, g_root, 0, 0, w, h, AllPlanes, ZPixmap);
@@ -465,6 +505,10 @@ static int do_screenshot(int fd) {
         }
     }
     XDestroyImage(img);
+
+    // Draw the pointer in (XGetImage omits it), so the cursor is visible in the
+    // live view and in computer-use screenshots.
+    composite_cursor(rgb, w, h);
 
     struct png_buf pb = {0};
     int ok = stbi_write_png_to_func(png_sink, &pb, w, h, 3, rgb, w * 3);

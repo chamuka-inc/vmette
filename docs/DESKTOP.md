@@ -237,7 +237,7 @@ JSON shape is `{"action": "<name>", ...fields}`.
 
 | Action | Fields | Effect |
 |--------|--------|--------|
-| `screenshot` | — | Capture framebuffer → PNG payload. |
+| `screenshot` | — | Capture framebuffer → PNG payload. The mouse pointer is composited in (via XFixes), so the cursor shows in screenshots and the live view. |
 | `cursor_position` | — | Report pointer `(x, y)` in the header. |
 | `mouse_move` | `x`, `y` | Absolute pointer move. |
 | `left_click` | — | Left click at current position. |

@@ -17,7 +17,7 @@
 FROM debian:bookworm-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc libc6-dev libx11-dev libxtst-dev ca-certificates curl \
+        gcc libc6-dev libx11-dev libxtst-dev libxfixes-dev ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Vendor stb_image_write.h (single-header PNG encoder), pinned to a commit
@@ -29,7 +29,7 @@ RUN curl -fsSL \
 
 COPY vmette-desktop-agent.c /build/
 RUN cc -O2 -s -I/build -o /usr/local/bin/vmette-desktop-agent \
-        /build/vmette-desktop-agent.c -lX11 -lXtst
+        /build/vmette-desktop-agent.c -lX11 -lXtst -lXfixes
 
 # ---- runtime ------------------------------------------------------------
 FROM debian:bookworm-slim
@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xterm \
         libx11-6 \
         libxtst6 \
+        libxfixes3 \
         fonts-dejavu-core \
         ca-certificates \
         locales \

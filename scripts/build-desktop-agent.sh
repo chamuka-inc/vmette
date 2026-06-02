@@ -31,11 +31,11 @@ docker run --rm --platform "$PLATFORM" \
         set -e
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends \
-            gcc libc6-dev libx11-dev libxtst-dev ca-certificates curl >/dev/null
+            gcc libc6-dev libx11-dev libxtst-dev libxfixes-dev ca-certificates curl >/dev/null
         curl -fsSL \
             'https://raw.githubusercontent.com/nothings/stb/${STB_COMMIT}/stb_image_write.h' \
             -o /tmp/stb_image_write.h
-        cc -O2 -s -I/tmp -o /out/vmette-desktop-agent /src/vmette-desktop-agent.c -lX11 -lXtst
+        cc -O2 -s -I/tmp -o /out/vmette-desktop-agent /src/vmette-desktop-agent.c -lX11 -lXtst -lXfixes
     "
 
 SIZE=$(stat -f%z "$OUT_DIR/vmette-desktop-agent" 2>/dev/null || stat -c%s "$OUT_DIR/vmette-desktop-agent")
