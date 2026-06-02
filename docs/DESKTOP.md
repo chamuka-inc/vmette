@@ -253,6 +253,46 @@ JSON shape is `{"action": "<name>", ...fields}`.
 | `wait` | `ms` | Sleep guest-side to let the UI settle. |
 | `exec` | `command` | Launch a shell command (e.g. `"chromium &"`). |
 
+## Live view (watch / drive the desktop)
+
+A running session can be watched — and optionally driven — by a human over
+**VNC**, without changing the guest. `desktop_view` asks the daemon to start a
+live view and returns a loopback address:
+
+```text
+desktop_view { "session_id": "…" }  →  vnc://127.0.0.1:5901
+```
+
+Open it with any VNC client — on macOS, `open vnc://127.0.0.1:5901` launches
+Screen Sharing; [TigerVNC](https://tigervnc.org/) and other standard viewers
+work too.
+
+How it works: the daemon runs a small RFB (VNC) server that reuses the
+session's existing capabilities — it captures the screen with the `screenshot`
+action and translates the viewer's mouse/keyboard into the same computer-use
+actions the agent uses (`mouse_move`, `left_click`, `left_click_drag`,
+`scroll`, `type`, `key`, …). So a human and the agent drive the *same* display,
+taking turns through the session's request lock (a screenshot never interleaves
+with synthetic input). No x11vnc in the guest, no second vsock port — it is a
+translation layer in the daemon (`crates/vmette-daemon/src/{rfb,view}.rs`).
+
+Properties:
+
+- **Per-session, per-port.** Each session's view binds its own ephemeral
+  loopback port, so several desktops can be watched at once with no collision.
+  `desktop_view` is idempotent — repeated calls return the same address.
+- **Loopback only.** The listener binds `127.0.0.1`; the view is reachable only
+  from the host. It offers **VNC Authentication** (macOS Screen Sharing refuses
+  plain `None`), but the challenge response is **not verified** — type any
+  password to connect. The access boundary is the loopback bind + the ephemeral
+  per-session port, not the password.
+- **Pull-based, ~5 fps.** The server sends changed tiles in response to the
+  client's update requests (reusing the same tile-diff idea as the settle
+  detector). Plenty for watching an agent act in discrete steps; not a video
+  feed.
+- **Lifecycle.** The view is torn down with the session (`desktop_stop`, idle
+  eviction, or daemon shutdown).
+
 ## Constraints
 
 - **Software-rendered Xvfb, no GPU.** Fine for agentic GUI control and UI
@@ -264,5 +304,5 @@ JSON shape is `{"action": "<name>", ...fields}`.
 - **Idle eviction:** sessions untouched for 30 minutes are force-stopped.
 - **Arch:** the desktop image and agent are x86_64-only, matching vmette's
   guest assets.
-- **No human-viewable display.** A VNC bridge (x11vnc over virtio-net/vsock) is
-  a deliberate follow-on; the agent path needs no display.
+- **Live view is loopback-only and ~5 fps** (see [Live view](#live-view-watch--drive-the-desktop)):
+  enough to watch and drive the agent, not a video feed.

@@ -88,8 +88,15 @@ vmette desktop get-clipboard SESSION_ID                  print the clipboard con
 vmette desktop paste       SESSION_ID TEXT               set clipboard then Ctrl+V
 vmette desktop scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)
 vmette desktop exec        SESSION_ID COMMAND             launch a shell command in the guest
+vmette desktop view        SESSION_ID                     open a live VNC view; prints vnc://HOST:PORT
 vmette desktop stop        SESSION_ID                     tear the session down
 ```
+
+`view` opens a live, loopback-only VNC view of the session and prints a
+`vnc://127.0.0.1:PORT` URL — open it with `open vnc://…` (macOS Screen Sharing)
+or any VNC client to watch and drive the desktop. It is per-session (each gets
+its own ephemeral port) and idempotent. See
+[`DESKTOP.md`](DESKTOP.md#live-view-watch--drive-the-desktop).
 
 Global: `--socket PATH` overrides the daemon socket (default
 `~/Library/Caches/vmette/vmette.sock`). See [`DESKTOP.md`](DESKTOP.md) for the

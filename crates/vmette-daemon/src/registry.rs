@@ -48,7 +48,10 @@ use vmette::provider::Context;
 use vmette::{Action, Config, Session, SessionClient, SessionEnd, StopHandle};
 use vmette_proto::{Rect, ResponseHeader};
 
+use vmette_daemon::decode_png;
 use vmette_daemon::settle::{Frame, SettleConfig, SettleDetector, SettleState};
+
+use crate::view::ViewServer;
 
 /// How often the settle poll re-captures the screen. Needs to be long enough
 /// that a playing video actually changes between polls (so churn is detected),
@@ -92,6 +95,13 @@ struct Entry {
     /// a region already known to be a video stays known, and `what_changed`
     /// reports damage *since the previous capture*.
     detector: Arc<Mutex<SettleDetector>>,
+    /// The Xvfb framebuffer size, captured at boot. The live view advertises it
+    /// to VNC clients and sizes its frame diff against it.
+    display_size: (u32, u32),
+    /// Live VNC view, started lazily on the first `desktop_view` and torn down
+    /// with the session. Per-session and bound to its own ephemeral loopback
+    /// port, so concurrent desktops never share a listener.
+    view: Option<ViewServer>,
     last_used: Instant,
 }
 
@@ -252,6 +262,8 @@ impl Registry {
                     stop,
                     thread: Some(thread),
                     detector,
+                    display_size: (disp_w, disp_h),
+                    view: None,
                     last_used: Instant::now(),
                 },
             );
@@ -420,6 +432,29 @@ impl Registry {
         Ok(WhatChangedResult { png, changed })
     }
 
+    /// Start (or look up) the session's live VNC view and return the loopback
+    /// address a VNC client connects to. Idempotent: a second call returns the
+    /// already-running view's address rather than binding a new port. The view
+    /// is per-session and bound to its own ephemeral loopback port, so several
+    /// concurrent desktops each get an independent view. Non-blocking enough to
+    /// run inline, but called via `spawn_blocking` for uniformity with the
+    /// other registry entry points.
+    pub fn view(&self, id: &str) -> Result<std::net::SocketAddr> {
+        let mut map = self.sessions.lock().unwrap();
+        let entry = map
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("no such session: {id}"))?;
+        entry.last_used = Instant::now();
+        if let Some(view) = &entry.view {
+            return Ok(view.addr());
+        }
+        let view = ViewServer::start(entry.client.clone(), entry.display_size)
+            .with_context(|| format!("starting live view for session {id}"))?;
+        let addr = view.addr();
+        entry.view = Some(view);
+        Ok(addr)
+    }
+
     /// Clone the `Send` client + the shared detector out under the map lock,
     /// touching `last_used`, so the (slow) poll round-trips don't serialize the
     /// registry.
@@ -460,6 +495,15 @@ impl Registry {
         let now = Instant::now();
         let stale: Vec<(String, Entry)> = {
             let mut map = self.sessions.lock().unwrap();
+            // A session with a live viewer is in active use even though the
+            // view's capture loop never touches `last_used`. Refresh it so it
+            // is not reaped while being watched, and so its idle TTL restarts
+            // from when the last viewer disconnects.
+            for e in map.values_mut() {
+                if e.view.as_ref().is_some_and(|v| v.active_connections() > 0) {
+                    e.last_used = now;
+                }
+            }
             let ids: Vec<String> = map
                 .iter()
                 .filter(|(_, e)| now.duration_since(e.last_used) > self.idle_ttl)
@@ -520,30 +564,15 @@ impl Drop for SlotReservation<'_> {
 /// before we return. `join()` is unbounded: a wedged teardown blocks the
 /// caller (the sweeper task or `desktop_stop`) until the thread exits.
 fn finish(mut entry: Entry) {
+    // Stop the live view first so its accept loop and viewer threads (which
+    // hold SessionClient clones) wind down before the VM is torn down.
+    if let Some(mut view) = entry.view.take() {
+        view.shutdown();
+    }
     entry.stop.stop();
     if let Some(handle) = entry.thread.take() {
         let _ = handle.join();
     }
-}
-
-/// Decode a screenshot PNG (the agent emits 8-bit RGB) into a [`Frame`] for the
-/// settle detector. Accepts RGB or RGBA at 8-bit depth; anything else is an
-/// error rather than a silent misread, since the agent's output is known.
-fn decode_png(bytes: &[u8]) -> Result<Frame> {
-    let decoder = png::Decoder::new(bytes);
-    let mut reader = decoder.read_info().context("reading PNG header")?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).context("decoding PNG frame")?;
-    if info.bit_depth != png::BitDepth::Eight {
-        bail!("unsupported PNG bit depth {:?}", info.bit_depth);
-    }
-    let channels = match info.color_type {
-        png::ColorType::Rgb => 3u8,
-        png::ColorType::Rgba => 4u8,
-        other => bail!("unsupported PNG color type {other:?}"),
-    };
-    buf.truncate(info.buffer_size());
-    Ok(Frame::new(info.width, info.height, channels, buf))
 }
 
 /// Crop a decoded frame to `rect` (clamped to the frame) and re-encode as PNG.

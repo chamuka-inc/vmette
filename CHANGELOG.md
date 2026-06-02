@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live desktop view: `desktop_view` (MCP) / `vmette desktop view` (CLI).**
+  Open a watchable — and drivable — VNC view of a running desktop session. It
+  returns a loopback `vnc://host:port`; point any VNC client at it (on macOS,
+  `open vnc://…` launches Screen Sharing). The daemon runs a small built-in RFB
+  server that reuses the session's existing capabilities: it streams the screen
+  via the `screenshot` action and forwards the viewer's mouse/keyboard back as
+  the same computer-use actions the agent uses, so a human and the agent share
+  one display. No guest changes — no x11vnc, no extra vsock port. Each session's
+  view binds its own ephemeral loopback port (concurrent desktops are
+  independent), is loopback-only, idempotent, and torn down with the session.
+  The RFB handshake adapts to the client's protocol version (macOS Screen
+  Sharing pins to 3.3) and offers VNC Authentication — required by Screen
+  Sharing — but does not verify it: type any password, since the loopback bind
+  is the access boundary. New `vmetted` wire request
+  `DesktopRequest::DesktopView` → `DesktopReply::View { addr }`
+  (`vmette-proto::daemon`). See
+  [`DESKTOP.md`](docs/DESKTOP.md#live-view-watch--drive-the-desktop).
+
 ## [0.3.0] — 2026-06-02
 
 ### Changed

@@ -18,6 +18,7 @@ use base64::Engine as _;
 use vmette_proto::agent::{Action, ScrollDirection};
 use vmette_proto::daemon::{
     ActionReply, DesktopAction, DesktopReply, DesktopRequest, DesktopStart, DesktopStop,
+    DesktopView,
 };
 
 fn default_socket() -> PathBuf {
@@ -45,6 +46,7 @@ fn desktop_usage() -> ! {
            paste       SESSION_ID TEXT                set clipboard then Ctrl+V\n\
            scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)\n\
            exec        SESSION_ID COMMAND             launch a shell command in the guest\n\
+           view        SESSION_ID                     open a live VNC view; prints vnc://HOST:PORT\n\
            stop        SESSION_ID                     tear the session down\n\
          \n\
          global:\n\
@@ -192,6 +194,7 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
             let command = pos(&args, 1, "COMMAND");
             action(&socket, &s, Action::Exec { command }).map(|_| None)
         }
+        "view" => cmd_view(&socket, &args),
         "stop" => {
             let s = pos(&args, 0, "SESSION_ID");
             call(
@@ -291,6 +294,22 @@ fn cmd_screenshot(socket: &PathBuf, args: &[String]) -> Result<Option<String>, S
         out.display(),
         bytes.len()
     )))
+}
+
+/// Open (or look up) the session's live VNC view and print the `vnc://` URL a
+/// viewer connects to. Idempotent — a second call returns the same address.
+fn cmd_view(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+    let session = pos(args, 0, "SESSION_ID");
+    let reply = call(
+        socket,
+        &DesktopRequest::DesktopView(DesktopView {
+            session_id: session,
+        }),
+    )?;
+    match reply {
+        DesktopReply::View(v) => Ok(Some(format!("vnc://{}", v.addr))),
+        other => Err(format!("unexpected reply to view: {other:?}")),
+    }
 }
 
 fn cmd_cursor(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {

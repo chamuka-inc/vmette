@@ -38,6 +38,7 @@
 //!   --vmette  $(dirname argv[0])/vmette  (falls back to PATH lookup)
 
 mod registry;
+mod view;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -54,7 +55,7 @@ use tracing::{error, info, warn};
 use vmette_proto::agent::{Action, ResponseHeader};
 use vmette_proto::daemon::{
     ActionReply, ChangedReply, DesktopReply, DesktopRequest, ErrorReply, Frame, Request,
-    SessionReply, SettleReply,
+    SessionReply, SettleReply, ViewReply,
 };
 
 use registry::{
@@ -334,6 +335,14 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
             Ok(DesktopReply::Changed(ChangedReply {
                 changed: res.changed,
                 png_base64: base64::engine::general_purpose::STANDARD.encode(res.png),
+            }))
+        }
+        DesktopRequest::DesktopView(req) => {
+            let addr = tokio::task::spawn_blocking(move || registry.view(&req.session_id))
+                .await
+                .context("session view task")??;
+            Ok(DesktopReply::View(ViewReply {
+                addr: addr.to_string(),
             }))
         }
         DesktopRequest::DesktopStop(req) => {

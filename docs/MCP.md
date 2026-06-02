@@ -252,6 +252,7 @@ look at. Full reference, protocol, and image build in
 | Tool | Input | Returns |
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?` | session id |
+| `desktop_view` | `session_id` | `vnc://host:port` — open a live VNC view a human can watch and drive (see [DESKTOP.md](DESKTOP.md#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | PNG image block |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + PNG, once the screen has stopped changing and stayed still |
 | `desktop_what_changed` | `session_id` | note + PNG of the region changed since the last capture |

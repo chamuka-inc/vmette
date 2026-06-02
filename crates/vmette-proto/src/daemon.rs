@@ -161,6 +161,9 @@ pub enum DesktopRequest {
     DesktopScreenshotSettled(DesktopScreenshotSettled),
     /// Capture one frame and report what moved since the previous capture.
     DesktopWhatChanged(DesktopWhatChanged),
+    /// Start (or look up) a live VNC view of the session and return the
+    /// loopback address a VNC client connects to. Idempotent.
+    DesktopView(DesktopView),
     /// Tear a live session down.
     DesktopStop(DesktopStop),
 }
@@ -222,6 +225,12 @@ pub struct DesktopWhatChanged {
     pub session_id: String,
 }
 
+/// Payload of [`DesktopRequest::DesktopView`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesktopView {
+    pub session_id: String,
+}
+
 /// Payload of [`DesktopRequest::DesktopStop`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopStop {
@@ -239,6 +248,7 @@ pub enum DesktopReply {
     ActionResult(ActionReply),
     Settled(SettleReply),
     Changed(ChangedReply),
+    View(ViewReply),
     Stopped,
     Error(ErrorReply),
 }
@@ -285,6 +295,15 @@ pub struct ChangedReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<Rect>,
     pub png_base64: String,
+}
+
+/// Reply to `desktop_view`: the loopback `host:port` a VNC client connects to
+/// for a live, interactive view of the session (e.g. `127.0.0.1:5901`). Bound
+/// to loopback only; the view streams the agent's screen and forwards a human
+/// viewer's pointer/keyboard back as computer-use actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewReply {
+    pub addr: String,
 }
 
 /// Reply carrying a daemon-side error message (any failed request).
@@ -482,6 +501,30 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(j, r#"{"kind":"changed","png_base64":"AA"}"#);
+    }
+
+    #[test]
+    fn desktop_view_request_round_trips() {
+        let r: DesktopRequest =
+            serde_json::from_str(r#"{"kind":"desktop_view","session_id":"s"}"#).unwrap();
+        match r {
+            DesktopRequest::DesktopView(v) => assert_eq!(v.session_id, "s"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reply_view_flattens_under_kind() {
+        let j = serde_json::to_string(&DesktopReply::View(ViewReply {
+            addr: "127.0.0.1:5901".into(),
+        }))
+        .unwrap();
+        assert_eq!(j, r#"{"kind":"view","addr":"127.0.0.1:5901"}"#);
+        let back: DesktopReply = serde_json::from_str(&j).unwrap();
+        match back {
+            DesktopReply::View(v) => assert_eq!(v.addr, "127.0.0.1:5901"),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

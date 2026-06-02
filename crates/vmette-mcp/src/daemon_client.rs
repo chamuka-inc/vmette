@@ -30,7 +30,8 @@ use tokio::sync::Mutex;
 use vmette_proto::agent::Action;
 use vmette_proto::daemon::{
     ActionReply, ChangedReply, DesktopAction, DesktopReply, DesktopRequest,
-    DesktopScreenshotSettled, DesktopStart, DesktopStop, DesktopWhatChanged, SettleReply,
+    DesktopScreenshotSettled, DesktopStart, DesktopStop, DesktopView, DesktopWhatChanged,
+    SettleReply,
 };
 
 /// Handle to the daemon's desktop subsystem. Cheap to clone.
@@ -139,6 +140,20 @@ impl DaemonClient {
         match reply {
             DesktopReply::Changed(c) => Ok(c),
             other => bail!("unexpected reply to desktop_what_changed: {other:?}"),
+        }
+    }
+
+    /// Start (or look up) a live VNC view of the session, returning the
+    /// loopback `host:port` a VNC client connects to.
+    pub async fn view(&self, session_id: &str) -> Result<String> {
+        let reply = self
+            .call(&DesktopRequest::DesktopView(DesktopView {
+                session_id: session_id.to_string(),
+            }))
+            .await?;
+        match reply {
+            DesktopReply::View(v) => Ok(v.addr),
+            other => bail!("unexpected reply to desktop_view: {other:?}"),
         }
     }
 

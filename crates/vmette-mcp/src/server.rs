@@ -12,6 +12,8 @@
 //!   * `workspace_destroy` — tear down a workspace
 //! * desktop computer use (persistent session, routed through `vmetted`):
 //!   * `desktop_start` / `desktop_stop` — lifecycle
+//!   * `desktop_view` — open a live VNC view (returns a `vnc://host:port` a
+//!     human can watch / drive)
 //!   * `desktop_screenshot` — capture (returns a PNG image content block)
 //!   * `desktop_move` / `desktop_click` / `desktop_double_click` /
 //!     `desktop_right_click` / `desktop_cursor_position` — pointer
@@ -505,6 +507,23 @@ impl VmetteServer {
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(session_id)]))
+    }
+
+    #[tool(
+        description = "Open a live, watchable VNC view of a desktop session and return the loopback address (e.g. 127.0.0.1:5901) for a VNC client. Lets a human watch — and optionally take over — what the agent is doing. The view is per-session on its own loopback port (several desktops can be viewed at once), streams the screen, and forwards the viewer's mouse/keyboard as the same actions the agent uses. Idempotent: repeated calls return the same address. On macOS, open the address with `open vnc://ADDR` (Screen Sharing) or any VNC client such as TigerVNC; when prompted for a password, type anything — the view is loopback-only and accepts any password."
+    )]
+    async fn desktop_view(
+        &self,
+        Parameters(args): Parameters<DesktopSessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let addr = self
+            .daemon
+            .view(&args.session_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "vnc://{addr}"
+        ))]))
     }
 
     #[tool(
