@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Pull Alpine's mini rootfs tarball and extract it as an OCI-style rootfs
-# directory suitable for libkrun's --rootfs.
+# Pull Alpine's mini rootfs tarball and extract it as a plain rootfs
+# directory suitable for vmette's --rootfs (the DirProvider shares it into
+# the guest over virtio-fs).
 
 set -euo pipefail
 
@@ -27,7 +28,7 @@ curl -fsSL --retry 3 -o "$TMP/rootfs.tar.gz" "$URL"
 
 echo "→ extracting to $DEST"
 # --no-same-owner so non-root extraction works; sticky/special-file warnings
-# from BSD tar are harmless for libkrun's purposes.
+# from BSD tar are harmless here (vmette only needs the file tree).
 tar -xzf "$TMP/rootfs.tar.gz" -C "$DEST" --no-same-owner 2>&1 | \
   grep -vE 'Ignoring|Can.t set|Unknown' || true
 
