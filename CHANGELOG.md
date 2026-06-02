@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-02
+
+### Changed
+
+- **`vmette-proto::daemon::Request`: `vcpus`, `mem_mib`, `guest_vsock_port`, and
+  `vsock_port` are now `Option<…>`** (`None`/omitted = use the `vmette` CLI's
+  default), and `Request` gains `to_cli_args()` — the single renderer of a run
+  request to the `vmette` argv, shared by `vmetted` and the MCP sandbox so the
+  two cannot drift. Behaviour is unchanged (an omitted field resolves to the
+  same default it did before), but this is a breaking change for any Rust code
+  that constructs or reads those `Request` fields directly. On the `vmetted`
+  socket the optional fields are now skipped when unset; sending them still
+  works. The one-shot run defaults (1 vCPU, 512 MiB, guest vsock 1025, auto
+  host vsock) now live solely in the library `Config` / the CLI.
+
 ## [0.2.0] — 2026-06-01
 
 ### Added
