@@ -1,12 +1,12 @@
 # vmette-mcp — Model Context Protocol server
 
-`vmette-mcp` is the security boundary between an untrusted agent and the
-machine it runs on. Any MCP-aware agent host (Claude Desktop, Cursor, Cline,
-Zed, Goose, custom clients) gets a set of tools whose every effect lands
-inside a Linux microVM — never on your host. The agent gets a real shell,
-filesystem, and (optionally) network to work with; that environment is *not*
-your machine, and it cannot reach your real filesystem unless you explicitly
-share a directory into it, nor the network unless you start the server with
+`vmette-mcp` lets you run your agent on your Mac without the anxiety. Any
+MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose,
+custom clients) gets a set of tools whose every effect lands inside a Linux
+microVM — never on your host. The agent gets its own real shell, filesystem,
+and (optionally) network to work in; that environment is *not* your machine, so
+it cannot touch your real filesystem unless you explicitly share a directory
+into it, nor reach the network unless you start the server with
 `--allow-network`. Most tools boot a fresh VM per call; the `desktop_*` family
 drives a persistent graphical desktop session.
 

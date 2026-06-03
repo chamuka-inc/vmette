@@ -196,10 +196,11 @@ impl Registry {
         let artifact = provider.resolve(&params.image, &ctx).map_err(|e| {
             anyhow!(
                 "resolving desktop image {}: {e}\n\
-                 If this is the unpublished registry fallback, build the rootfs \
-                 locally with `make desktop-image` — it exports to \
-                 assets/vmette-desktop-rootfs.tar, which the CLI/MCP then \
-                 auto-discover (or pass --image / set $VMETTE_DESKTOP_IMAGE). \
+                 The default image is published publicly to GHCR, so this usually \
+                 means no network / offline mode or a registry error. To run \
+                 without pulling, build the rootfs locally with `make desktop-image` \
+                 — it exports to assets/vmette-desktop-rootfs.tar, which the CLI/MCP \
+                 then auto-discover (or pass --image / set $VMETTE_DESKTOP_IMAGE). \
                  See docs/DESKTOP.md.",
                 params.image
             )

@@ -1,5 +1,8 @@
 # vmette library API
 
+*Embed it.* Most users reach for the CLI or the MCP server; this doc is for
+building your own agent host or sandbox tooling on top of the same VM primitive.
+
 Two surfaces:
 
 1. **Rust** — `vmette` crate, idiomatic types, `pub use` re-exports.

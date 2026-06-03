@@ -15,6 +15,11 @@
 # vmette — so a stale installed daemon can never satisfy these gates. The
 # desktop rootfs image is treated as a bootstrappable asset (like the kernel):
 # built once if missing, reused after.
+#
+# Besides the local-image gates, a final gate exercises the *registry fallback*:
+# with no local image discoverable, resolution must fall through to the public
+# ghcr image and the daemon must pull + boot it. That gate is skipped (not
+# failed) when ghcr is unreachable, so the suite still passes offline.
 
 set -uo pipefail
 
@@ -66,12 +71,26 @@ for _ in $(seq 1 50); do
 done
 [[ -S "$SOCK" ]] || { echo "FATAL: vmetted did not bind $SOCK" >&2; exit 1; }
 
-PASS=0; FAIL=0; FAILED=()
+PASS=0; FAIL=0; SKIP=0; FAILED=()
 check() {  # check NAME  (preceding command's $? is the verdict)
     local rc=$? name="$1"
     printf "  %-46s " "$name"
     if [[ "$rc" == 0 ]]; then echo "PASS"; PASS=$((PASS+1));
     else echo "FAIL (rc=$rc)"; FAIL=$((FAIL+1)); FAILED+=("$name"); fi
+}
+skip() {  # skip NAME WHY  — not a failure; keeps the suite green offline
+    printf "  %-46s SKIP (%s)\n" "$1" "$2"; SKIP=$((SKIP+1))
+}
+ghcr_reachable() {  # anonymous pull-scope manifest fetch for the public image
+    local repo="chamuka-inc/vmette-desktop" tok
+    tok="$(curl -fsS --max-time 10 \
+        "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null \
+        | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+    [[ -n "$tok" ]] || return 1
+    curl -fsS --max-time 15 -o /dev/null \
+        -H "Authorization: Bearer $tok" \
+        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+        "https://ghcr.io/v2/${repo}/manifests/latest"
 }
 
 echo
@@ -119,8 +138,44 @@ else
     SESSION=""  # stopped; don't double-stop in cleanup
 fi
 
+# --- registry fallback gate -----------------------------------------------
+# The gates above pin an explicit local --image (tier 1). This proves the OTHER
+# end of resolution: with NO --image, NO $VMETTE_DESKTOP_IMAGE, and NO
+# discoverable local rootfs, the client must fall through to the public ghcr
+# image (vmette_assets::DEFAULT_DESKTOP_IMAGE) and the daemon must pull + boot
+# it. We run from an isolated empty cwd so `./assets` can't shadow the fallback;
+# resolution is client-side, so controlling the CLI's cwd + env fully selects
+# the tier. A booted session from this isolated env can ONLY have come from the
+# registry — there is no other source — so the session id is the proof.
 echo
-echo "=== summary: $PASS passed, $FAIL failed ==="
+echo "--- registry fallback (no local image → ghcr) ---"
+if ! command -v curl >/dev/null 2>&1; then
+    skip "ghcr fallback boots" "curl unavailable"
+elif ! ghcr_reachable; then
+    skip "ghcr fallback boots" "ghcr unreachable / offline"
+else
+    ISO="$(mktemp -d "${TMPDIR:-/tmp}/vmette-iso-XXXXXX")"
+    SESSION="$( (cd "$ISO" && env -u VMETTE_ASSETS_DIR -u VMETTE_DESKTOP_IMAGE \
+        "$VMETTE" desktop --socket "$SOCK" start \
+        --size "$SIZE" --kernel "$KERNEL" --initramfs "$INITRAMFS") 2>/dev/null)"
+    rmdir "$ISO" 2>/dev/null
+    [[ -n "$SESSION" ]]; check "ghcr fallback → session id (no local image)"
+
+    if [[ -n "$SESSION" ]]; then
+        SHOT2="$(mktemp "${TMPDIR:-/tmp}/vmette-fbshot-XXXXXX.png")"
+        "$VMETTE" desktop --socket "$SOCK" screenshot "$SESSION" --out "$SHOT2" >/dev/null 2>&1
+        check "fallback desktop screenshot → PNG"
+        rm -f "$SHOT2"
+        "$VMETTE" desktop --socket "$SOCK" stop "$SESSION" >/dev/null 2>&1
+        check "stop fallback session"
+        SESSION=""
+    else
+        echo "  (no fallback session — skipping its sub-gates)"
+    fi
+fi
+
+echo
+echo "=== summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
 if [[ "$FAIL" != 0 ]]; then
     printf '  failed: %s\n' "${FAILED[*]}"
     exit 1
