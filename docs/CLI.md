@@ -1,5 +1,9 @@
 # vmette CLI reference
 
+Not running an agent? `vmette` runs a one-off command inside a fresh,
+hardware-isolated microVM and propagates its exit code to the host — the same
+sandbox the MCP server hands to agents, as a one-liner.
+
 ```
 vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]
 vmette providers                                # list registered providers

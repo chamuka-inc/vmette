@@ -17,10 +17,11 @@
 //! image. Unlike the kernel/initramfs it is *provider-resolved* (a `tar+file://`
 //! / OCI spec, not a direct path), so [`default_desktop_image`] returns a spec
 //! string rather than a path — but it is discovered through the *same* search,
-//! so a locally built `vmette-desktop-rootfs.tar` in `assets/` is the canonical
-//! source of truth, beating the (possibly unpublished) registry fallback. This
-//! lives here, not in the daemon, because both clients already share this crate
-//! and the daemon takes a concrete `image` in its request (like kernel/initramfs).
+//! so a locally built `vmette-desktop-rootfs.tar` in `assets/` takes precedence
+//! over the published registry image, letting a dev session reflect the current
+//! tree. This lives here, not in the daemon, because both clients already share
+//! this crate and the daemon takes a concrete `image` in its request (like
+//! kernel/initramfs).
 
 use std::path::PathBuf;
 
@@ -40,10 +41,10 @@ pub const DESKTOP_ROOTFS_ASSET: &str = "vmette-desktop-rootfs.tar";
 /// kernel/initramfs are resolved client-side and passed to the daemon.
 pub const DESKTOP_IMAGE_ENV: &str = "VMETTE_DESKTOP_IMAGE";
 
-/// Last-resort desktop rootfs ref when no explicit image, no
-/// `$VMETTE_DESKTOP_IMAGE`, and no local [`DESKTOP_ROOTFS_ASSET`] is found.
-/// Private until first release, so the local asset is the real path; this only
-/// keeps a fresh checkout from failing with no hint.
+/// Desktop rootfs ref used when no explicit image, no `$VMETTE_DESKTOP_IMAGE`,
+/// and no local [`DESKTOP_ROOTFS_ASSET`] is found. This is a public image,
+/// published to GHCR by CI on every release tag, so it is the zero-setup default
+/// for installed users; a locally built asset (above) takes precedence for devs.
 pub const DEFAULT_DESKTOP_IMAGE: &str = "ghcr.io/chamuka-inc/vmette-desktop:latest";
 
 /// Directories that may hold the boot assets, highest priority first.

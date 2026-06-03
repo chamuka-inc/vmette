@@ -1,5 +1,10 @@
 # vmetted — long-lived UNIX-socket dispatcher
 
+*Embed it.* This is the wire protocol for driving many sandboxed runs (or
+persistent desktop sessions) from a long-lived caller — the daemon behind the
+MCP server, and a surface you can build your own agent host on. To run an agent
+directly, use the [MCP server](MCP.md); for one-off commands, the [CLI](CLI.md).
+
 `vmetted` listens on a UNIX socket and serves two request families over
 the same protocol:
 

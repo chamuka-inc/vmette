@@ -6,11 +6,11 @@ move/click/type, screenshot again. This is the opposite of the headless
 one-shot path — the VM stays alive across many actions until you explicitly
 stop it.
 
-The isolation story is the same as the rest of vmette: a computer-use agent
-gets a real desktop to click around in that is *not* your machine. The boundary
-is the hypervisor, the screen the agent sees and the input it injects stay
-inside the guest, and it reaches your host filesystem or network only where you
-explicitly grant it.
+The relief is the same as the rest of vmette: a computer-use agent gets its own
+real desktop to click around in that is *not* your machine. The boundary is the
+hypervisor, the screen the agent sees and the input it injects stay inside the
+guest, and it reaches your host filesystem or network only where you explicitly
+grant it.
 
 Each session is also isolated **from every other session**: the desktop rootfs
 is mounted read-only on the host and overlaid with a per-session tmpfs in the
@@ -57,19 +57,25 @@ sessions left untouched for longer than the idle TTL (30 min).
    vmetted &
    ```
 
-2. **The desktop rootfs image.** Build it from source into the canonical
-   asset; the CLI and MCP auto-discover it from there:
+2. **The desktop rootfs image.** You don't have to build anything: vmette pulls
+   the published image from `ghcr.io/chamuka-inc/vmette-desktop:latest`
+   automatically on first use (the image is public; CI publishes it on every
+   release tag). The first `desktop start` extracts it and caches it under
+   `~/Library/Caches/vmette/oci/`; later starts are cache hits.
+
+   Building locally is **optional** — it's the path for hacking on the image or
+   running offline. `make desktop-image` rebuilds the agent and the chromium
+   flags from the current tree and writes the canonical asset, so a *dev* session
+   reflects your source rather than the published `:latest`:
 
    ```sh
    make desktop-image       # build images/vmette-desktop/ → assets/vmette-desktop-rootfs.tar
    ```
 
-   This is the **single source of truth**: it rebuilds the agent and the
-   chromium flags from the current tree, so a desktop session always reflects
-   your source — never a stale published image. The export lands at
-   `assets/vmette-desktop-rootfs.tar`, which both clients discover the same way
-   they discover `vmlinuz-virt` / `initramfs-vmette` (`$VMETTE_ASSETS_DIR`,
-   `./assets`, `<install prefix>/assets`). No env var, no manual `docker
+   The export lands at `assets/vmette-desktop-rootfs.tar`, which both clients
+   discover the same way they discover `vmlinuz-virt` / `initramfs-vmette`
+   (`$VMETTE_ASSETS_DIR`, `./assets`, `<install prefix>/assets`) and which
+   **takes precedence** over the registry — no env var, no manual `docker
    export`, no per-call `--image` needed.
 
    **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring
@@ -78,19 +84,18 @@ sessions left untouched for longer than the idle TTL (30 min).
    1. explicit `--image REF` (CLI) / `image` arg (MCP) — wins
    2. `$VMETTE_DESKTOP_IMAGE` (any rootfs spec, e.g. a `tar+file://` or OCI ref)
    3. discovered `assets/vmette-desktop-rootfs.tar` → `tar+file://…`
-   4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — registry fallback
+   4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — public registry image (the
+      zero-setup default when no local asset is present)
 
    Because resolution is client-side, `$VMETTE_DESKTOP_IMAGE` is read from the
    **client** process (your shell for `vmette desktop start`, the `vmette-mcp`
    server for `desktop_start`) — not the daemon.
 
-   **Docker: needed to *build*, not to *run*.** `make desktop-image` uses Docker
-   (the rootfs is a Dockerfile; x86_64-only via `--platform linux/amd64`). vmette
-   itself never shells out to Docker — its OCI provider is a self-contained
-   registry client. So a machine **without** Docker can still run computer-use
-   by pointing tiers 1–2 at a Docker-free source: a published OCI ref vmette
-   pulls itself, or a `tar+file://` rootfs you obtained elsewhere. (Tier 4 only
-   works once that ref is published; it is private until first release.)
+   **Docker: needed to *build*, not to *run*.** vmette itself never shells out to
+   Docker — its OCI provider is a self-contained registry client, which is why
+   tier 4 works out of the box on a machine without Docker. `make desktop-image`
+   uses Docker only to *build* the rootfs locally (the rootfs is a Dockerfile;
+   x86_64-only via `--platform linux/amd64`), for tiers 1–3.
 
    To push the image to a registry instead (a deliberate, separate step):
 
