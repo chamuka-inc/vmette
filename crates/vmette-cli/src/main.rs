@@ -349,11 +349,6 @@ fn parse_args() -> ParsedArgs {
     }
 }
 
-fn cache_root() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Caches/vmette")
-}
-
 fn guest_helpers_dir() -> Option<PathBuf> {
     // Look for vsock-send / vsock-runner under common locations:
     // 1. Next to the vmette binary (installed layout, share/vmette/guest)
@@ -508,7 +503,7 @@ fn main() -> ExitCode {
     // returned path into the VM config. Providers handle their own
     // caching, network access, and idempotency.
     let registry = default_registry();
-    let ctx = Context::new(cache_root())
+    let ctx = Context::new(vmette_assets::default_cache_root())
         .offline(parsed.offline)
         .guest_helpers_dir(guest_helpers_dir());
     let artifact = match registry.resolve(&parsed.rootfs_spec, &ctx) {

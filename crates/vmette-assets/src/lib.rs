@@ -80,12 +80,21 @@ pub fn find(name: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// Path to the daemon's UNIX socket — the single source of truth shared by the
-/// `vmette` CLI (`vmette desktop …`) and the `vmette-mcp` server, both of which
-/// connect to (and auto-start) `vmetted` here. The daemon binds the same path.
-pub fn default_socket() -> PathBuf {
+/// Root of vmette's on-disk cache (`~/Library/Caches/vmette`): resolved
+/// provider rootfs trees, the daemon socket, and friends. Single source of
+/// truth shared by the `vmette` CLI, `vmetted`, and `vmette-mcp`, so all three
+/// read and write the same cache (e.g. OCI/tar trees are reused across them).
+pub fn default_cache_root() -> PathBuf {
     let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Caches/vmette/vmette.sock")
+    PathBuf::from(home).join("Library/Caches/vmette")
+}
+
+/// Path to the daemon's UNIX socket (`<cache root>/vmette.sock`) — the single
+/// source of truth shared by the `vmette` CLI (`vmette desktop …`), the
+/// `vmette-mcp` server, and `vmetted` itself: clients connect here (and
+/// auto-start the daemon), the daemon binds here.
+pub fn default_socket() -> PathBuf {
+    default_cache_root().join("vmette.sock")
 }
 
 /// Locate the `vmetted` daemon binary: next to the current executable (install
