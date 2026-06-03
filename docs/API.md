@@ -207,6 +207,7 @@ dylib's.
 | `void vmette_config_set_timeout(cfg, uint32_t);` | 0 = no timeout |
 | `void vmette_config_set_vcpus(cfg, uint8_t);` | not clamped; a value VZ rejects (e.g. 0) surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_mem_mib(cfg, uint64_t);` | not clamped; a value VZ rejects surfaces as `InvalidConfig` from `vmette_run` |
+| `void vmette_config_set_scratch_mib(cfg, uint64_t);` | ephemeral ext4 scratch disk (MiB) for the writable overlay upper; `0` disables (RAM-backed tmpfs). No effect with a read-only rootfs. |
 | `void vmette_config_set_build_snapshot(cfg, path);` | Apple Silicon only; see snapshot section. |
 | `void vmette_config_set_resume_snapshot(cfg, path);` | Apple Silicon only; requires an exec command. |
 | `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Normally never returns; see above. |

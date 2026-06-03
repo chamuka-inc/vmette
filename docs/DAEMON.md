@@ -60,7 +60,8 @@ Line-delimited JSON. One request per connection.
   "guest_vsock_port": 1025,
   "timeout_seconds": null,
   "vcpus": 1,
-  "mem_mib": 512
+  "mem_mib": 512,
+  "scratch_mib": null
 }
 ```
 
@@ -73,7 +74,9 @@ Line-delimited JSON. One request per connection.
 `rootfs_ro`, `offline`, `shares`, `disks`, `timeout_seconds`, `net`,
 `switch_root` are optional. `vsock_port` is `-1` (disable) / `0`
 (auto) / `>0` (fixed), defaulting to `0`. `vcpus` defaults to 1,
-`mem_mib` to 512.
+`mem_mib` to 512. `scratch_mib` (MiB) attaches an ephemeral ext4 scratch
+disk as the writable overlay upper (the CLI's `--scratch`); omit or `null`
+for the RAM-backed tmpfs overlay.
 
 The daemon run schema has no `env` field — the CLI's `--env KEY=VALUE`
 (and `Config.env`) is not yet wired through `vmetted`. A daemon client

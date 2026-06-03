@@ -61,6 +61,12 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
 
     let end = session.wait();
     restore_terminal();
+    // Drop the session before std::process::exit, which skips destructors:
+    // this runs the Session's teardown guards (the ephemeral `--scratch` disk
+    // image and the block-rootfs `ctl` temp dir) so they don't leak on the
+    // CLI path. `end` is owned, so dropping the session here is safe; the
+    // guest has already stopped. (The daemon path drops Session normally.)
+    drop(session);
     match end {
         SessionEnd::Exited(code) => {
             if !config.quiet {
@@ -107,6 +113,10 @@ fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
         None => "(disabled)".into(),
         Some(p) => p.to_string(),
     };
+    let overlay = match config.scratch_mib {
+        Some(mib) => format!("{} MiB ephemeral ext4 disk", mib),
+        None => "tmpfs (RAM-backed)".into(),
+    };
     eprintln!(
         "[vmette] kernel       {}\n\
          [vmette] initramfs    {}\n\
@@ -114,6 +124,7 @@ fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
          [vmette] rootfs       {}\n\
          [vmette] shares       {}\n\
          [vmette] disks        {}\n\
+         [vmette] overlay      {}\n\
          [vmette] exec         {}\n\
          [vmette] vsock-port   {}\n\
          [vmette] switch-root  {}\n\
@@ -126,6 +137,7 @@ fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
         rootfs,
         config.shares.len(),
         config.disks.len(),
+        overlay,
         config.exec_cmd.as_deref().unwrap_or("(none — interactive)"),
         vsock,
         if config.switch_root { "yes" } else { "no" },

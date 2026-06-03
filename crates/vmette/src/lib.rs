@@ -119,6 +119,15 @@ pub struct Config {
     /// command runs (the CLI's `--env KEY=VALUE`). Applied *after* any OCI
     /// image `Env`, so these override the image's values — like `docker run -e`.
     pub env: Vec<(String, String)>,
+    /// Optional ephemeral scratch disk size in **MiB** (the CLI's `--scratch`).
+    /// When set, vmette materializes a sparse raw image of this size, attaches
+    /// it read-write as the last virtio-blk device, and the guest formats it
+    /// ext4 and uses it as the overlay upper layer instead of a tmpfs — so the
+    /// writable root (and `/tmp`) is bounded by this disk, not by `mem_mib`.
+    /// The image is created per-run and deleted on teardown, preserving the
+    /// "nothing persists" sandbox semantic. Has no effect on a read-only
+    /// directory rootfs (`--rootfs-ro`), which has no writable overlay.
+    pub scratch_mib: Option<u64>,
 }
 
 impl Config {
@@ -147,6 +156,7 @@ impl Config {
             display_size: (1280, 800),
             quiet: false,
             env: Vec::new(),
+            scratch_mib: None,
         }
     }
 

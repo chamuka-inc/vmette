@@ -282,21 +282,48 @@ impl Drop for ControlDirGuard {
     }
 }
 
-/// Create a unique host temp dir for the block-rootfs control share. PID +
-/// a process-local counter + wall-clock nanos keep concurrent sessions in
-/// one process (PID collides) and serial sessions under a coarse clock
-/// (nanos collides) from sharing a dir.
-fn make_control_dir() -> Result<PathBuf, Error> {
+/// A unique path under the host temp dir, named `<prefix>-<pid>-<seq>-<nanos>`.
+/// PID + a process-local counter + wall-clock nanos keep concurrent sessions in
+/// one process (PID collides) and serial sessions under a coarse clock (nanos
+/// collides) from colliding. Shared by the per-session temp artifacts below.
+fn unique_temp_path(prefix: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir =
-        std::env::temp_dir().join(format!("vmette-ctl-{}-{}-{}", std::process::id(), n, nanos));
+    std::env::temp_dir().join(format!("{}-{}-{}-{}", prefix, std::process::id(), n, nanos))
+}
+
+/// Create a unique host temp dir for the block-rootfs control share.
+fn make_control_dir() -> Result<PathBuf, Error> {
+    let dir = unique_temp_path("vmette-ctl");
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
     Ok(dir)
+}
+
+/// Owns the per-session ephemeral scratch disk image (`--scratch`). Removed on
+/// drop so the writable-overlay backing store never outlives its VM — the
+/// sandbox stays ephemeral, same as the tmpfs path it replaces.
+struct ScratchFileGuard(PathBuf);
+
+impl Drop for ScratchFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Create a unique, sparse raw disk image of `mib` MiB to back the guest's
+/// writable overlay upper. `set_len` punches a hole (sparse on APFS), so the
+/// image costs almost nothing on the host until the guest actually writes into
+/// it.
+fn make_scratch_image(mib: u64) -> Result<PathBuf, Error> {
+    let path = unique_temp_path("vmette-scratch").with_extension("img");
+    let f = std::fs::File::create(&path).map_err(Error::Io)?;
+    f.set_len(mib.saturating_mul(1024 * 1024))
+        .map_err(Error::Io)?;
+    Ok(path)
 }
 
 /// A booted VM and everything that must outlive its dispatch queue.
@@ -313,6 +340,8 @@ pub struct Session {
     _vsock_keepalive: Option<(Retained<VsockLogger>, Retained<VZVirtioSocketListener>)>,
     // Block-rootfs control-share temp dir; removed when the session drops.
     _control_dir: Option<ControlDirGuard>,
+    // Ephemeral `--scratch` disk image; removed when the session drops.
+    _scratch_file: Option<ScratchFileGuard>,
 }
 
 impl Session {
@@ -366,8 +395,26 @@ impl Session {
             None
         };
 
-        let cmdline = cmdline::build(&working, vsock_port);
-        let cfg = build_vz_config(&working, &cmdline, vsock_port)?;
+        // Ephemeral scratch disk (`--scratch`): only meaningful when the guest
+        // builds a writable overlay (`needs_ctl` is exactly that condition — a
+        // block rootfs or a writable directory rootfs). A read-only rootfs has
+        // no overlay upper to back, so the disk would go unused; skip it. The
+        // guard deletes the image when the session drops, keeping the sandbox
+        // ephemeral.
+        let scratch_file = match (needs_ctl, config.scratch_mib) {
+            (true, Some(mib)) => Some(ScratchFileGuard(make_scratch_image(mib)?)),
+            _ => None,
+        };
+        let scratch_path = scratch_file.as_ref().map(|g| g.0.clone());
+        // Name the device the same way the guest will see it (attach order in
+        // build_vz_config below); the cmdline carries it so /init knows which
+        // block device to format ext4.
+        let scratch_dev = scratch_path
+            .as_ref()
+            .map(|_| cmdline::scratch_device_name(&working));
+
+        let cmdline = cmdline::build(&working, vsock_port, scratch_dev.as_deref());
+        let cfg = build_vz_config(&working, &cmdline, vsock_port, scratch_path.as_deref())?;
 
         // Private serial queue for this VM. libdispatch services it on its
         // worker pool, so all VZ callbacks fire there without a run loop, and
@@ -486,6 +533,7 @@ impl Session {
             _delegate: delegate,
             _vsock_keepalive: vsock_keepalive,
             _control_dir: control_dir,
+            _scratch_file: scratch_file,
         })
     }
 
