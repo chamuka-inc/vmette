@@ -84,7 +84,42 @@ VMETTE_SNAPSHOT_MODE="$(cmdline_get vmette.snapshot_mode)"
 VMETTE_GUEST_VSOCK_PORT="$(cmdline_get vmette.guest_vsock_port)"
 VMETTE_DESKTOP="$(cmdline_get vmette.desktop)"
 VMETTE_DISPLAY="$(cmdline_get vmette.display)"
+VMETTE_SCRATCH_DEV="$(cmdline_get vmette.scratch_dev)"
 export VMETTE_VSOCK_PORT VMETTE_GUEST_VSOCK_PORT
+
+# Mount the writable overlay *upper* layer at /ovl. With a `--scratch` disk
+# (vmette.scratch_dev set, e.g. "vda") we format that freshly-attached block
+# device ext4 and mount it, so the writable root and /tmp are bounded by the
+# disk instead of guest RAM — lifting the tmpfs cap that otherwise ENOSPC's a
+# big build. Without it (the default), the upper is a RAM-backed tmpfs. Any
+# failure on the disk path degrades gracefully to tmpfs so a session still
+# boots. mke2fs + its libs are injected into the initramfs by
+# scripts/build-initramfs.sh; ext4.ko ships in the apk modules tree.
+# Set to 1 once the overlay upper is backed by a --scratch disk, so step 5
+# can leave /tmp on the (disk-backed) overlay instead of mounting a separate
+# RAM tmpfs over it — otherwise a build writing to /tmp would still hit the
+# RAM cap the scratch disk exists to remove.
+OVL_ON_SCRATCH=0
+
+mount_ovl_upper() {
+    if [ -n "$VMETTE_SCRATCH_DEV" ] && [ -b "/dev/$VMETTE_SCRATCH_DEV" ]; then
+        _dev="/dev/$VMETTE_SCRATCH_DEV"
+        modprobe ext4 2>/dev/null
+        # The image is created empty each run, so it never carries a
+        # filesystem; format unconditionally unless something already put one
+        # there (blkid as a cheap guard against the unexpected).
+        if blkid "$_dev" >/dev/null 2>&1 || mke2fs -q -t ext4 -F "$_dev" 2>/dev/null; then
+            if mount -t ext4 "$_dev" /ovl 2>/dev/null; then
+                log "overlay upper on scratch disk $_dev (ext4)"
+                OVL_ON_SCRATCH=1
+                return 0
+            fi
+        fi
+        log "WARNING: scratch disk $_dev unusable; falling back to tmpfs overlay upper"
+    fi
+    mount -t tmpfs tmpfs /ovl 2>/dev/null
+    log "overlay upper on tmpfs (RAM-backed)"
+}
 
 # ---- step 3: mount rootfs share -----------------------------------------
 
@@ -109,11 +144,11 @@ if [ -n "$ROOTFS_BLOCK" ]; then
         log "FATAL: could not mount $ROOTFS_BLOCK on $DEV; dropping to shell"
         exec /bin/sh
     fi
-    mount -t tmpfs tmpfs /ovl 2>/dev/null
+    mount_ovl_upper
     mkdir -p /ovl/upper /ovl/work
     if mount -t overlay overlay \
         -o lowerdir=/lower,upperdir=/ovl/upper,workdir=/ovl/work /newroot 2>/dev/null; then
-        log "overlay root at /newroot (upper=tmpfs, lower=$ROOTFS_BLOCK ro)"
+        log "overlay root at /newroot (lower=$ROOTFS_BLOCK ro)"
         EXIT_VIA_CTL=1
     else
         log "FATAL: overlay mount failed; dropping to shell"
@@ -143,11 +178,11 @@ elif [ "$(cmdline_get vmette.rootfs)" = "1" ]; then
             log "FATAL: could not mount virtio-fs tag 'rootfs'; dropping to shell"
             exec /bin/sh
         fi
-        mount -t tmpfs tmpfs /ovl 2>/dev/null
+        mount_ovl_upper
         mkdir -p /ovl/upper /ovl/work
         if mount -t overlay overlay \
             -o lowerdir=/lower,upperdir=/ovl/upper,workdir=/ovl/work /newroot 2>/dev/null; then
-            log "overlay root at /newroot (upper=tmpfs, lower=virtio-fs ro)"
+            log "overlay root at /newroot (lower=virtio-fs ro)"
             EXIT_VIA_CTL=1
         else
             log "FATAL: overlay mount over virtio-fs failed; dropping to shell"
@@ -223,7 +258,12 @@ done
 # ---- step 5: prepare /proc /sys /dev for chroot or switch_root ---------
 
 mkdir -p /newroot/tmp
-mount -t tmpfs tmpfs /newroot/tmp 2>/dev/null
+# Give /tmp its own ephemeral tmpfs — except when a --scratch disk already
+# backs the overlay, in which case /tmp rides on that disk (so /tmp writes
+# aren't re-capped by RAM, which would defeat the point of --scratch).
+if [ "$OVL_ON_SCRATCH" != "1" ]; then
+    mount -t tmpfs tmpfs /newroot/tmp 2>/dev/null
+fi
 
 if [ "$USE_SWITCH_ROOT" = "1" ]; then
     for d in proc sys dev; do

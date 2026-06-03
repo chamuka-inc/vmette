@@ -167,6 +167,16 @@ and the rootfs can attach read-only. Private OCI registries authenticate via env
 or `~/.docker/config.json` (`VMETTE_OCI_TOKEN`). Full flag list: `vmette --help` or
 [`docs/CLI.md`](docs/CLI.md).
 
+The writable root is a RAM-backed overlay by default, so a heavy build or extract can
+outgrow `--mem-mib` and hit `No space left on device`. Add `--scratch SIZE` (e.g.
+`--scratch 8G`) to back it with an ephemeral ext4 disk instead — sized independently of
+RAM, created sparse per run, and discarded on teardown:
+
+```sh
+vmette --rootfs rust:1.80 --net --mem-mib 1024 --scratch 8G \
+       --share src=$PWD --exec 'cd /mnt/src && cargo build'
+```
+
 ## How it works
 
 1. `vmette` builds a `VZVirtualMachineConfiguration` (kernel, initramfs, virtio

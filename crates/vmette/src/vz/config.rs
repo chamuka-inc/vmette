@@ -43,6 +43,7 @@ pub(crate) fn build(
     config: &Config,
     cmdline: &str,
     vsock_port: Option<u32>,
+    scratch_path: Option<&std::path::Path>,
 ) -> Result<Retained<VZVirtualMachineConfiguration>, Error> {
     unsafe {
         let cfg = VZVirtualMachineConfiguration::new();
@@ -161,6 +162,30 @@ pub(crate) fn build(
             .map_err(|e| {
                 Error::InvalidConfig(format!(
                     "disk {}: {}",
+                    path.display(),
+                    e.localizedDescription()
+                ))
+            })?;
+            let blk = VZVirtioBlockDeviceConfiguration::initWithAttachment(
+                VZVirtioBlockDeviceConfiguration::alloc(),
+                &att.into_super(),
+            );
+            storage.push(blk.into_super());
+        }
+        // Ephemeral scratch disk (--scratch), attached LAST and read-write so
+        // it enumerates after the rootfs block (slot 0) and user --disks —
+        // the order cmdline::scratch_device_name() relies on to name it. The
+        // guest formats it ext4 and uses it as the overlay upper layer.
+        if let Some(path) = scratch_path {
+            let url = file_url(path);
+            let att = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_error(
+                VZDiskImageStorageDeviceAttachment::alloc(),
+                &url,
+                false,
+            )
+            .map_err(|e| {
+                Error::InvalidConfig(format!(
+                    "scratch disk {}: {}",
                     path.display(),
                     e.localizedDescription()
                 ))

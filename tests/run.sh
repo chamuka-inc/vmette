@@ -145,6 +145,13 @@ run "switch-root pid 1" 0 --switch-root -- 'cat /proc/1/comm | grep -q vmette-ru
 
 run_output "ro-rootfs writes fail" "Read-only" --rootfs-ro -- 'touch /foo 2>&1; true'
 
+# --scratch: the writable overlay is a disk-backed ext4 filesystem, so a write
+# larger than RAM succeeds instead of ENOSPC'ing the tmpfs upper. 700 MiB into
+# a 512 MiB VM only fits if the overlay is the scratch disk.
+run_output "--scratch overlay is ext4 disk" "overlay upper on scratch disk" --mem-mib 512 --scratch 1G -- 'true'
+run "--scratch lifts overlay RAM cap" 0 --mem-mib 512 --scratch 1G -- \
+    'dd if=/dev/zero of=/big bs=1M count=700 2>/dev/null && rm -f /big'
+
 run "timeout exits 124" 124 --timeout 3 -- 'sleep 30'
 
 run "--vsock-port -1 unsets VMETTE_VSOCK_PORT" 0 --vsock-port -1 -- 'test -z "$VMETTE_VSOCK_PORT"'
@@ -154,6 +161,8 @@ run "snapshot --build-snapshot arch guard" 1 --build-snapshot /tmp/foo.snap -- '
 # Parse-time rejection of impossible combo (switch-root + ro + exec → guest panic).
 # Expected: vmette exits 2 from the arg parser; never reaches the VM.
 run "--switch-root+--rootfs-ro rejected" 2 --switch-root --rootfs-ro -- 'true'
+
+run "--scratch+--rootfs-ro rejected" 2 --rootfs-ro --scratch 1G -- 'true'
 
 # --rootfs SPEC dispatch: DirProvider claims path-like specs; the bare
 # alpine dir is already covered by `run` above, so test the relative

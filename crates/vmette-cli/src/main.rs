@@ -35,6 +35,7 @@ fn usage() -> ! {
          workload:\n\
            --share            TAG=PATH  extra virtio-fs mount at /mnt/<TAG> (repeatable)\n\
            --disk             PATH      raw block image as virtio-blk (repeatable)\n\
+           --scratch          SIZE      ephemeral ext4 scratch disk (e.g. 8G, 512M) as the writable overlay; lifts the RAM cap on big builds\n\
            --env              KEY=VALUE set a guest env var, overrides image env (repeatable)\n\
            --exec             CMD       shell command to run in guest, then poweroff\n\
            --net                        attach virtio-net with NAT; /init runs udhcpc on eth0\n\
@@ -95,6 +96,32 @@ fn looks_like_flag(v: &str) -> bool {
     false
 }
 
+/// Parse a `--scratch` size into MiB. Accepts a bare number (MiB) or a
+/// `G`/`g` (GiB) / `M`/`m` (MiB) suffix: `8G`, `512M`, `2048`. Rejects zero,
+/// overflow, and anything unparseable as a usage error (no silent fallback —
+/// the same strictness as `parse_num`, so a typo can't quietly shrink the disk).
+fn parse_size_mib(flag: &str, v: &str) -> u64 {
+    let s = v.trim();
+    let (num_str, mult): (&str, u64) = match s.chars().last() {
+        Some('G') | Some('g') => (&s[..s.len() - 1], 1024),
+        Some('M') | Some('m') => (&s[..s.len() - 1], 1),
+        _ => (s, 1),
+    };
+    let n: u64 = num_str.trim().parse().unwrap_or_else(|_| {
+        eprintln!("error: {flag} expects a size like 8G, 512M, or a number of MiB, got '{v}'");
+        usage();
+    });
+    let mib = n.checked_mul(mult).unwrap_or_else(|| {
+        eprintln!("error: {flag} size '{v}' is too large");
+        usage();
+    });
+    if mib == 0 {
+        eprintln!("error: {flag} size must be greater than zero, got '{v}'");
+        usage();
+    }
+    mib
+}
+
 fn parse_args() -> ParsedArgs {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut kernel: Option<PathBuf> = None;
@@ -105,6 +132,7 @@ fn parse_args() -> ParsedArgs {
     let mut offline = false;
     let mut shares: Vec<ShareMount> = Vec::new();
     let mut disks: Vec<PathBuf> = Vec::new();
+    let mut scratch_mib: Option<u64> = None;
     let mut env: Vec<(String, String)> = Vec::new();
     let mut exec_cmd: Option<String> = None;
     let mut switch_root = false;
@@ -192,6 +220,11 @@ fn parse_args() -> ParsedArgs {
             }
             "--disk" => {
                 disks.push(take(i, "--disk", false).into());
+                i += 2;
+            }
+            "--scratch" => {
+                let v = take(i, "--scratch", false);
+                scratch_mib = Some(parse_size_mib("--scratch", &v));
                 i += 2;
             }
             // --env VALUE may legitimately contain a leading '-' (e.g.
@@ -313,6 +346,17 @@ fn parse_args() -> ParsedArgs {
         );
         usage();
     }
+    // --scratch backs the writable overlay upper, but --rootfs-ro mounts the
+    // rootfs read-only with no overlay — so the disk would be attached and
+    // never used. Reject loudly rather than silently ignoring an explicit
+    // request (the guest gives no scratch_dev token in this case anyway).
+    if rootfs_ro && scratch_mib.is_some() {
+        eprintln!(
+            "error: --scratch has no effect with --rootfs-ro (a read-only rootfs \
+             has no writable overlay to back). Drop one of the two."
+        );
+        usage();
+    }
 
     let mut c = Config::new(kernel, initramfs);
     if let Some(s) = cfg_cmdline {
@@ -320,6 +364,7 @@ fn parse_args() -> ParsedArgs {
     }
     c.shares = shares;
     c.disks = disks;
+    c.scratch_mib = scratch_mib;
     c.env = env;
     c.exec_cmd = exec_cmd;
     c.switch_root = switch_root;
