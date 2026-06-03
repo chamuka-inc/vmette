@@ -109,19 +109,6 @@ fn action_reply(header: ResponseHeader, payload: Option<Vec<u8>>, want_text: boo
     }
 }
 
-fn default_socket_path() -> PathBuf {
-    let mut p = default_cache_root();
-    p.push("vmette.sock");
-    p
-}
-
-/// Provider cache root — shared with the CLI (`~/Library/Caches/vmette`) so
-/// resolved OCI/tar rootfs trees are reused across both.
-fn default_cache_root() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Caches/vmette")
-}
-
 fn locate_vmette() -> PathBuf {
     if let Ok(p) = std::env::var("VMETTE_BIN") {
         return PathBuf::from(p);
@@ -147,7 +134,7 @@ async fn main() -> Result<()> {
         .json()
         .init();
 
-    let mut socket = default_socket_path();
+    let mut socket = vmette_assets::default_socket();
     let mut vmette_bin = locate_vmette();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -183,7 +170,11 @@ async fn main() -> Result<()> {
 
     // Stateful subsystem: the desktop session registry. Kept entirely
     // separate from the stateless subprocess dispatch above.
-    let registry = Registry::new(MAX_DESKTOP_SESSIONS, DESKTOP_IDLE_TTL, default_cache_root());
+    let registry = Registry::new(
+        MAX_DESKTOP_SESSIONS,
+        DESKTOP_IDLE_TTL,
+        vmette_assets::default_cache_root(),
+    );
 
     // Background idle/orphan sweeper. Eviction is blocking (joins teardown),
     // so it hops off the async thread via spawn_blocking.

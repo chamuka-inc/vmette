@@ -8,7 +8,7 @@
 mod desktop;
 
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use vmette::provider::{Context, Registry};
 use vmette::{Config, RootfsArtifact, ShareMount, VsockPort};
@@ -17,6 +17,7 @@ use vmette_providers::default_registry;
 fn usage() -> ! {
     eprintln!(
         "vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]\n\
+         vmette quickstart                                 # boot a hello-world VM to verify the install\n\
          vmette providers                                  # list registered providers\n\
          vmette desktop <command> [options]                # desktop computer use (via vmetted)\n\
          \n\
@@ -59,7 +60,15 @@ fn usage() -> ! {
            --rootfs squashfs+https://h/img.sqfs  prebuilt squashfs (block rootfs)\n\
            --rootfs squashfs+file:///img.sqfs    local squashfs image\n\
            --rootfs tar+https://h/r.tar.gz       tarball download (gzip/zstd auto-detected)\n\
-           --rootfs tar+file:///tmp/r.tar        local tarball\n"
+           --rootfs tar+file:///tmp/r.tar        local tarball\n\
+         \n\
+         docs: https://github.com/chamuka-inc/vmette/tree/main/docs  (CLI.md · MCP.md · DESKTOP.md)\n\
+         \n\
+         examples:\n\
+           vmette quickstart                                                # verify your install\n\
+           vmette --rootfs alpine:3.20 --exec 'cat /etc/alpine-release'     # one-off command\n\
+           vmette desktop start                                            # boot a GUI desktop\n\
+           claude mcp add vmette --scope user -- vmette-mcp --allow-network  # sandbox for Claude Code\n"
     );
     std::process::exit(2);
 }
@@ -340,11 +349,6 @@ fn parse_args() -> ParsedArgs {
     }
 }
 
-fn cache_root() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Caches/vmette")
-}
-
 fn guest_helpers_dir() -> Option<PathBuf> {
     // Look for vsock-send / vsock-runner under common locations:
     // 1. Next to the vmette binary (installed layout, share/vmette/guest)
@@ -388,6 +392,75 @@ fn print_providers(registry: &Registry) {
     }
 }
 
+/// `vmette quickstart` — prove the install works by booting a real microVM,
+/// then point the user at the things that matter (MCP for agents, a one-off
+/// run, a desktop). Boots in a child `vmette` rather than calling `run()`
+/// inline, because `run()` process-exits with the guest's code and never
+/// returns — the child lets us print the next-steps afterward.
+fn quickstart() -> ExitCode {
+    eprintln!("vmette quickstart — verifying your install by booting a real microVM\n");
+
+    // Boot assets must be discoverable, or nothing can boot. Fail early with
+    // the same "where I looked" message the run path uses.
+    for name in ["vmlinuz-virt", "initramfs-vmette"] {
+        if let Err(e) = vmette_assets::require_asset(None, name) {
+            eprintln!("✗ {e}");
+            eprintln!(
+                "\n  Boot assets ship in the release tarball under <prefix>/assets, or point\n  \
+                 $VMETTE_ASSETS_DIR at a dir holding them. From a source checkout:\n  \
+                 bash scripts/fetch-assets.sh && bash scripts/build-initramfs.sh"
+            );
+            return ExitCode::from(1);
+        }
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ cannot locate the vmette binary: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    eprintln!("→ booting alpine:3.20 (first run pulls the image; usually a few seconds)…\n");
+    let status = Command::new(exe)
+        .args([
+            "--rootfs",
+            "alpine:3.20",
+            "--quiet",
+            "--exec",
+            "echo '  ✓ vmette works — a hardware-isolated Linux guest booted and ran this'; exit 0",
+        ])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("\n✓ Your install works. Next:\n");
+            println!("  • Sandbox for Claude Code (and other MCP hosts):");
+            println!("      claude mcp add vmette --scope user -- vmette-mcp --allow-network");
+            println!("  • Run a one-off command in a fresh VM:");
+            println!("      vmette --rootfs alpine:3.20 --exec 'uname -a'");
+            println!("  • Boot a GUI desktop for computer use:");
+            println!("      vmette desktop start");
+            println!("  • Docs: https://github.com/chamuka-inc/vmette/tree/main/docs");
+            ExitCode::SUCCESS
+        }
+        Ok(s) => {
+            let code = s.code().unwrap_or(1);
+            eprintln!("\n✗ the hello-world VM exited with status {code}.");
+            eprintln!(
+                "  If you're offline, the first run needs network to pull alpine:3.20 — retry\n  \
+                 online, or boot a local rootfs instead: vmette --rootfs /path/to/dir --exec true\n  \
+                 See https://github.com/chamuka-inc/vmette/tree/main/docs/CLI.md"
+            );
+            ExitCode::from(code as u8)
+        }
+        Err(e) => {
+            eprintln!("✗ could not run the vmette binary: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     // Light tracing so the OCI puller and tar fetcher can log to stderr.
     // Disable ANSI colours when stderr isn't a terminal (e.g. the vmette-mcp
@@ -415,6 +488,9 @@ fn main() -> ExitCode {
             print_providers(&default_registry());
             return ExitCode::SUCCESS;
         }
+        if first == "quickstart" {
+            return quickstart();
+        }
         if first == "desktop" {
             return desktop::run(argv.collect());
         }
@@ -427,7 +503,7 @@ fn main() -> ExitCode {
     // returned path into the VM config. Providers handle their own
     // caching, network access, and idempotency.
     let registry = default_registry();
-    let ctx = Context::new(cache_root())
+    let ctx = Context::new(vmette_assets::default_cache_root())
         .offline(parsed.offline)
         .guest_helpers_dir(guest_helpers_dir());
     let artifact = match registry.resolve(&parsed.rootfs_spec, &ctx) {

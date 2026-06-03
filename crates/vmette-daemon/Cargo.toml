@@ -26,6 +26,9 @@ anyhow      = "1"
 vmette            = { workspace = true }
 vmette-proto      = { workspace = true }
 vmette-providers  = { workspace = true }
+# Shared cache-root / socket-path discovery (single source of truth with the
+# CLI and MCP server, so all three agree on where the cache and socket live).
+vmette-assets     = { workspace = true }
 base64      = "0.22"
 rand        = "0.8"
 # Decode the agent's screenshot PNGs into raw pixels for the host-side

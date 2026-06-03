@@ -2679,6 +2679,7 @@ name = "vmette-cli"
 version = "0.6.0"
 dependencies = [
  "base64",
+ "libc",
  "serde_json",
  "tracing-subscriber",
  "vmette",
@@ -2700,6 +2701,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vmette",
+ "vmette-assets",
  "vmette-proto",
  "vmette-providers",
 ]
