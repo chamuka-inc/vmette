@@ -97,6 +97,9 @@ pub struct RunRequest {
     /// Force `--offline` even when network would otherwise be allowed.
     /// Used by tools that should never hit the registry.
     pub offline: bool,
+    /// Ephemeral ext4 scratch disk size in MiB for the writable overlay
+    /// (`--scratch`). `None` → RAM-backed tmpfs overlay (the default).
+    pub scratch_mib: Option<u64>,
 }
 
 /// What the guest produced.
@@ -197,6 +200,7 @@ impl Sandbox {
             timeout_seconds: req.timeout_seconds,
             vcpus: None,
             mem_mib: None,
+            scratch_mib: req.scratch_mib,
         };
         let mut cmd = Command::new(&self.vmette_bin);
         cmd.args(run.to_cli_args());

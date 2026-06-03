@@ -85,6 +85,12 @@ pub struct ExecuteArgs {
     /// Wall-clock timeout in seconds (default: 30). Cap is enforced
     /// inside vmette via --timeout; a timed-out guest returns exit 124.
     pub timeout: Option<u32>,
+    /// Optional ephemeral ext4 scratch disk size in **MiB**. The guest's
+    /// writable root (and `/tmp`) is RAM-backed by default; set this to back
+    /// it with a disk instead so a build/extract larger than RAM doesn't fail
+    /// with "No space left on device". The disk is created per-call and
+    /// discarded when the call returns. Omit for light work.
+    pub scratch_mib: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -132,6 +138,11 @@ pub struct WorkspaceRunArgs {
     pub command: String,
     /// Wall-clock timeout in seconds (default: 60).
     pub timeout: Option<u32>,
+    /// Optional ephemeral ext4 scratch disk size in **MiB** for this run. Set
+    /// it when a build/extract would exceed the RAM-backed overlay (`No space
+    /// left on device`); created sparse and discarded when the call returns.
+    /// The workspace share itself persists; only the writable root is scratch.
+    pub scratch_mib: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -313,6 +324,7 @@ impl VmetteServer {
             net,
             timeout_seconds: Some(args.timeout.unwrap_or(DEFAULT_TIMEOUT_S)),
             offline: false,
+            scratch_mib: args.scratch_mib,
         };
         let reply = self
             .sandbox
@@ -357,6 +369,7 @@ impl VmetteServer {
             net: true,
             timeout_seconds: Some(DEFAULT_TIMEOUT_S),
             offline: false,
+            scratch_mib: None,
         };
         let reply = self
             .sandbox
@@ -459,6 +472,7 @@ impl VmetteServer {
             net: ws.net,
             timeout_seconds: Some(args.timeout.unwrap_or(DEFAULT_WORKSPACE_TIMEOUT_S)),
             offline: false,
+            scratch_mib: args.scratch_mib,
         };
         let reply = self
             .sandbox

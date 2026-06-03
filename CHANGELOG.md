@@ -9,13 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`vmette --scratch SIZE`** — attach an ephemeral ext4 **scratch disk** that
-  backs the guest's writable overlay upper (and `/tmp`), so the writable root is
-  bounded by the disk instead of `--mem-mib`. Lifts the RAM cap that otherwise
-  makes a large build/extract fail with `No space left on device`. Sizes accept
-  `G`/`g`, `M`/`m`, or a bare number of MiB (`8G`, `512M`, `2048`). The image is
-  created sparse per run and deleted on teardown — nothing persists. No effect
-  with `--rootfs-ro`. Library: new `Config::scratch_mib: Option<u64>` field.
+- **Ephemeral ext4 scratch disk** for the guest's writable overlay upper (and
+  `/tmp`), so the writable root is bounded by a disk instead of `--mem-mib` —
+  lifting the RAM cap that otherwise makes a large build/extract fail with `No
+  space left on device`. The image is created sparse per run and deleted on
+  teardown — nothing persists. No effect on a read-only rootfs. Exposed across
+  every entry point:
+  - **CLI**: `vmette --scratch SIZE`, accepting `G`/`g`, `M`/`m`, or a bare
+    number of MiB (`8G`, `512M`, `2048`); rejected with `--rootfs-ro`.
+  - **Library**: new `Config::scratch_mib: Option<u64>` field.
+  - **Daemon wire protocol**: new optional `scratch_mib` (MiB) field on the
+    run `Request`.
+  - **MCP**: new optional `scratch_mib` (MiB) parameter on the `execute` and
+    `workspace_run` tools.
+  - **C ABI**: new `vmette_config_set_scratch_mib(cfg, mib)` (`0` disables).
 
 ## [0.7.0] — 2026-06-03
 

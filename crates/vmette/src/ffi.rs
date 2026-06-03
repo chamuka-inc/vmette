@@ -301,6 +301,22 @@ pub unsafe extern "C" fn vmette_config_set_mem_mib(cfg: *mut vmette_config_t, n:
     }
 }
 
+/// Set the ephemeral ext4 scratch disk size in MiB, used as the guest's
+/// writable overlay upper so the writable root (and `/tmp`) is bounded by the
+/// disk rather than `mem_mib`. Pass `0` to disable (the default — a RAM-backed
+/// tmpfs overlay); any non-zero value enables a per-run scratch disk of that
+/// size that is created sparse and discarded on teardown. No effect with a
+/// read-only directory rootfs (no writable overlay).
+///
+/// # Safety
+/// See the module-level safety contract.
+#[no_mangle]
+pub unsafe extern "C" fn vmette_config_set_scratch_mib(cfg: *mut vmette_config_t, mib: u64) {
+    if let Some(c) = cfg_mut(cfg) {
+        c.scratch_mib = (mib != 0).then_some(mib);
+    }
+}
+
 /// Path to a snapshot file to write after the guest signals ready.
 /// Apple Silicon only — see VmetteStatus::SnapshotUnsupported.
 ///

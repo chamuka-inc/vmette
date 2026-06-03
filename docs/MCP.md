@@ -186,6 +186,7 @@ persists between calls.
 | `code` | string | Source — quoting is handled, embedded `'`, `$`, backticks all safe. |
 | `network` | bool, default false | Requires `--allow-network` server-side. |
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
+| `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp`. Set this when a build/extract would exceed the RAM-backed overlay (`No space left on device`); created sparse per call, discarded when the call returns. Omit for light work. |
 
 Returns: `exit: N\n\nstdout:\n...\n\nstderr:\n...`
 
@@ -242,6 +243,7 @@ directory is mounted **read-write** at `/mnt/work` and is the initial
 | `workspace_id` | string | From `workspace_create`. |
 | `command` | string | Shell command. Runs as `sh -c "cd /mnt/work && $command"`. |
 | `timeout` | int, default 60 | Seconds. |
+| `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp` for this run (not the workspace share, which always persists). Set it when a build would exceed the RAM-backed overlay. |
 
 ### `workspace_destroy`
 

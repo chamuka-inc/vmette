@@ -69,6 +69,11 @@ pub struct Request {
     pub vcpus: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mem_mib: Option<u64>,
+    /// Ephemeral ext4 scratch disk size in MiB for the writable overlay upper
+    /// (the CLI's `--scratch`). `None` → no scratch disk (RAM-backed tmpfs
+    /// overlay). Rendered as a bare-MiB `--scratch <n>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch_mib: Option<u64>,
 }
 
 impl Request {
@@ -127,6 +132,11 @@ impl Request {
         if let Some(m) = self.mem_mib {
             a.push("--mem-mib".into());
             a.push(m.to_string().into());
+        }
+        if let Some(s) = self.scratch_mib {
+            a.push("--scratch".into());
+            // Bare number → MiB (the CLI's parse_size_mib default unit).
+            a.push(s.to_string().into());
         }
         a
     }
@@ -352,9 +362,10 @@ mod tests {
             ]
         );
         // No defaulted scalar flags appear — the CLI owns those defaults.
-        assert!(!args
-            .iter()
-            .any(|a| a == "--vcpus" || a == "--mem-mib" || a == "--vsock-port"));
+        assert!(!args.iter().any(|a| a == "--vcpus"
+            || a == "--mem-mib"
+            || a == "--vsock-port"
+            || a == "--scratch"));
     }
 
     #[test]
@@ -378,6 +389,7 @@ mod tests {
             timeout_seconds: Some(30),
             vcpus: Some(2),
             mem_mib: Some(1024),
+            scratch_mib: Some(8192),
         };
         let args: Vec<String> = req
             .to_cli_args()
@@ -397,6 +409,9 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|w| w[0] == "--mem-mib" && w[1] == "1024"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--scratch" && w[1] == "8192"));
     }
 
     #[test]
