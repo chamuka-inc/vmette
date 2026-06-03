@@ -24,3 +24,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # requests / parsing replies as the shared vmette-proto wire types.
 serde_json          = "1"
 base64              = "0.22"
+# Detached auto-spawn of vmetted (setsid before exec) when `vmette desktop`
+# finds no daemon listening on the default socket.
+libc                = { workspace = true }

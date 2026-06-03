@@ -184,7 +184,11 @@ impl DaemonClient {
             .context("reading daemon reply")?;
         let reply = reply.trim();
         if reply.is_empty() {
-            bail!("daemon closed the connection without replying");
+            bail!(
+                "daemon closed the connection without replying — vmetted likely crashed or is \
+                 running a stale build. Check it's alive (`pgrep vmetted`) and restart it; if you \
+                 just reinstalled, kill the old PID first. See docs/DAEMON.md."
+            );
         }
         let value: DesktopReply =
             serde_json::from_str(reply).with_context(|| format!("bad reply: {reply}"))?;

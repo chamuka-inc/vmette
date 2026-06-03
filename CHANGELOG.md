@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`vmette quickstart`** — boots a real hello-world microVM (`alpine:3.20`) to
+  verify the install, then prints the next steps (MCP setup for Claude Code, a
+  one-off run, a desktop session). One command from install to "it works".
+- **`vmette --help` now ends with a docs URL and runnable examples** (the MCP
+  one-liner, a one-off `--exec`, `desktop start`, `quickstart`).
+
+### Changed
+
+- **`vmette desktop …` auto-starts `vmetted`** when nothing is listening on the
+  default socket, the same lazy-start the MCP server already does — so desktop
+  commands work without a manual `vmetted &`. A caller-supplied `--socket` is
+  left alone (you manage that daemon). The "is vmetted running?" error is gone
+  from the default path.
+- **Clearer "daemon closed the connection" error** (CLI and MCP): now names the
+  likely cause (crashed / stale build) and the fix (`pgrep vmetted`, restart,
+  kill the old PID after a reinstall).
+
 ## [0.6.0] — 2026-06-02
 
 ### Fixed

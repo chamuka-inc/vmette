@@ -11,8 +11,10 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
+use std::time::Duration;
 
 use base64::Engine as _;
 use vmette_proto::agent::{Action, ScrollDirection};
@@ -24,6 +26,85 @@ use vmette_proto::daemon::{
 fn default_socket() -> PathBuf {
     let home = std::env::var_os("HOME").unwrap_or_default();
     PathBuf::from(home).join("Library/Caches/vmette/vmette.sock")
+}
+
+/// Make sure a `vmetted` is listening on `socket` before we send a request.
+/// If `autostart` (the default socket, not a caller-managed `--socket`) and
+/// nothing is up, spawn a detached `vmetted` and wait for it to bind — the same
+/// lazy-start the MCP server does, so `vmette desktop` works without a manual
+/// `vmetted &`. A `NotFound`/`ConnectionRefused` both mean "no daemon"; any
+/// other connect error is surfaced as-is.
+fn ensure_daemon(socket: &PathBuf, autostart: bool) -> Result<(), String> {
+    use std::io::ErrorKind::{ConnectionRefused, NotFound};
+    match UnixStream::connect(socket) {
+        Ok(_) => return Ok(()),
+        Err(e) if matches!(e.kind(), NotFound | ConnectionRefused) => {}
+        Err(e) => return Err(format!("connect {} failed: {e}", socket.display())),
+    }
+    if !autostart {
+        // Caller pointed --socket at their own daemon; if it's down, that's
+        // theirs to fix. Let the request connect surface the error.
+        return Ok(());
+    }
+    let bin = locate_vmetted().ok_or_else(|| {
+        "vmetted not found next to vmette or on $PATH (needed for desktop sessions) — \
+         reinstall vmette, or start it manually with `vmetted &`"
+            .to_string()
+    })?;
+    let mut cmd = Command::new(&bin);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid() is async-signal-safe and is the only call made in the
+    // forked child before exec. Detaching into a new session lets the daemon
+    // outlive this short-lived CLI and survive terminal signals, matching the
+    // MCP server's auto-spawn and vmetted's shared-daemon model.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .map_err(|e| format!("spawning {}: {e}", bin.display()))?;
+    // vmetted clears any stale socket and binds during startup; poll until it
+    // accepts a connection, or give up after ~5s.
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(100));
+        if UnixStream::connect(socket).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "vmetted did not start listening on {} within 5s",
+        socket.display()
+    ))
+}
+
+/// Locate `vmetted`: next to this binary (install + repo layouts put `vmette`
+/// and `vmetted` side by side), else on `$PATH`. Canonicalize so a symlinked
+/// `vmette` resolves to the real bin dir that holds `vmetted`.
+fn locate_vmetted() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
+        if let Some(dir) = real.parent() {
+            let candidate = dir.join("vmetted");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for entry in std::env::split_paths(&path) {
+            let candidate = entry.join("vmetted");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn desktop_usage() -> ! {
@@ -76,7 +157,12 @@ fn call(socket: &PathBuf, req: &DesktopRequest) -> Result<DesktopReply, String> 
         .map_err(|e| e.to_string())?;
     let reply = reply.trim();
     if reply.is_empty() {
-        return Err("daemon closed the connection without replying".into());
+        return Err(
+            "daemon closed the connection without replying — vmetted likely crashed or is \
+             running a stale build. Check it's alive (`pgrep vmetted`) and restart it; if you \
+             just reinstalled, kill the old PID first. See docs/DAEMON.md."
+                .into(),
+        );
     }
     let reply: DesktopReply =
         serde_json::from_str(reply).map_err(|e| format!("bad reply: {e}: {reply}"))?;
@@ -120,6 +206,7 @@ fn parse_i32(s: &str, what: &str) -> i32 {
 pub fn run(mut args: Vec<String>) -> ExitCode {
     // Extract the global --socket flag from anywhere in the args.
     let mut socket = default_socket();
+    let mut socket_overridden = false;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--socket" {
@@ -128,6 +215,7 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
                 desktop_usage();
             }
             socket = PathBuf::from(args.remove(i + 1));
+            socket_overridden = true;
             args.remove(i);
         } else {
             i += 1;
@@ -139,6 +227,17 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
     } else {
         args.remove(0)
     };
+
+    // Every desktop command needs vmetted up. On the default socket we
+    // auto-start it (mirroring the MCP server) so `vmette desktop start` works
+    // out of the box; a custom --socket means the caller runs their own daemon,
+    // so we don't spawn one behind their back. Help never connects.
+    if !matches!(cmd.as_str(), "-h" | "--help") {
+        if let Err(e) = ensure_daemon(&socket, !socket_overridden) {
+            eprintln!("[vmette desktop] error: {e}");
+            return ExitCode::from(1);
+        }
+    }
 
     let result = match cmd.as_str() {
         "start" => cmd_start(&socket, &args),
