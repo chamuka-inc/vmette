@@ -1,14 +1,23 @@
 # vmette-mcp — Model Context Protocol server
 
-`vmette-mcp` lets you run your agent on your Mac without the anxiety. Any
-MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose,
-custom clients) gets a set of tools whose every effect lands inside a Linux
-microVM — never on your host. The agent gets its own real shell, filesystem,
-and (optionally) network to work in; that environment is *not* your machine, so
-it cannot touch your real filesystem unless you explicitly share a directory
-into it, nor reach the network unless you start the server with
-`--allow-network`. Most tools boot a fresh VM per call; the `desktop_*` family
-drives a persistent graphical desktop session.
+`vmette-mcp` gives an agent a hardware-isolated sandbox to run untrusted work in.
+Any MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose,
+custom clients) gets a set of tools — `execute`, `fetch_url`, `workspace_*`,
+`desktop_*` — whose every effect lands inside a Linux microVM, never on your
+host: a real shell, filesystem, and (optionally) network that are *not* your
+machine. Work the agent routes through these tools can't touch your real
+filesystem (unless you share a directory in) or reach the network (unless you
+start the server with `--allow-network`). Most tools boot a fresh VM per call;
+the `desktop_*` family drives a persistent graphical desktop session.
+
+> **What this does — and doesn't — contain.** Adding `vmette-mcp` *adds* a
+> sandbox to the agent's toolbox; it does **not** replace the host's own tools.
+> In Claude Code the agent still has native Bash / Read / Write that run directly
+> on your Mac, and the model picks which tool to call — it won't automatically
+> prefer the sandbox. So `vmette-mcp` is where *you* (or the agent) put risky
+> work, not an automatic cage around the whole agent. To make the VM the agent's
+> **only** way to execute code, restrict the host tools too — e.g. disable Claude
+> Code's Bash tool via permissions, or use a host that exposes only vmette.
 
 Each tool call boots a fresh kernel via Apple's `Virtualization.framework`
 (~1 second), runs the agent's request, and tears down the VM on return — so the

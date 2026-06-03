@@ -5,9 +5,12 @@
 Claude Code, Cursor, Cline, and friends `pip install` whatever a README names,
 execute model output, and act on web pages that can carry prompt injection. Run
 that straight on your laptop and the agent has your files, your tokens, and your
-network. vmette gives the agent its own machine instead: a real, hardware-isolated
-Linux VM that boots in ~1 second, sees nothing on your Mac unless you hand it over,
-and disappears when it's done. Your code and secrets never leave the device.
+network. vmette gives that work somewhere safe to happen instead: a real,
+hardware-isolated Linux VM that boots in ~1 second, sees only what you share in,
+and disappears when it's done. Send the agent's untrusted work there — or lock
+the agent down so the VM is its *only* way to run code — and nothing it executes
+can reach your files, tokens, or network. Your code and secrets never leave the
+device.
 
 <p align="center">
   <img src="vmette-demo.gif" alt="vmette booting a Linux guest, propagating its exit code to the host, and enforcing default-deny networking until --net is passed" width="800">
@@ -58,9 +61,13 @@ make test               # cargo unit + end-to-end VM smoke
 ## Give your agent a sandbox (MCP)
 
 `vmette-mcp` is a Model Context Protocol server that hands any MCP-aware agent host a
-sandboxed machine. Everything the agent does happens inside the VM: it never touches
-your real filesystem unless you share a directory in, and it has no network egress
-unless you start the server with `--allow-network`.
+sandboxed machine as a set of tools (`execute`, `workspace_*`, `desktop_*`). Work the
+agent runs *through these tools* happens inside the VM — never on your host filesystem
+(unless you share a directory in), with no network egress (unless you start the server
+with `--allow-network`). Note it *adds* the sandbox alongside the host's own tools; in
+Claude Code the agent still has native Bash that runs on your Mac, so to make the VM
+its *only* way to run code, restrict those too (e.g. deny the Bash tool). See
+[`docs/MCP.md`](docs/MCP.md).
 
 **Claude Code** — one command, no config file:
 
