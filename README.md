@@ -29,14 +29,15 @@ host gets a sandboxed machine with one line of config.
 | Isolation boundary   | microVM / gVisor (varies)           | shared host kernel     | **hardware VM, its own kernel**     |
 | Where it runs        | someone else's cloud                | your machine           | **your Mac**                        |
 | Your code & secrets  | leave the device                    | stay local             | **stay local**                      |
-| Network egress       | on by default                       | on by default          | **off until you pass `--net`**      |
-| Cost                 | per-second billing                  | free                   | **free, on-device**                 |
-| Boot time            | seconds + a network round-trip      | ~sub-second            | **~1 second**                       |
+| Network egress       | on by default (policies optional)   | on by default          | **off until you pass `--net`**      |
+| Cost                 | usage-metered (per-second / CPU)    | free                   | **free, on-device**                 |
+| Boot time            | sub-second + a network round-trip   | ~sub-second            | **~1 second, local**                |
 
-The cloud sandboxes are great until you don't want your code or credentials leaving
-the laptop, or you don't want a per-second meter running across a long agent loop. A
+The cloud sandboxes are fast and well-isolated — they boot the same kind of microVM in
+milliseconds. The catch isn't speed; it's that the work runs on someone else's machine,
+reached over the network, with a usage meter running across a long agent loop. A
 container is local and free but shares your kernel — one namespace away from the host.
-vmette is the on-device option that keeps the real isolation.
+vmette is the on-device option that keeps the real isolation without the round-trip.
 
 ## Install
 
