@@ -61,6 +61,12 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
 
     let end = session.wait();
     restore_terminal();
+    // Drop the session before std::process::exit, which skips destructors:
+    // this runs the Session's teardown guards (the ephemeral `--scratch` disk
+    // image and the block-rootfs `ctl` temp dir) so they don't leak on the
+    // CLI path. `end` is owned, so dropping the session here is safe; the
+    // guest has already stopped. (The daemon path drops Session normally.)
+    drop(session);
     match end {
         SessionEnd::Exited(code) => {
             if !config.quiet {

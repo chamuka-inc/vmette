@@ -152,6 +152,24 @@ run_output "--scratch overlay is ext4 disk" "overlay upper on scratch disk" --me
 run "--scratch lifts overlay RAM cap" 0 --mem-mib 512 --scratch 1G -- \
     'dd if=/dev/zero of=/big bs=1M count=700 2>/dev/null && rm -f /big'
 
+# Ephemeral cleanup: a --scratch run must leave no host temp artifacts behind.
+# run() exits via std::process::exit (skips destructors), so the session must
+# be dropped before exit or the scratch image + ctl dir leak. Before/after
+# delta tolerates artifacts from any concurrent process.
+printf "  %-40s " "--scratch leaves no temp leak"
+TMP="${TMPDIR:-/tmp}"
+leak_count() { ls -d "$TMP"/vmette-scratch-*.img "$TMP"/vmette-ctl-* 2>/dev/null | wc -l | tr -d ' '; }
+before=$(leak_count)
+"$BIN" --kernel "$ASSETS/vmlinuz-virt" --initramfs "$ASSETS/initramfs-vmette" \
+    --rootfs "$ROOTFS" --scratch 1G --quiet --exec 'true' </dev/null >/dev/null 2>&1
+after=$(leak_count)
+if [[ "$after" == "$before" ]]; then
+    echo "PASS"; PASS=$((PASS + 1))
+else
+    echo "FAIL  (temp artifacts leaked: $before → $after)"
+    FAIL=$((FAIL + 1)); FAILED+=("--scratch temp leak")
+fi
+
 run "timeout exits 124" 124 --timeout 3 -- 'sleep 30'
 
 run "--vsock-port -1 unsets VMETTE_VSOCK_PORT" 0 --vsock-port -1 -- 'test -z "$VMETTE_VSOCK_PORT"'
