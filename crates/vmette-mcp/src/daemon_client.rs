@@ -18,7 +18,7 @@
 //! without the user starting the daemon by hand.
 
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,7 +51,7 @@ impl DaemonClient {
     /// Sandbox's already-discovered paths).
     pub fn new(socket: Option<PathBuf>, kernel: PathBuf, initramfs: PathBuf) -> Self {
         Self {
-            socket: socket.unwrap_or_else(default_socket),
+            socket: socket.unwrap_or_else(vmette_assets::default_socket),
             kernel,
             initramfs,
             spawn_lock: Arc::new(Mutex::new(())),
@@ -222,7 +222,7 @@ impl DaemonClient {
         if let Ok(s) = UnixStream::connect(&self.socket).await {
             return Ok(s);
         }
-        let bin = locate_vmetted().ok_or_else(|| {
+        let bin = vmette_assets::locate_vmetted().ok_or_else(|| {
             anyhow!(
                 "vmetted binary not found (needed for desktop_* tools); \
                  install it alongside vmette-mcp or start it manually"
@@ -260,33 +260,4 @@ impl DaemonClient {
             self.socket.display()
         );
     }
-}
-
-/// Locate `vmetted`: next to this binary (install + repo layouts put
-/// vmette-mcp and vmetted side by side), else on `$PATH`. Canonicalize so a
-/// symlinked `vmette-mcp` resolves to the real bin dir that holds vmetted.
-fn locate_vmetted() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
-        if let Some(dir) = real.parent() {
-            let candidate = dir.join("vmetted");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for entry in std::env::split_paths(&path) {
-            let candidate = entry.join("vmetted");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn default_socket() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    Path::new(&home).join("Library/Caches/vmette/vmette.sock")
 }

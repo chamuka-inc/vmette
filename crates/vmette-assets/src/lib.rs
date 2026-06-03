@@ -80,6 +80,40 @@ pub fn find(name: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Path to the daemon's UNIX socket — the single source of truth shared by the
+/// `vmette` CLI (`vmette desktop …`) and the `vmette-mcp` server, both of which
+/// connect to (and auto-start) `vmetted` here. The daemon binds the same path.
+pub fn default_socket() -> PathBuf {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    PathBuf::from(home).join("Library/Caches/vmette/vmette.sock")
+}
+
+/// Locate the `vmetted` daemon binary: next to the current executable (install
+/// and repo layouts put `vmette` / `vmette-mcp` beside `vmetted`), else on
+/// `$PATH`. Canonicalize so a symlinked launcher resolves to the real bin dir
+/// that holds `vmetted`. Shared by the CLI and the MCP server, which both
+/// lazily start the daemon when none is listening.
+pub fn locate_vmetted() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
+        if let Some(dir) = real.parent() {
+            let candidate = dir.join("vmetted");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for entry in std::env::split_paths(&path) {
+            let candidate = entry.join("vmetted");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// Resolve a boot asset. An explicit `--kernel` / `--initramfs` path wins;
 /// otherwise probe [`asset_dirs`] for `name`. The error lists every
 /// location searched so the user knows where to drop the file.

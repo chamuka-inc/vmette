@@ -23,11 +23,6 @@ use vmette_proto::daemon::{
     DesktopView,
 };
 
-fn default_socket() -> PathBuf {
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    PathBuf::from(home).join("Library/Caches/vmette/vmette.sock")
-}
-
 /// Make sure a `vmetted` is listening on `socket` before we send a request.
 /// If `autostart` (the default socket, not a caller-managed `--socket`) and
 /// nothing is up, spawn a detached `vmetted` and wait for it to bind — the same
@@ -46,7 +41,7 @@ fn ensure_daemon(socket: &PathBuf, autostart: bool) -> Result<(), String> {
         // theirs to fix. Let the request connect surface the error.
         return Ok(());
     }
-    let bin = locate_vmetted().ok_or_else(|| {
+    let bin = vmette_assets::locate_vmetted().ok_or_else(|| {
         "vmetted not found next to vmette or on $PATH (needed for desktop sessions) — \
          reinstall vmette, or start it manually with `vmetted &`"
             .to_string()
@@ -81,30 +76,6 @@ fn ensure_daemon(socket: &PathBuf, autostart: bool) -> Result<(), String> {
         "vmetted did not start listening on {} within 5s",
         socket.display()
     ))
-}
-
-/// Locate `vmetted`: next to this binary (install + repo layouts put `vmette`
-/// and `vmetted` side by side), else on `$PATH`. Canonicalize so a symlinked
-/// `vmette` resolves to the real bin dir that holds `vmetted`.
-fn locate_vmetted() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        let real = std::fs::canonicalize(&exe).unwrap_or(exe);
-        if let Some(dir) = real.parent() {
-            let candidate = dir.join("vmetted");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for entry in std::env::split_paths(&path) {
-            let candidate = entry.join("vmetted");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 fn desktop_usage() -> ! {
@@ -205,7 +176,7 @@ fn parse_i32(s: &str, what: &str) -> i32 {
 /// Entry point: `args` is argv after the `desktop` token.
 pub fn run(mut args: Vec<String>) -> ExitCode {
     // Extract the global --socket flag from anywhere in the args.
-    let mut socket = default_socket();
+    let mut socket = vmette_assets::default_socket();
     let mut socket_overridden = false;
     let mut i = 0;
     while i < args.len() {
