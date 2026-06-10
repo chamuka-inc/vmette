@@ -16,7 +16,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASSETS="$HERE/assets"
+source "$HERE/scripts/guest-arch.sh"
+ASSETS="$(vmette_guest_assets_dir "$HERE")"
 KERNEL="$ASSETS/vmlinuz-virt"
 INITRAMFS="$ASSETS/initramfs-vmette"
 IMAGE_TAR="$ASSETS/vmette-desktop-rootfs.tar"

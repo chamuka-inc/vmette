@@ -126,7 +126,7 @@ returns an MCP image content block. `--allow-network` gates outbound network.
   Debian-slim desktop rootfs (Xvfb + openbox + the agent).
 
 **Important:** after editing `scripts/custom-init.sh`, rebuild the initramfs
-(`bash scripts/build-initramfs.sh`) — the live `assets/initramfs-vmette` embeds a
+(`bash scripts/build-initramfs.sh`) — the live `assets/<arch>/initramfs-vmette` embeds a
 *copy* of it; a stale initramfs silently ignores the desktop branch.
 
 ## Key constraints (mention in docs / be aware of)
@@ -134,8 +134,8 @@ returns an MCP image content block. `--allow-network` gates outbound network.
 - **macOS-only**, requires codesigning with `entitlements.plist`
   (`com.apple.security.virtualization`) to boot a VM. `vmetted` boots desktop VMs
   in-process, so the daemon binary itself must be signed.
-- **Guest assets are x86_64-only** (`linux-virt-x86_64.apk`). Desktop image +
-  agent must match the guest arch.
+- **Guest assets are architecture-specific** (`assets/x86_64` or `assets/aarch64`).
+  Desktop image + agent must match the guest arch.
 - **Snapshot/restore is Apple-Silicon-only** (returns `SnapshotUnsupported` on
   Intel).
 - **Desktop sessions are software-rendered (Xvfb, no GPU)** — fine for agentic

@@ -125,11 +125,11 @@ agent share one display. The same capability is exposed to agents through the MC
 > `ghcr.io/chamuka-inc/vmette-desktop` automatically on first use (then cached under
 > `~/Library/Caches/vmette/oci/`), so the MCP and CLI desktop paths work out of the
 > box — no Docker needed. Building locally is optional, for hacking on the image or
-> working offline: `make desktop-image` (needs Docker; builds `linux/amd64` since the
-> guest is x86_64-only) writes `assets/vmette-desktop-rootfs.tar`, which is
+> working offline: `make desktop-image` (needs Docker; builds the platform matching
+> the guest architecture) writes `assets/<arch>/vmette-desktop-rootfs.tar`, which is
 > auto-discovered and **takes precedence** over the registry so a dev session reflects
 > your source. Resolution order: `--image` → `$VMETTE_DESKTOP_IMAGE` → local
-> `assets/vmette-desktop-rootfs.tar` → the `ghcr.io/chamuka-inc/vmette-desktop` image.
+> `assets/<arch>/vmette-desktop-rootfs.tar` → the `ghcr.io/chamuka-inc/vmette-desktop` image.
 
 See [`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol, action
 reference, and image build.
@@ -154,7 +154,7 @@ One `--rootfs` flag, four sources — a local directory, an OCI ref, a tarball U
 squashfs block image. List the providers with `vmette providers`:
 
 ```sh
-vmette --rootfs ./assets/alpine-rootfs              --exec 'uname -a'
+vmette --rootfs ./assets/aarch64/alpine-rootfs      --exec 'uname -a'
 vmette --rootfs alpine:3.20                         --exec 'cat /etc/alpine-release'
 vmette --rootfs oci://ghcr.io/foo/bar:v1            --exec '/run-tests.sh'
 vmette --rootfs tar+https://h/builds/r.tar.gz       --exec 'make ci'
@@ -219,7 +219,7 @@ fn main() {
     let ctx = Context::new(std::env::var_os("HOME").unwrap_or_default());
     let artifact = registry.resolve("alpine:3.20", &ctx).unwrap();
 
-    let mut cfg = Config::new("./assets/vmlinuz-virt", "./assets/initramfs-vmette");
+    let mut cfg = Config::new("./assets/aarch64/vmlinuz-virt", "./assets/aarch64/initramfs-vmette");
     cfg.set_rootfs_artifact(artifact, false);
     cfg.exec_cmd = Some("echo hello from rust; exit 42".into());
 
@@ -300,9 +300,9 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 ## Constraints
 
 - **macOS only.** VZ is Apple-private. No Linux/Windows port planned.
-- **Guest assets are currently x86_64-only.** The repack pipeline references
-  `linux-virt-x86_64.apk`. arm64 plumbing is documented in
-  [`docs/HACKING.md`](docs/HACKING.md); verification awaits arm64 hardware.
+- **Guest assets are architecture-specific.** Apple Silicon uses Alpine
+  `aarch64`; Intel uses `x86_64`. Runtime discovery checks
+  `assets/<arch>/` first and falls back to the legacy flat `assets/` layout.
 - **Snapshot/restore is Apple-Silicon-only.** Apple gates the save/restore calls
   behind `#if defined(__arm64__)`. On Intel, `--build-snapshot` / `--resume-snapshot`
   return `VmetteStatus::SnapshotUnsupported`. The daemon's snapshot-warm-pool is a

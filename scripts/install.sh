@@ -94,8 +94,8 @@ echo "    $BIN_DIR/vmette-mcp → $PREFIX/bin/vmette-mcp"
 echo
 echo "    libvmette.dylib  → $PREFIX/lib/libvmette.dylib"
 echo "    vmette.h         → $PREFIX/include/vmette.h"
-echo "    boot assets      → $PREFIX/assets/{vmlinuz-virt,initramfs-vmette}"
-echo "    guest helpers    → $PREFIX/share/vmette/guest/{vsock-send,vsock-runner}"
+echo "    boot assets      → $PREFIX/assets/{x86_64,aarch64}/{vmlinuz-virt,initramfs-vmette}"
+echo "    guest helpers    → $PREFIX/share/vmette/guest/{x86_64,aarch64}/{vsock-send,vsock-runner}"
 echo
 if ! command -v vmette >/dev/null 2>&1; then
     echo "⚠️  $BIN_DIR isn't on your PATH. Add this to your shell init:"
@@ -103,4 +103,4 @@ if ! command -v vmette >/dev/null 2>&1; then
 fi
 echo
 echo "first run: vmette --rootfs alpine:3.20 --exec 'uname -a; exit 0'"
-echo "           (kernel + initramfs ship in $PREFIX/assets and are auto-discovered)"
+echo "           (kernel + initramfs ship in $PREFIX/assets/$([[ $ARCH == arm64 ]] && echo aarch64 || echo x86_64) and are auto-discovered)"

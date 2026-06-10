@@ -2742,6 +2742,7 @@ dependencies = [
  "base64",
  "flate2",
  "oci-client",
+ "oci-spec",
  "serde_json",
  "tar",
  "thiserror 1.0.69",

@@ -32,6 +32,63 @@ export HOME="${HOME:-/root}"
 export LANG="${LANG:-en_US.UTF-8}"
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
+install_ca_certs() {
+    [ -d /mnt/certs ] || return 0
+
+    mkdir -p /usr/local/share/ca-certificates/vmette \
+        /etc/chromium/policies/managed \
+        /etc/opt/chrome/policies/managed
+
+    json=/etc/chromium/policies/managed/vmette-certs.json
+    tmp="${json}.tmp"
+    split_dir=$(mktemp -d)
+    count=0
+
+    # `openssl x509 -in FILE` only reads the FIRST certificate in FILE, so a
+    # combined bundle — or a full chain shipped as one .crt/.pem — would import
+    # just its leading cert. Split every input file into one-cert PEMs first,
+    # then import each individually.
+    src_idx=0
+    for src in /mnt/certs/*.crt /mnt/certs/*.pem; do
+        [ -f "$src" ] || continue
+        src_idx=$((src_idx + 1))
+        awk -v dir="$split_dir" -v base="$src_idx" '
+            /-----BEGIN CERTIFICATE-----/ { n++; out = sprintf("%s/%04d-%04d.pem", dir, base, n) }
+            out { print > out }
+            /-----END CERTIFICATE-----/ { if (out) close(out); out = "" }
+        ' "$src"
+    done
+
+    printf '{\n  "CAPlatformIntegrationEnabled": true,\n  "CACertificates": [\n' >"$tmp"
+    for cert in "$split_dir"/*.pem; do
+        [ -f "$cert" ] || continue
+        out="/usr/local/share/ca-certificates/vmette/vmette-$((count + 1)).crt"
+        if ! openssl x509 -in "$cert" -out "$out" 2>/var/log/vmette-ca.err; then
+            echo "[desktop] warning: skipping unreadable CA certificate" >&2
+            continue
+        fi
+        der=$(openssl x509 -in "$out" -outform DER | base64 -w0)
+        [ "$count" -gt 0 ] && printf ',\n' >>"$tmp"
+        printf '    "%s"' "$der" >>"$tmp"
+        count=$((count + 1))
+    done
+    printf '\n  ]\n}\n' >>"$tmp"
+
+    rm -rf "$split_dir"
+
+    if [ "$count" -gt 0 ]; then
+        mv "$tmp" "$json"
+        cp "$json" /etc/opt/chrome/policies/managed/vmette-certs.json
+        update-ca-certificates >/var/log/vmette-ca.log 2>&1 || true
+        echo "[desktop] installed $count CA certificate(s) for system trust and Chromium" >&2
+    else
+        rm -f "$tmp"
+        echo "[desktop] warning: /mnt/certs contained no readable .crt/.pem CA certificates" >&2
+    fi
+}
+
+install_ca_certs
+
 # The initramfs carries /dev in as devtmpfs but does not mount devpts; without
 # it terminal emulators (xterm, the agent's `exec` targets) fail to allocate a
 # pty ("get_pty: not enough ptys"). Mount it here as part of desktop bring-up.

@@ -84,9 +84,10 @@ fn parse_size(s: Option<&str>) -> Option<(u32, u32)> {
 
 /// Re-encode a desktop action's raw response (the agent's [`ResponseHeader`]
 /// plus the optional binary payload) into the wire [`ActionReply`]. `want_text`
-/// routes the payload: a clipboard read returns it as decoded UTF-8 `text`,
-/// every other payload-bearing action (a screenshot) as a base64 PNG. The lone
-/// owner of the vsock→socket payload encoding — kept pure so it is unit-tested.
+/// routes the payload: a clipboard read or `exec_capture` returns it as decoded
+/// UTF-8 `text`, every other payload-bearing action (a screenshot) as a base64
+/// PNG. The lone owner of the vsock→socket payload encoding — kept pure so it
+/// is unit-tested.
 fn action_reply(header: ResponseHeader, payload: Option<Vec<u8>>, want_text: bool) -> ActionReply {
     let (png_base64, text) = if want_text {
         (
@@ -106,6 +107,7 @@ fn action_reply(header: ResponseHeader, payload: Option<Vec<u8>>, want_text: boo
         y: header.y,
         png_base64,
         text,
+        exit_code: header.exit_code,
     }
 }
 
@@ -243,6 +245,13 @@ async fn dispatch(stream: UnixStream, vmette_bin: PathBuf, registry: Arc<Registr
     reader.read_line(&mut line).await?;
     let line = line.trim();
 
+    // A liveness probe (the CLI/MCP `ensure_daemon` connects then drops without
+    // sending anything) reads back as an empty line — not a malformed request.
+    // Return quietly so it doesn't surface as a `handler failed` warning.
+    if line.is_empty() {
+        return Ok(());
+    }
+
     // Peek only enough to route: a `desktop_*` kind is the stateful path; the
     // untagged run request is everything else. The concrete shape is parsed by
     // the chosen handler against its typed `vmette-proto` enum/struct.
@@ -287,6 +296,7 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
                 display_size: parse_size(req.size.as_deref()),
                 net: req.net,
                 offline: req.offline,
+                shares: req.shares,
                 vcpus: req.vcpus.unwrap_or(DEFAULT_DESKTOP_VCPUS),
                 mem_mib: req.mem_mib.unwrap_or(DEFAULT_DESKTOP_MEM_MIB),
             };
@@ -296,10 +306,15 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
             Ok(DesktopReply::Session(SessionReply { session_id }))
         }
         DesktopRequest::DesktopAction(req) => {
-            // get_clipboard returns its text as the payload; the only other
-            // payload-bearing action (screenshot) returns a PNG. Decide which
-            // before the action moves into the blocking task.
-            let want_text = matches!(req.action, Action::GetClipboard);
+            // get_clipboard returns its text as the payload; exec_capture
+            // returns its captured stdout/stderr as the payload. Both want the
+            // payload decoded as UTF-8 `text`; the only other payload-bearing
+            // action (screenshot) returns a PNG. Decide which before the action
+            // moves into the blocking task.
+            let want_text = matches!(
+                req.action,
+                Action::GetClipboard | Action::ExecCapture { .. }
+            );
             let (header, payload) =
                 tokio::task::spawn_blocking(move || registry.action(&req.session_id, &req.action))
                     .await
@@ -530,11 +545,29 @@ mod tests {
             error: Some("boom".into()),
             x: Some(640),
             y: Some(400),
+            exit_code: None,
             payload_len: 0,
         };
         let r = action_reply(header, None, false);
         assert!(!r.ok);
         assert_eq!(r.error.as_deref(), Some("boom"));
         assert_eq!((r.x, r.y), (Some(640), Some(400)));
+    }
+
+    #[test]
+    fn action_reply_exec_capture_carries_output_and_exit_code() {
+        let header = ResponseHeader {
+            ok: true,
+            error: None,
+            x: None,
+            y: None,
+            exit_code: Some(0),
+            payload_len: 5,
+        };
+        let r = action_reply(header, Some(b"done\n".to_vec()), true);
+        assert!(r.ok);
+        assert_eq!(r.text.as_deref(), Some("done\n"));
+        assert_eq!(r.exit_code, Some(0));
+        assert_eq!(r.png_base64, None);
     }
 }

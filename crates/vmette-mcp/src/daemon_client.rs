@@ -33,6 +33,7 @@ use vmette_proto::daemon::{
     DesktopScreenshotSettled, DesktopStart, DesktopStop, DesktopView, DesktopWhatChanged,
     SettleReply,
 };
+use vmette_proto::ShareMount;
 
 /// Handle to the daemon's desktop subsystem. Cheap to clone.
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ impl DaemonClient {
         size: Option<String>,
         net: bool,
         offline: bool,
+        shares: Vec<ShareMount>,
     ) -> Result<String> {
         // Resolve the desktop rootfs spec client-side, the same way the
         // kernel/initramfs assets are resolved: explicit per-call `image` →
@@ -80,6 +82,7 @@ impl DaemonClient {
                 size,
                 net,
                 offline,
+                shares,
                 vcpus: None,
                 mem_mib: None,
             }))

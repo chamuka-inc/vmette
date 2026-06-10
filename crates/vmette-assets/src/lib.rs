@@ -6,9 +6,10 @@
 //! may always be passed explicitly; when omitted we search, highest
 //! priority first:
 //!
-//!   1. `$VMETTE_ASSETS_DIR/<name>`       — explicit override
-//!   2. `./assets/<name>`                 — running from a repo checkout
-//!   3. `<install prefix>/assets/<name>`  — sibling of the binary's `bin/`
+//!   1. `$VMETTE_ASSETS_DIR/<guest-arch>/<name>` — explicit override
+//!   2. `./assets/<guest-arch>/<name>`           — running from a repo checkout
+//!   3. `<install prefix>/assets/<guest-arch>/<name>` — installed layout
+//!   4. the same directories without `<guest-arch>` — legacy flat layout
 //!
 //! The release tarball ships `vmlinuz-virt` and `initramfs-vmette` under
 //! `<prefix>/assets`, so a `curl | install.sh` user boots without flags.
@@ -23,7 +24,7 @@
 //! this crate and the daemon takes a concrete `image` in its request (like
 //! kernel/initramfs).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Canonical filename of the locally built desktop rootfs export. Produced by
 /// `make desktop-image` (`scripts/build-desktop-image.sh --export`) from the
@@ -46,6 +47,23 @@ pub const DESKTOP_IMAGE_ENV: &str = "VMETTE_DESKTOP_IMAGE";
 /// published to GHCR by CI on every release tag, so it is the zero-setup default
 /// for installed users; a locally built asset (above) takes precedence for devs.
 pub const DEFAULT_DESKTOP_IMAGE: &str = "ghcr.io/chamuka-inc/vmette-desktop:latest";
+
+/// Architecture name used by Alpine's release directories and by vmette's
+/// per-guest-arch asset layout under `assets/`.
+pub fn guest_arch() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        std::env::consts::ARCH
+    }
+}
 
 /// Directories that may hold the boot assets, highest priority first.
 pub fn asset_dirs() -> Vec<PathBuf> {
@@ -70,14 +88,24 @@ pub fn asset_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+fn asset_candidates(base: &Path, name: &str) -> [PathBuf; 2] {
+    [base.join(guest_arch()).join(name), base.join(name)]
+}
+
+/// Probe [`asset_dirs`] for `name`, returning every path that would be checked.
+/// Per-arch candidates are listed before legacy flat candidates for each base.
+pub fn candidate_paths(name: &str) -> Vec<PathBuf> {
+    asset_dirs()
+        .into_iter()
+        .flat_map(|base| asset_candidates(&base, name))
+        .collect()
+}
+
 /// Probe [`asset_dirs`] for `name`, returning the first match. Non-erroring
 /// sibling of [`require_asset`]: used where a missing asset is a soft fallback
 /// (e.g. the optional local desktop rootfs) rather than a hard failure.
 pub fn find(name: &str) -> Option<PathBuf> {
-    asset_dirs()
-        .into_iter()
-        .map(|d| d.join(name))
-        .find(|p| p.exists())
+    candidate_paths(name).into_iter().find(|p| p.exists())
 }
 
 /// Root of vmette's on-disk cache (`~/Library/Caches/vmette`): resolved
@@ -133,9 +161,9 @@ pub fn require_asset(explicit: Option<PathBuf>, name: &str) -> Result<PathBuf, S
     if let Some(found) = find(name) {
         return Ok(found);
     }
-    let searched = asset_dirs()
+    let searched = candidate_paths(name)
         .into_iter()
-        .map(|d| format!("    {}", d.join(name).display()))
+        .map(|p| format!("    {}", p.display()))
         .collect::<Vec<_>>()
         .join("\n");
     Err(format!(

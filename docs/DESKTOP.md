@@ -69,10 +69,10 @@ sessions left untouched for longer than the idle TTL (30 min).
    reflects your source rather than the published `:latest`:
 
    ```sh
-   make desktop-image       # build images/vmette-desktop/ → assets/vmette-desktop-rootfs.tar
+  make desktop-image       # build images/vmette-desktop/ → assets/<arch>/vmette-desktop-rootfs.tar
    ```
 
-   The export lands at `assets/vmette-desktop-rootfs.tar`, which both clients
+  The export lands at `assets/<arch>/vmette-desktop-rootfs.tar`, which both clients
    discover the same way they discover `vmlinuz-virt` / `initramfs-vmette`
    (`$VMETTE_ASSETS_DIR`, `./assets`, `<install prefix>/assets`) and which
    **takes precedence** over the registry — no env var, no manual `docker
@@ -83,7 +83,7 @@ sessions left untouched for longer than the idle TTL (30 min).
 
    1. explicit `--image REF` (CLI) / `image` arg (MCP) — wins
    2. `$VMETTE_DESKTOP_IMAGE` (any rootfs spec, e.g. a `tar+file://` or OCI ref)
-   3. discovered `assets/vmette-desktop-rootfs.tar` → `tar+file://…`
+  3. discovered `assets/<arch>/vmette-desktop-rootfs.tar` → `tar+file://…`
    4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — public registry image (the
       zero-setup default when no local asset is present)
 
@@ -93,9 +93,10 @@ sessions left untouched for longer than the idle TTL (30 min).
 
    **Docker: needed to *build*, not to *run*.** vmette itself never shells out to
    Docker — its OCI provider is a self-contained registry client, which is why
-   tier 4 works out of the box on a machine without Docker. `make desktop-image`
-   uses Docker only to *build* the rootfs locally (the rootfs is a Dockerfile;
-   x86_64-only via `--platform linux/amd64`), for tiers 1–3.
+  tier 4 works out of the box on a machine without Docker. `make desktop-image`
+  uses Docker only to *build* the rootfs locally. The default Docker platform
+  matches the guest architecture (`linux/arm64` on Apple Silicon,
+  `linux/amd64` on Intel), and `--platform` can override it.
 
    To push the image to a registry instead (a deliberate, separate step):
 
@@ -127,6 +128,9 @@ open shot.png                                # confirm a rendered desktop
 vmette desktop exec "$SID" 'xterm &'         # launch an app
 vmette desktop screenshot "$SID" --out shot2.png
 
+vmette desktop navigate "$SID" https://example.com   # open a URL (no shell)
+vmette desktop exec-capture "$SID" 'cat /etc/os-release'   # run a command, print its output
+
 vmette desktop move  "$SID" 640 400
 vmette desktop click "$SID" 640 400
 vmette desktop type  "$SID" 'echo hello'
@@ -138,8 +142,14 @@ vmette desktop stop "$SID"                   # tear it down
 ```
 
 `start` options: `--image REF`, `--size WxH`, `--net`, `--offline`,
-`--kernel PATH`, `--initramfs PATH` (kernel/initramfs default to
-`assets/vmlinuz-virt` and `assets/initramfs-vmette` when run from the repo).
+`--ca-certs DIR`, `--kernel PATH`, `--initramfs PATH` (kernel/initramfs default to
+`assets/<arch>/vmlinuz-virt` and `assets/<arch>/initramfs-vmette` when run from the repo).
+
+`--ca-certs DIR` mounts a host directory of `.crt` / `.pem` enterprise CA
+certificates at `/mnt/certs`. At desktop boot the image installs them into
+Debian's trust store and writes Chromium's managed `CACertificates` policy, so
+browser automation works behind TLS-inspecting proxies without
+`--ignore-certificate-errors`.
 
 Global: `--socket PATH` overrides the daemon socket (default
 `~/Library/Caches/vmette/vmette.sock`).
@@ -152,7 +162,7 @@ to be running; the MCP server connects to its socket. Override the socket with
 
 | Tool | Input | Returns |
 |------|-------|---------|
-| `desktop_start` | `image?`, `size?`, `network?` | session id (text) |
+| `desktop_start` | `image?`, `size?`, `network?`, `ca_certs?` | session id (text) |
 | `desktop_screenshot` | `session_id` | **PNG image content block** |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | **PNG image content block** (once the screen stops changing) |
 | `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture **plus a PNG image content block** of the fresh frame |
@@ -165,11 +175,13 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the current pointer position) |
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
-| `desktop_get_clipboard` | `session_id` | the clipboard text, exact (empty if unset) |
+| `desktop_get_clipboard` | `session_id` | the clipboard text, exact (empty if unset — click the content to focus it before `ctrl+a`/`ctrl+c`, or the copy grabs nothing) |
 | `desktop_set_clipboard` | `session_id`, `text` | status text — owns the `CLIPBOARD` + `PRIMARY` selections |
 | `desktop_paste` | `session_id`, `text` | status text — set the clipboard, then Ctrl+V |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status text |
 | `desktop_exec` | `session_id`, `command` | status text (fire-and-forget) |
+| `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` | the command's combined stdout/stderr + exit code (runs to completion) |
+| `desktop_navigate` | `session_id`, `url` | status text — opens `url` in the browser with no shell and no synthetic keystrokes |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | **PNG image content block** (the app's first painted frame) |
 | `desktop_stop` | `session_id` | status text |
 
@@ -194,6 +206,23 @@ lives in the **desktop image**, not in this tool — see below — so a bare
 `chromium <url>` renders. Network-dependent apps only reach the network when the
 session was started with `network=true`.
 
+**Navigating a browser: `desktop_navigate`.** Rather than focusing the address
+bar and typing (which races omnibox autocomplete and focus), `desktop_navigate`
+hands the URL straight to the browser's launcher with **no shell and no
+synthetic keystrokes**, so the URL is never word-split or interpreted. It is
+fire-and-forget — it returns once navigation starts, so follow it with
+`desktop_screenshot_when_settled` to wait for the page to paint. The desktop
+image ships a browser-agnostic `vmette-open` launcher, so a custom image can
+swap browsers without touching the agent.
+
+**Reading a command's output: `desktop_exec_capture`.** Unlike the
+fire-and-forget `desktop_exec`, this runs a short command to completion and
+returns its combined stdout/stderr plus exit code — for reading a file or
+probing state inside a desktop session without OCR'ing a screenshot. The
+in-guest agent is single-threaded, so it blocks other desktop actions until the
+command returns or hits its (bounded) timeout; keep it to short, terminating
+commands and use `desktop_exec` / `desktop_launch` to start GUI apps.
+
 ## Protocol
 
 ### Daemon (UNIX socket, line-delimited JSON)
@@ -204,9 +233,10 @@ One request object per connection; one reply object back.
 // → boot a session
 { "kind": "desktop_start",
   "kernel": "/abs/vmlinuz-virt", "initramfs": "/abs/initramfs-vmette",
-  "image": "tar+file:///abs/assets/vmette-desktop-rootfs.tar", // required; client-resolved
+  "image": "tar+file:///abs/assets/aarch64/vmette-desktop-rootfs.tar", // required; client-resolved
   "size": "1280x800",                                          // optional
-  "net": false, "offline": false }
+  "net": false, "offline": false,
+  "shares": [{"tag":"certs", "path":"/abs/company-cas"}] } // optional
 // ← { "kind": "session", "session_id": "a1b2c3..." }
 
 // → one action
@@ -307,7 +337,7 @@ Properties:
 - **Memory:** each session is a live VM holding a browser; budget 1–2 GB RAM
   and ≥2 vCPUs per session. The daemon caps concurrent sessions.
 - **Idle eviction:** sessions untouched for 30 minutes are force-stopped.
-- **Arch:** the desktop image and agent are x86_64-only, matching vmette's
-  guest assets.
+- **Arch:** the desktop image and agent must match vmette's guest assets
+  (`aarch64` on Apple Silicon, `x86_64` on Intel).
 - **Live view is loopback-only and ~5 fps** (see [Live view](#live-view-watch--drive-the-desktop)):
   enough to watch and drive the agent, not a video feed.

@@ -277,6 +277,8 @@ look at. Full reference, protocol, and image build in
 | `desktop_paste` | `session_id`, `text` | status — set the clipboard then Ctrl+V; fast, lossless input vs `desktop_type` |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
 | `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status |
+| `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
+| `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | note + PNG of the app's first settled frame |
 | `desktop_stop` | `session_id` | status |
 
@@ -316,11 +318,24 @@ surprises:
   write it with `desktop_exec` (e.g. a here-doc) rather than typing it.
 - **`desktop_exec` is fire-and-forget.** It backgrounds a command and returns
   immediately — it does **not** capture stdout/stderr or report an exit code, so
-  you cannot use it to verify a result. To check a command's output inside a
-  desktop session, redirect it to a guest file (`mycmd > /tmp/out 2>&1`) and
-  surface that file visually (e.g. `desktop_launch "xterm -hold -e cat /tmp/out"`),
-  or run the command on the one-shot path (`execute` / `workspace_run`), which
-  *does* return exit code + stdout + stderr.
+  you cannot use it to verify a result. To read a command's output inside a
+  desktop session, use **`desktop_exec_capture`**, which runs a short command to
+  completion and returns its combined stdout/stderr plus exit code (the in-guest
+  agent is single-threaded, so keep it short — it blocks other desktop actions
+  until it returns or times out). For launching a GUI app, stay with
+  `desktop_exec` / `desktop_launch`. Commands on the one-shot path (`execute` /
+  `workspace_run`) also return exit code + stdout + stderr.
+- **Navigate a browser with `desktop_navigate`, not keystrokes.** It hands the
+  URL straight to the browser with no shell and no synthetic typing — no omnibox
+  focus races, no autocomplete surprises. It returns once navigation starts, so
+  follow it with `desktop_screenshot_when_settled` to wait for the page to paint.
+  The session must have been started with `network=true`.
+- **Copying text out needs the document focused first.** `desktop_get_clipboard`
+  reads exactly what `ctrl+c` placed on the clipboard — but `ctrl+a`/`ctrl+c` go
+  to whatever has keyboard focus, and right after a page loads that is usually
+  the toolbar/address bar, not the document, so the copy grabs nothing and you
+  read back empty. `desktop_click` a point inside the content first to focus it,
+  *then* `desktop_key 'ctrl+a'`, `desktop_key 'ctrl+c'`, and `desktop_get_clipboard`.
 - **Settle ignores sub-tile pixel noise.** `desktop_what_changed` and the
   settle logic compare in tiles, so a tiny visual change — a single counter
   digit ticking, a small checkmark appearing — can read as "nothing changed."

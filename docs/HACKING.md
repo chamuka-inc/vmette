@@ -24,7 +24,7 @@ make test                   # cargo tests + end-to-end VM smoke
 
 `make run 'echo hi'` runs a one-shot guest with sensible defaults.
 `make desktop-image` exports the computer-use rootfs to
-`assets/vmette-desktop-rootfs.tar`, which the CLI/MCP auto-discover.
+`assets/<arch>/vmette-desktop-rootfs.tar`, which the CLI/MCP auto-discover.
 
 ## Cutting a release
 
@@ -123,19 +123,17 @@ initramfs, swaps in the apk's module tree, injects
 
 `scripts/build-vsock-send.sh` cross-compiles `guest/vsock-send.c` and
 `guest/vsock-runner.c` statically with musl, drops them at
-`assets/alpine-rootfs/usr/local/bin/`.
+`assets/<arch>/alpine-rootfs/usr/local/bin/`.
 
-## arm64 guest assets (unimplemented)
+## Guest architectures
 
-Path forward (untested):
+The asset pipeline follows the host architecture by default: Apple Silicon maps
+to Alpine `aarch64`, Intel maps to `x86_64`. Override with `ARCH=x86_64` or
+`ARCH=aarch64` when you need to build a different guest set.
 
-1. Set `ARCH=aarch64` and download `linux-virt-aarch64.apk` from the
-   alpine mirror. URL pattern in `scripts/fetch-assets.sh`.
-2. Install `aarch64-linux-musl-gcc` via musl-cross (separate brew
-   formula).
-3. Lay out per-arch assets under `assets/{x86_64,aarch64}/`.
-4. Add runtime arch detection in vmette to pick the matching
-   `vmlinuz` / `initramfs` / `alpine-rootfs/usr/local/bin/`.
+Per-arch assets live under `assets/{x86_64,aarch64}/`. Runtime discovery checks
+the matching per-arch directory first, then the old flat `assets/` layout for
+compatibility.
 
 ## Common issues
 

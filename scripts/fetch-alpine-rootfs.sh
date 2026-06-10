@@ -6,11 +6,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="$HERE/assets/alpine-rootfs"
+source "$HERE/scripts/guest-arch.sh"
 VER="${ALPINE_VER:-3.20.3}"
-SERIES="${ALPINE_VER%.*}"
+SERIES="${VER%.*}"
 SERIES="${SERIES:-3.20}"
-ARCH="${ARCH:-x86_64}"
+ARCH="$(vmette_guest_arch)"
+DEST="${ROOTFS_DIR:-$HERE/assets/$ARCH/alpine-rootfs}"
 URL="https://dl-cdn.alpinelinux.org/alpine/v${SERIES}/releases/${ARCH}/alpine-minirootfs-${VER}-${ARCH}.tar.gz"
 
 # Idempotency guard. /bin/sh in the minirootfs is an *absolute* symlink to

@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Settle-gated screenshots from the CLI: `vmette desktop screenshot` gains
+  `--settle`, `--timeout-ms N`, and `--stable-hold-ms N`, which wait for the
+  framebuffer to quiesce before capturing (either tuning flag implies
+  `--settle`). Exposes the daemon's existing settle capability that previously
+  only the MCP `desktop_screenshot_when_settled` tool could reach.
+- Deterministic, shell-free browser navigation for desktop sessions: a new
+  `navigate` computer-use action opens a URL by handing it straight to the
+  guest's browser launcher (no synthetic keystrokes, no shell — the URL is
+  never word-split or interpreted). Exposed as `vmette desktop navigate
+  SESSION_ID URL` and the MCP `desktop_navigate` tool. The desktop image ships
+  a browser-agnostic `vmette-open` launcher.
+- Synchronous in-guest command execution that returns output: a new
+  `exec_capture` computer-use action runs a short command to completion and
+  returns its combined stdout/stderr plus exit code (the desktop wire
+  protocol's `ActionReply` gains an `exit_code` field). Exposed as `vmette
+  desktop exec-capture SESSION_ID COMMAND [--timeout-ms N]` and the MCP
+  `desktop_exec_capture` tool. Intended for short, terminating commands;
+  bounded by a guest-side timeout.
+- Desktop CA-certificate injection for browser automation behind TLS-inspecting
+  proxies: `vmette desktop start --ca-certs DIR`, MCP `desktop_start.ca_certs`,
+  and the desktop wire protocol's optional `shares` field can mount `.crt` /
+  `.pem` certificates at `/mnt/certs`; the desktop image installs them into
+  Debian trust and Chromium's managed `CACertificates` policy at boot.
+
+### Fixed
+
+- Desktop `get_clipboard` no longer returns a spuriously-empty result on the
+  first read right after a copy. A GUI app asserts `CLIPBOARD` ownership
+  asynchronously, so a read issued immediately after a Ctrl+C could race ahead
+  of that and see "no owner". The guest now retries the selection conversion
+  across that ownership handoff (bounded ~1.5s) instead of giving up on the
+  first "no owner" reply, so `vmette desktop get-clipboard`, the
+  `desktop_get_clipboard` MCP tool, and the `get_clipboard` action read back the
+  just-copied text without a manual wait. A genuinely empty clipboard still
+  returns empty (after the bounded wait).
+- Desktop CA injection now imports **every** certificate in a mounted bundle.
+  Previously a multi-certificate `.crt`/`.pem` (a combined bundle or a full
+  chain) imported only its first certificate, so an enterprise root behind a
+  leaf could silently be skipped.
+- Apple Silicon guest support: boot assets, Alpine rootfs, desktop image exports,
+  guest helper binaries, and OCI image platform resolution now use the host guest
+  architecture (`aarch64` on Apple Silicon, `x86_64` on Intel) with a per-arch
+  `assets/<arch>/` layout and legacy flat-asset fallback.
+
 ## [0.8.0] — 2026-06-03
 
 ### Added

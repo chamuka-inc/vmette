@@ -17,7 +17,7 @@ jobs:
   build:
     name: build universal + dist
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -26,15 +26,17 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
-      # Prebuilt macOS-hosted x86_64-linux-musl toolchain for the guest helpers.
+      # Prebuilt macOS-hosted Linux musl toolchains for the guest helpers.
       # FiloSottile/musl-cross compiles GCC from source (~30 min, blows the job
       # timeout); messense ships a prebuilt tarball that installs in seconds.
-      # GUEST_CC (consumed only by build-vsock-send.sh) keeps this cross
-      # compiler out of the host/cargo build, which must stay on clang.
-      - name: install x86_64-linux-musl cross toolchain (prebuilt)
+      # The release tarball is universal and includes both x86_64 and aarch64
+      # guest assets, so both helper toolchains must be available.
+      - name: install Linux musl cross toolchains (prebuilt)
         run: |
           brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl
+          brew install messense/macos-cross-toolchains/aarch64-unknown-linux-musl
           echo "$(brew --prefix x86_64-unknown-linux-musl)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix aarch64-unknown-linux-musl)/bin" >> "$GITHUB_PATH"
 
       - name: cargo cache
         uses: Swatinem/rust-cache@v2
@@ -43,8 +45,6 @@ jobs:
         run: make universal
 
       - name: pack dist tarball
-        env:
-          GUEST_CC: x86_64-unknown-linux-musl-gcc
         run: make dist
 
       - name: upload artifacts

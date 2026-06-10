@@ -46,6 +46,27 @@ pub enum Action {
     Wait { ms: u64 },
     /// Launch a shell command in the desktop session (e.g. `"chromium &"`).
     Exec { command: String },
+    /// Run `command` (via `/bin/sh -c`) to completion **synchronously**,
+    /// returning its combined stdout/stderr as the response **payload** (UTF-8)
+    /// and its exit status in the header's `exit_code` (`None` ⇒ it did not
+    /// exit cleanly — killed by the `timeout_ms` guard or a signal). Stdin is
+    /// `/dev/null`. The in-guest agent is single-threaded, so a long command
+    /// blocks every other action until it returns — intended for short,
+    /// terminating commands (read a file, run a probe), not GUI apps (use
+    /// [`Action::Exec`]/[`Action::Navigate`] for those). `timeout_ms` defaults
+    /// guest-side and is clamped below the host vsock read timeout.
+    ExecCapture {
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    /// Open `url` in the desktop's browser. The guest hands the URL to a
+    /// fixed launcher (`vmette-open`) **without a shell**, so the URL is never
+    /// word-split or interpreted — a deterministic, injection-safe alternative
+    /// to driving the address bar with synthetic keystrokes. Fire-and-forget:
+    /// returns a bare ok once the launcher is spawned, not when the page loads
+    /// (pair with a settle screenshot to wait for paint).
+    Navigate { url: String },
     /// Replace the X clipboard (the `CLIPBOARD` and `PRIMARY` selections) with
     /// `text`, so a subsequent paste (Ctrl+V in GUI apps, Shift+Insert /
     /// middle-click in terminals) inserts it. Pairs with [`Action::Key`].
@@ -68,8 +89,10 @@ pub enum ScrollDirection {
 
 /// JSON header of a response frame (guest → host). `ok` reports success;
 /// on failure `error` carries a message and no payload follows. `x`/`y`
-/// are populated by [`Action::CursorPosition`]. `payload_len` is the count
-/// of binary bytes (e.g. PNG) following this header in the frame.
+/// are populated by [`Action::CursorPosition`]. `exit_code` is populated by
+/// [`Action::ExecCapture`] (`None` ⇒ the command did not exit cleanly, e.g.
+/// it timed out). `payload_len` is the count of binary bytes (e.g. PNG)
+/// following this header in the frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResponseHeader {
     pub ok: bool,
@@ -79,6 +102,8 @@ pub struct ResponseHeader {
     pub x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
     #[serde(default)]
     pub payload_len: u32,
 }
@@ -91,6 +116,7 @@ impl ResponseHeader {
             error: None,
             x: None,
             y: None,
+            exit_code: None,
             payload_len: 0,
         }
     }
@@ -102,6 +128,7 @@ impl ResponseHeader {
             error: Some(msg.into()),
             x: None,
             y: None,
+            exit_code: None,
             payload_len: 0,
         }
     }
@@ -165,6 +192,17 @@ mod tests {
             Action::Exec {
                 command: "chromium &".into(),
             },
+            Action::Navigate {
+                url: "https://example.com/a?b=c&d=e".into(),
+            },
+            Action::ExecCapture {
+                command: "cat /etc/os-release".into(),
+                timeout_ms: Some(5000),
+            },
+            Action::ExecCapture {
+                command: "ls".into(),
+                timeout_ms: None,
+            },
             Action::SetClipboard {
                 text: "clip".into(),
             },
@@ -184,6 +222,42 @@ mod tests {
     }
 
     #[test]
+    fn exec_capture_serializes_timeout_when_set() {
+        let a = Action::ExecCapture {
+            command: "ls".into(),
+            timeout_ms: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            r#"{"action":"exec_capture","command":"ls"}"#
+        );
+        let a = Action::ExecCapture {
+            command: "ls".into(),
+            timeout_ms: Some(2000),
+        };
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            r#"{"action":"exec_capture","command":"ls","timeout_ms":2000}"#
+        );
+    }
+
+    #[test]
+    fn response_header_carries_exit_code() {
+        let h = ResponseHeader {
+            ok: true,
+            error: None,
+            x: None,
+            y: None,
+            exit_code: Some(0),
+            payload_len: 12,
+        };
+        let j = serde_json::to_string(&h).unwrap();
+        assert!(j.contains(r#""exit_code":0"#));
+        let back: ResponseHeader = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, h);
+    }
+
+    #[test]
     fn response_header_err_carries_message() {
         let h = ResponseHeader::err("boom");
         let j = serde_json::to_string(&h).unwrap();
@@ -200,6 +274,7 @@ mod tests {
             error: None,
             x: Some(640),
             y: Some(400),
+            exit_code: None,
             payload_len: 0,
         };
         let j = serde_json::to_string(&h).unwrap();

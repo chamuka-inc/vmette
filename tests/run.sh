@@ -6,14 +6,15 @@
 # Usage:  bash tests/run.sh
 #
 # Prereqs (auto-bootstrapped if missing):
-#   * assets/vmlinuz-virt + assets/initramfs-vmette + assets/alpine-rootfs
+#   * assets/<arch>/vmlinuz-virt + initramfs-vmette + alpine-rootfs
 #   * /usr/local/bin/vsock-{send,runner} in the rootfs
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$HERE/target/release/vmette"
-ASSETS="$HERE/assets"
+source "$HERE/scripts/guest-arch.sh"
+ASSETS="$(vmette_guest_assets_dir "$HERE")"
 ROOTFS="$ASSETS/alpine-rootfs"
 
 # Bootstrap prereqs
@@ -185,7 +186,7 @@ run "--scratch+--rootfs-ro rejected" 2 --rootfs-ro --scratch 1G -- 'true'
 # --rootfs SPEC dispatch: DirProvider claims path-like specs; the bare
 # alpine dir is already covered by `run` above, so test the relative
 # form here to assert path normalisation works.
-run_rootfs "DirProvider on relative path" 0 "./assets/alpine-rootfs" -- 'true'
+run_rootfs "DirProvider on relative path" 0 "./assets/$(vmette_guest_arch)/alpine-rootfs" -- 'true'
 
 # Discovery sub-command: should list dir/tar/oci providers.
 printf "  %-40s " "providers subcommand lists all three"
@@ -243,7 +244,7 @@ else
 fi
 rm -f "$log"
 
-# --rootfs assets/alpine-rootfs (no leading ./) is a real local directory, so
+# --rootfs assets/<arch>/alpine-rootfs (no leading ./) is a real local directory, so
 # DirProvider must claim it (is_dir) and boot it — NOT fall through to the OCI
 # catch-all (which would treat it as a Docker repo and 401). Run from the repo
 # root so the bare-relative path resolves.
@@ -252,7 +253,7 @@ log=$(mktemp)
 ( cd "$HERE" && "$BIN" \
     --kernel    "$ASSETS/vmlinuz-virt" \
     --initramfs "$ASSETS/initramfs-vmette" \
-    --rootfs    assets/alpine-rootfs \
+    --rootfs    "assets/$(vmette_guest_arch)/alpine-rootfs" \
     --exec      'true' </dev/null >"$log" 2>&1 )
 got=$?
 if [[ "$got" == "0" ]] && ! grep -qiE 'index.docker.io|not authorized|OCI' "$log"; then

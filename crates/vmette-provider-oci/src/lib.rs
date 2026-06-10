@@ -33,15 +33,33 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use oci_client::{
-    client::{linux_amd64_resolver, ClientConfig, ImageData},
+    client::{ClientConfig, ImageData},
+    manifest::ImageIndexEntry,
     secrets::RegistryAuth,
     Client, Reference,
 };
+use oci_spec::image::{Arch, Os};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 use vmette::provider::{
     inject_guest_helpers, Context, ProviderError, RootfsArtifact, RootfsProvider,
 };
+
+fn linux_guest_resolver(manifests: &[ImageIndexEntry]) -> Option<String> {
+    #[cfg(target_arch = "aarch64")]
+    let guest_arch = Arch::ARM64;
+    #[cfg(not(target_arch = "aarch64"))]
+    let guest_arch = Arch::Amd64;
+
+    manifests
+        .iter()
+        .find(|entry| {
+            entry.platform.as_ref().is_some_and(|platform| {
+                platform.os == Os::Linux && platform.architecture == guest_arch
+            })
+        })
+        .map(|entry| entry.digest.clone())
+}
 
 /// Pull-time policy. Controls how aggressively we revalidate the cached
 /// manifest digest against the registry.
@@ -530,11 +548,10 @@ pub async fn pull_with_options(
 
     info!(image = %image_ref, "resolving image");
 
-    // Pick the linux/amd64 variant from multi-arch manifest lists. The
-    // guest is always x86_64 Linux in v0.1; revisit when arm64 guest
-    // assets land.
+    // Pick the Linux variant matching the vmette guest architecture from
+    // multi-arch manifest lists.
     let cfg = ClientConfig {
-        platform_resolver: Some(Box::new(linux_amd64_resolver)),
+        platform_resolver: Some(Box::new(linux_guest_resolver)),
         ..ClientConfig::default()
     };
     let client = Client::new(cfg);

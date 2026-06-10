@@ -19,6 +19,7 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 [dependencies]
 vmette     = { workspace = true }
 oci-client = { version = "0.17", default-features = false, features = ["rustls-tls"] }
+oci-spec   = "0.9"
 tokio      = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros"] }
 tar        = "0.4"
 flate2     = "1"

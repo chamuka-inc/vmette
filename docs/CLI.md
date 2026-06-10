@@ -20,15 +20,16 @@ vmette --version                                # print version (also -V)
 ## Boot assets
 
 `--kernel` and `--initramfs` are optional and auto-discovered. When
-omitted, vmette searches, in order: `$VMETTE_ASSETS_DIR`, `./assets`
-(repo checkout), and `<install-prefix>/assets` (the `assets` dir that is
-a sibling of the binary's `bin/`). The release tarball ships both under
-`<prefix>/assets`, so a `curl | install.sh` install boots with no asset
-flags.
+omitted, vmette searches, in order: `$VMETTE_ASSETS_DIR/<arch>`,
+`./assets/<arch>` (repo checkout), and `<install-prefix>/assets/<arch>`
+(the `assets` dir that is a sibling of the binary's `bin/`). It also checks
+the same locations without `<arch>` for older flat installs. The release
+tarball ships both under `<prefix>/assets/<arch>`, so a `curl | install.sh`
+install boots with no asset flags.
 
 | Flag | Argument | Description |
 |------|----------|-------------|
-| `--kernel` | PATH | bzImage on x86_64; vmlinuz from alpine `linux-virt` apk. Default: discovered `vmlinuz-virt`. |
+| `--kernel` | PATH | vmlinuz from the alpine `linux-virt` apk. Default: discovered `vmlinuz-virt`. |
 | `--initramfs` | PATH | Initramfs built by `scripts/build-initramfs.sh`. Default: discovered `initramfs-vmette`. |
 
 ## Rootfs
@@ -81,7 +82,8 @@ running first. It exists for manual end-to-end testing without an MCP host.
 ```
 vmette desktop start [--image REF] [--size WxH] [--net] [--offline]
                      [--kernel PATH] [--initramfs PATH]   boot a desktop; prints SESSION_ID
-vmette desktop screenshot SESSION_ID --out FILE           capture the framebuffer to a PNG
+vmette desktop screenshot SESSION_ID --out FILE [--settle]   capture the framebuffer to a PNG
+                          [--timeout-ms N] [--stable-hold-ms N]   (--settle waits for the screen to quiesce)
 vmette desktop cursor      SESSION_ID                     print the pointer position
 vmette desktop move        SESSION_ID X Y                 move the pointer
 vmette desktop click       SESSION_ID X Y                 left-click at X Y
@@ -94,6 +96,8 @@ vmette desktop get-clipboard SESSION_ID                  print the clipboard con
 vmette desktop paste       SESSION_ID TEXT               set clipboard then Ctrl+V
 vmette desktop scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)
 vmette desktop exec        SESSION_ID COMMAND             launch a shell command in the guest
+vmette desktop exec-capture SESSION_ID COMMAND [--timeout-ms N]   run a command and print its output
+vmette desktop navigate    SESSION_ID URL                 open URL in the desktop browser (no shell)
 vmette desktop view        SESSION_ID                     open a live VNC view; prints vnc://HOST:PORT
 vmette desktop stop        SESSION_ID                     tear the session down
 ```
@@ -116,7 +120,7 @@ shipped CLI registers four:
 
 | Provider | Claims | Examples |
 |----------|--------|----------|
-| `dir` | absolute paths, `./`, `../`, `~/` | `--rootfs /path/to/rootfs`<br>`--rootfs ./assets/alpine-rootfs`<br>`--rootfs ~/projects/vmette/rootfs` |
+| `dir` | absolute paths, `./`, `../`, `~/` | `--rootfs /path/to/rootfs`<br>`--rootfs ./assets/aarch64/alpine-rootfs`<br>`--rootfs ~/projects/vmette/rootfs` |
 | `squashfs` | `squashfs+http://`, `squashfs+https://`, `squashfs+file://` | `--rootfs squashfs+file:///tmp/base.sqfs`<br>`--rootfs squashfs+https://example.com/base.sqfs` |
 | `tar` | `tar+http://`, `tar+https://`, `tar+file://` | `--rootfs tar+https://example.com/rootfs.tar.gz`<br>`--rootfs tar+file:///tmp/rootfs.tar` |
 | `oci` | `oci://<ref>`, plus any bare image ref (catch-all) | `--rootfs alpine:3.20`<br>`--rootfs python:3.12-alpine`<br>`--rootfs oci://ghcr.io/foo/bar:tag` |
@@ -201,7 +205,7 @@ The guest's exec environment (passed via `/init`) sets:
 vmette --rootfs python:3.12-alpine --exec 'python3 -c "import sys; print(sys.version)"'
 
 # basic with a local rootfs
-vmette --rootfs ./assets/alpine-rootfs --exec 'uname -a; exit 0'
+vmette --rootfs ./assets/$(uname -m | sed 's/arm64/aarch64/')/alpine-rootfs --exec 'uname -a; exit 0'
 
 # offline cache hit (no network at all)
 vmette ... --rootfs alpine:3.20 --offline --exec 'cat /etc/alpine-release'
@@ -217,7 +221,7 @@ VMETTE_OCI_TOKEN=ghp_xxx vmette ... --rootfs oci://ghcr.io/me/private:tag --exec
 
 # extra share + bidirectional file IO
 mkdir -p /tmp/scratch
-vmette ... --rootfs ./assets/alpine-rootfs \
+vmette ... --rootfs ./assets/aarch64/alpine-rootfs \
        --share host=/tmp/scratch --exec 'date > /mnt/host/from-guest.txt'
 
 # pinned vsock port + roundtrip

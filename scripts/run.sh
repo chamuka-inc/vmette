@@ -11,8 +11,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASSETS="$HERE/assets"
-ROOTFS="$HERE/assets/alpine-rootfs"
+source "$HERE/scripts/guest-arch.sh"
+ASSETS="$(vmette_guest_assets_dir "$HERE")"
+ROOTFS="$ASSETS/alpine-rootfs"
 BIN="$HERE/target/release/vmette"
 ENT="$HERE/entitlements.plist"
 

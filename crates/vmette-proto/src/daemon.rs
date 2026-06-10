@@ -197,6 +197,9 @@ pub struct DesktopStart {
     pub net: bool,
     #[serde(default)]
     pub offline: bool,
+    /// Host directories mounted into the desktop VM at `/mnt/<tag>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shares: Vec<ShareMount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vcpus: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -287,6 +290,11 @@ pub struct ActionReply {
     /// UTF-8); absent for every other action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Exit status for `exec_capture` (`None` ⇒ the command did not exit
+    /// cleanly, e.g. it timed out); absent for every other action. The
+    /// command's combined stdout/stderr is returned in `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 /// Reply to `desktop_screenshot_settled`: the captured frame, whether it
@@ -454,6 +462,7 @@ mod tests {
             size: None,
             net: true,
             offline: false,
+            shares: Vec::new(),
             vcpus: None,
             mem_mib: None,
         }))
@@ -484,6 +493,7 @@ mod tests {
             y: None,
             png_base64: None,
             text: None,
+            exit_code: None,
         }))
         .unwrap();
         assert_eq!(j, r#"{"kind":"action_result","ok":true}"#);

@@ -19,9 +19,10 @@ use std::time::Duration;
 use base64::Engine as _;
 use vmette_proto::agent::{Action, ScrollDirection};
 use vmette_proto::daemon::{
-    ActionReply, DesktopAction, DesktopReply, DesktopRequest, DesktopStart, DesktopStop,
-    DesktopView,
+    ActionReply, DesktopAction, DesktopReply, DesktopRequest, DesktopScreenshotSettled,
+    DesktopStart, DesktopStop, DesktopView,
 };
+use vmette_proto::ShareMount;
 
 /// Make sure a `vmetted` is listening on `socket` before we send a request.
 /// If `autostart` (the default socket, not a caller-managed `--socket`) and
@@ -83,9 +84,10 @@ fn desktop_usage() -> ! {
         "vmette desktop <command> [options]   (talks to vmetted; start it first)\n\
          \n\
          commands:\n\
-           start [--image REF] [--size WxH] [--net] [--offline]\n\
+           start [--image REF] [--size WxH] [--net] [--offline] [--ca-certs DIR]\n\
                  [--kernel PATH] [--initramfs PATH]   boot a desktop; prints SESSION_ID\n\
-           screenshot SESSION_ID --out FILE           capture the framebuffer to a PNG\n\
+           screenshot SESSION_ID --out FILE [--settle]   capture the framebuffer to a PNG\n\
+                       [--timeout-ms N] [--stable-hold-ms N]   (--settle waits for the screen to quiesce)\n\
            cursor      SESSION_ID                     print the pointer position\n\
            move        SESSION_ID X Y                 move the pointer\n\
            click       SESSION_ID X Y                 left-click at X Y\n\
@@ -98,6 +100,8 @@ fn desktop_usage() -> ! {
            paste       SESSION_ID TEXT                set clipboard then Ctrl+V\n\
            scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|left|right)\n\
            exec        SESSION_ID COMMAND             launch a shell command in the guest\n\
+           exec-capture SESSION_ID COMMAND [--timeout-ms N]   run a command and print its output\n\
+           navigate    SESSION_ID URL                 open URL in the desktop browser (no shell)\n\
            view        SESSION_ID                     open a live VNC view; prints vnc://HOST:PORT\n\
            stop        SESSION_ID                     tear the session down\n\
          \n\
@@ -264,6 +268,12 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
             let command = pos(&args, 1, "COMMAND");
             action(&socket, &s, Action::Exec { command }).map(|_| None)
         }
+        "exec-capture" => cmd_exec_capture(&socket, &args),
+        "navigate" => {
+            let s = pos(&args, 0, "SESSION_ID");
+            let url = pos(&args, 1, "URL");
+            action(&socket, &s, Action::Navigate { url }).map(|_| None)
+        }
         "view" => cmd_view(&socket, &args),
         "stop" => {
             let s = pos(&args, 0, "SESSION_ID");
@@ -302,6 +312,7 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
     let mut offline = false;
     let mut kernel: Option<PathBuf> = None;
     let mut initramfs: Option<PathBuf> = None;
+    let mut shares: Vec<ShareMount> = Vec::new();
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -312,6 +323,13 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
             "--offline" => offline = true,
             "--kernel" => kernel = it.next().map(PathBuf::from),
             "--initramfs" => initramfs = it.next().map(PathBuf::from),
+            "--ca-certs" => {
+                let path = it.next().map(PathBuf::from).ok_or("--ca-certs needs DIR")?;
+                shares.push(ShareMount {
+                    tag: "certs".to_string(),
+                    path,
+                });
+            }
             other => return Err(format!("unknown start option '{other}'")),
         }
     }
@@ -333,6 +351,7 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
             size,
             net,
             offline,
+            shares,
             vcpus: None,
             mem_mib: None,
         }),
@@ -346,24 +365,109 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
 fn cmd_screenshot(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let mut out: Option<PathBuf> = None;
+    let mut settle = false;
+    let mut timeout_ms: Option<u64> = None;
+    let mut stable_hold_ms: Option<u64> = None;
     let mut it = args[1.min(args.len())..].iter();
     while let Some(a) = it.next() {
-        if a == "--out" {
-            out = it.next().map(PathBuf::from);
+        match a.as_str() {
+            "--out" => out = it.next().map(PathBuf::from),
+            "--settle" => settle = true,
+            "--timeout-ms" => {
+                let v = it.next().ok_or("--timeout-ms needs N")?;
+                timeout_ms = Some(v.parse().map_err(|_| "--timeout-ms must be an integer")?);
+            }
+            "--stable-hold-ms" => {
+                let v = it.next().ok_or("--stable-hold-ms needs N")?;
+                stable_hold_ms = Some(
+                    v.parse()
+                        .map_err(|_| "--stable-hold-ms must be an integer")?,
+                );
+            }
+            other => return Err(format!("unknown screenshot option '{other}'")),
         }
     }
     let out = out.ok_or("screenshot needs --out FILE")?;
-    let reply = action(socket, &session, Action::Screenshot)?;
-    let b64 = reply.png_base64.ok_or("reply had no png_base64")?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| format!("decode png: {e}"))?;
+
+    // Either tuning flag implies --settle; without any of them we take a plain
+    // immediate frame (the original behaviour).
+    let settle = settle || timeout_ms.is_some() || stable_hold_ms.is_some();
+
+    let (bytes, status) = if settle {
+        let reply = call(
+            socket,
+            &DesktopRequest::DesktopScreenshotSettled(DesktopScreenshotSettled {
+                session_id: session,
+                timeout_ms,
+                stable_hold_ms,
+            }),
+        )?;
+        let s = match reply {
+            DesktopReply::Settled(s) => s,
+            other => return Err(format!("unexpected reply to screenshot: {other:?}")),
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(s.png_base64)
+            .map_err(|e| format!("decode png: {e}"))?;
+        let status = if s.settled {
+            " (settled)".to_string()
+        } else {
+            format!(" (timed out; {} region(s) still moving)", s.moving.len())
+        };
+        (bytes, status)
+    } else {
+        let reply = action(socket, &session, Action::Screenshot)?;
+        let b64 = reply.png_base64.ok_or("reply had no png_base64")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("decode png: {e}"))?;
+        (bytes, String::new())
+    };
+
     std::fs::write(&out, &bytes).map_err(|e| format!("write {}: {e}", out.display()))?;
     Ok(Some(format!(
-        "wrote {} ({} bytes)",
+        "wrote {} ({} bytes){}",
         out.display(),
-        bytes.len()
+        bytes.len(),
+        status
     )))
+}
+
+/// Run a command synchronously in the guest and print its combined
+/// stdout/stderr. Exits non-zero if the command did not exit cleanly (exit
+/// status != 0, or no clean exit — e.g. it timed out), so it composes in
+/// shell pipelines.
+fn cmd_exec_capture(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+    let session = pos(args, 0, "SESSION_ID");
+    let command = pos(args, 1, "COMMAND");
+    let mut timeout_ms: Option<u64> = None;
+    let mut it = args[2.min(args.len())..].iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--timeout-ms" => {
+                let v = it.next().ok_or("--timeout-ms needs N")?;
+                timeout_ms = Some(v.parse().map_err(|_| "--timeout-ms must be an integer")?);
+            }
+            other => return Err(format!("unknown exec-capture option '{other}'")),
+        }
+    }
+    let reply = action(
+        socket,
+        &session,
+        Action::ExecCapture {
+            command,
+            timeout_ms,
+        },
+    )?;
+    // Print the captured output verbatim (no trailing newline added).
+    if let Some(text) = reply.text {
+        print!("{text}");
+    }
+    match reply.exit_code {
+        Some(0) => Ok(None),
+        Some(code) => Err(format!("command exited {code}")),
+        None => Err("command did not exit cleanly (timed out or killed)".into()),
+    }
 }
 
 /// Open (or look up) the session's live VNC view and print the `vnc://` URL a

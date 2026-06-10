@@ -6,8 +6,8 @@
 # `vmette.desktop=1` branch chroots in and runs the entrypoint, which starts
 # Xvfb, the WM, then the agent.
 #
-# Build with scripts/build-desktop-image.sh (handles the x86_64 platform
-# pin — current vmette guest assets are x86_64-only).
+# Build with scripts/build-desktop-image.sh (selects linux/arm64 on Apple
+# Silicon and linux/amd64 on Intel; --platform can override it).
 #
 # Two-stage: a builder compiles the agent against libX11/libXtst dev
 # headers; the runtime keeps only the shared libraries, so the shipped image
@@ -45,6 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxfixes3 \
         fonts-dejavu-core \
         ca-certificates \
+        openssl \
+        curl \
         locales \
     && rm -rf /var/lib/apt/lists/*
 
@@ -80,6 +82,12 @@ RUN mkdir -p /etc/chromium.d \
 COPY --from=builder /usr/local/bin/vmette-desktop-agent /usr/local/bin/vmette-desktop-agent
 COPY entrypoint.sh /usr/local/bin/vmette-desktop-entrypoint.sh
 RUN chmod +x /usr/local/bin/vmette-desktop-entrypoint.sh
+
+# Browser launcher used by the agent's `navigate` action (deterministic,
+# shell-free URL open). Browser-agnostic so a custom image can swap browsers
+# without touching the agent.
+COPY vmette-open /usr/local/bin/vmette-open
+RUN chmod +x /usr/local/bin/vmette-open
 
 # The initramfs /init invokes the entrypoint with (HOST_PORT, WxH); this
 # CMD documents the shape but is not used on the vmette boot path.

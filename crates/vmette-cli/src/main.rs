@@ -24,8 +24,8 @@ fn usage() -> ! {
          required:\n\
            --rootfs           SPEC      see `vmette providers` for valid forms\n\
          \n\
-         boot assets (auto-discovered from $VMETTE_ASSETS_DIR, ./assets, or the install prefix):\n\
-           --kernel           PATH      bzImage on x86_64 (default: discovered vmlinuz-virt)\n\
+                 boot assets (auto-discovered from $VMETTE_ASSETS_DIR, ./assets, or the install prefix):\n\
+                     --kernel           PATH      vmlinuz from alpine linux-virt (default: discovered vmlinuz-virt)\n\
            --initramfs        PATH      built by scripts/build-initramfs.sh (default: discovered initramfs-vmette)\n\
          \n\
          rootfs:\n\
@@ -396,23 +396,36 @@ fn parse_args() -> ParsedArgs {
 
 fn guest_helpers_dir() -> Option<PathBuf> {
     // Look for vsock-send / vsock-runner under common locations:
-    // 1. Next to the vmette binary (installed layout, share/vmette/guest)
-    // 2. assets/alpine-rootfs/usr/local/bin (repo layout)
+    // 1. Next to the vmette binary (installed layout, share/vmette/guest/<arch>)
+    // 2. assets/<arch>/alpine-rootfs/usr/local/bin (repo layout)
+    let arch = vmette_assets::guest_arch();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             if let Some(p) = dir.parent() {
-                let candidate = p.join("share/vmette/guest");
-                if candidate.join("vsock-send").exists() {
-                    return Some(candidate);
+                for candidate in [
+                    p.join("share/vmette/guest").join(arch),
+                    p.join("share/vmette/guest"),
+                ] {
+                    if candidate.join("vsock-send").exists() {
+                        return Some(candidate);
+                    }
                 }
             }
         }
     }
     let repo = std::env::current_dir()
         .ok()?
-        .join("assets/alpine-rootfs/usr/local/bin");
+        .join("assets")
+        .join(arch)
+        .join("alpine-rootfs/usr/local/bin");
     if repo.join("vsock-send").exists() {
         return Some(repo);
+    }
+    let legacy_repo = std::env::current_dir()
+        .ok()?
+        .join("assets/alpine-rootfs/usr/local/bin");
+    if legacy_repo.join("vsock-send").exists() {
+        return Some(legacy_repo);
     }
     None
 }
@@ -453,7 +466,7 @@ fn quickstart() -> ExitCode {
             eprintln!(
                 "\n  Boot assets ship in the release tarball under <prefix>/assets, or point\n  \
                  $VMETTE_ASSETS_DIR at a dir holding them. From a source checkout:\n  \
-                 bash scripts/fetch-assets.sh && bash scripts/build-initramfs.sh"
+                  bash scripts/fetch-assets.sh && bash scripts/build-initramfs.sh"
             );
             return ExitCode::from(1);
         }

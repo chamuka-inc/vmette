@@ -213,6 +213,7 @@ case "$1" in
         [ -n "$router" ] && ip route add default via "$router" 2>/dev/null
         : > /etc/resolv.conf
         [ -n "$domain" ] && echo "search $domain" >> /etc/resolv.conf
+        dns="$dns 1.1.1.1 8.8.8.8"
         for n in $dns; do echo "nameserver $n" >> /etc/resolv.conf; done
         ;;
 esac

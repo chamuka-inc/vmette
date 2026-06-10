@@ -5,16 +5,19 @@
 # the modules tree for the apk's (which includes vsock + virtiofs), and
 # injects our /init.
 #
-# The kernel from the apk (assets/vmlinuz-virt after fetch-assets.sh runs)
+# The kernel from the apk (assets/<arch>/vmlinuz-virt after fetch-assets.sh runs)
 # matches the modules tree we install, so modprobe at runtime finds them.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NETBOOT_INITRD="$HERE/assets/initramfs-virt"
-LIBVIRT_DIR="$HERE/assets/linux-virt-extract"
-E2FS_DIR="$HERE/assets/e2fsprogs-extract"
-OUT="$HERE/assets/initramfs-vmette"
+source "$HERE/scripts/guest-arch.sh"
+ARCH="$(vmette_guest_arch)"
+ASSETS="${ASSETS_DIR:-$HERE/assets/$ARCH}"
+NETBOOT_INITRD="$ASSETS/initramfs-virt"
+LIBVIRT_DIR="$ASSETS/linux-virt-extract"
+E2FS_DIR="$ASSETS/e2fsprogs-extract"
+OUT="$ASSETS/initramfs-vmette"
 INIT="$HERE/scripts/custom-init.sh"
 
 [[ -s "$NETBOOT_INITRD" ]] || { echo "✗ $NETBOOT_INITRD missing — run fetch-assets.sh" >&2; exit 1; }

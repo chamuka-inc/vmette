@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context as _, Result};
 use rand::Rng;
 use vmette::provider::Context;
-use vmette::{Action, Config, Session, SessionClient, SessionEnd, StopHandle};
+use vmette::{Action, Config, Session, SessionClient, SessionEnd, ShareMount, StopHandle};
 use vmette_proto::{Rect, ResponseHeader};
 
 use vmette_daemon::decode_png;
@@ -116,6 +116,7 @@ pub struct StartParams {
     pub display_size: Option<(u32, u32)>,
     pub net: bool,
     pub offline: bool,
+    pub shares: Vec<ShareMount>,
     pub vcpus: u8,
     pub mem_mib: u64,
 }
@@ -199,7 +200,7 @@ impl Registry {
                  The default image is published publicly to GHCR, so this usually \
                  means no network / offline mode or a registry error. To run \
                  without pulling, build the rootfs locally with `make desktop-image` \
-                 — it exports to assets/vmette-desktop-rootfs.tar, which the CLI/MCP \
+                 — it exports to assets/<arch>/vmette-desktop-rootfs.tar, which the CLI/MCP \
                  then auto-discover (or pass --image / set $VMETTE_DESKTOP_IMAGE). \
                  See docs/DESKTOP.md.",
                 params.image
@@ -212,6 +213,7 @@ impl Registry {
             cfg.display_size = size;
         }
         cfg.net = params.net;
+        cfg.shares = params.shares;
         cfg.vcpus = params.vcpus;
         cfg.mem_mib = params.mem_mib;
         // Writable share: the entrypoint writes Xvfb/openbox logs under /var.
@@ -616,16 +618,27 @@ fn crop_png(frame: &Frame, rect: Rect) -> Result<Vec<u8>> {
 /// Best-effort location of the static guest helpers (vsock-send/runner) so the
 /// OCI provider can inject them into resolved rootfs trees, mirroring the CLI.
 fn locate_guest_helpers() -> Option<PathBuf> {
+    let arch = vmette_assets::guest_arch();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(share) = exe
             .parent()
             .and_then(|d| d.parent())
             .map(|p| p.join("share/vmette/guest"))
         {
-            if share.join("vsock-send").exists() {
-                return Some(share);
+            for candidate in [share.join(arch), share] {
+                if candidate.join("vsock-send").exists() {
+                    return Some(candidate);
+                }
             }
         }
+    }
+    let repo = std::env::current_dir()
+        .ok()?
+        .join("assets")
+        .join(arch)
+        .join("alpine-rootfs/usr/local/bin");
+    if repo.join("vsock-send").exists() {
+        return Some(repo);
     }
     let repo = std::env::current_dir()
         .ok()?

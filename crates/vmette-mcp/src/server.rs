@@ -25,6 +25,7 @@
 //! JSON-result returns are also possible via the rmcp `Json` wrapper but
 //! plain text is what most agent UIs render sensibly today.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -156,8 +157,8 @@ pub struct WorkspaceDestroyArgs {
 pub struct DesktopStartArgs {
     /// Rootfs spec for the desktop image (OCI ref / tar+file:// / path). When
     /// omitted, resolves to `$VMETTE_DESKTOP_IMAGE`, else a locally built
-    /// `assets/vmette-desktop-rootfs.tar`, else the registry fallback. Must be
-    /// x86_64 and ship the desktop agent.
+    /// `assets/<arch>/vmette-desktop-rootfs.tar`, else the registry fallback.
+    /// Must match the guest architecture and ship the desktop agent.
     pub image: Option<String>,
     /// Display size as "WIDTHxHEIGHT" (default: 1280x800).
     pub size: Option<String>,
@@ -165,6 +166,10 @@ pub struct DesktopStartArgs {
     /// Subject to the server's --allow-network policy.
     #[serde(default)]
     pub network: bool,
+    /// Optional host directory containing enterprise CA certificates (`.crt`
+    /// or `.pem`). Mounted at `/mnt/certs`; the desktop image installs them
+    /// into Debian trust and Chromium's managed CA policy at boot.
+    pub ca_certs: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -214,6 +219,29 @@ pub struct DesktopExecArgs {
     pub session_id: String,
     /// Shell command launched inside the guest, e.g. "xterm &".
     pub command: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopExecCaptureArgs {
+    pub session_id: String,
+    /// Shell command run to completion inside the guest, e.g.
+    /// "cat /etc/os-release" or "ls /mnt". Its combined stdout/stderr is
+    /// returned. Use this for short, terminating commands — NOT to start a
+    /// GUI app (use desktop_launch/desktop_exec for that); a long-running
+    /// command blocks the whole session until it returns or times out.
+    pub command: String,
+    /// Max time to wait for the command to finish, in milliseconds. Defaults
+    /// guest-side (~15s) and is clamped to ~25s; on timeout the command is
+    /// killed and reported as not exiting cleanly.
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopNavigateArgs {
+    pub session_id: String,
+    /// URL (or local file path) to open in the desktop's browser. Passed to
+    /// the launcher without a shell, so it is never word-split or interpreted.
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -515,9 +543,18 @@ impl VmetteServer {
         // offline), independent of whether the guest VM gets network. Tying
         // offline to `net` would make the default (network=false) unable to
         // fetch the baked-in desktop image on first use.
+        let shares = args
+            .ca_certs
+            .map(|path| {
+                vec![ShareMount {
+                    tag: "certs".to_string(),
+                    path,
+                }]
+            })
+            .unwrap_or_default();
         let session_id = self
             .daemon
-            .start(args.image, args.size, net, false)
+            .start(args.image, args.size, net, false, shares)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(session_id)]))
@@ -719,7 +756,7 @@ impl VmetteServer {
     }
 
     #[tool(
-        description = "Read the desktop clipboard and return its exact text. Pair with desktop_key 'ctrl+c' (often after 'ctrl+a') to copy text out of a GUI app verbatim, instead of OCR'ing a screenshot. Empty if the clipboard is unset."
+        description = "Read the desktop clipboard and return its exact text. Pair with desktop_key 'ctrl+c' (often after 'ctrl+a') to copy text out of a GUI app verbatim, instead of OCR'ing a screenshot. IMPORTANT: ctrl+a/ctrl+c go to whatever has keyboard focus — right after a page loads, focus is usually on the toolbar/address bar, not the document, so the copy grabs nothing and this returns empty. Click inside the content first (e.g. desktop_click at a point in the page body) to focus it, THEN ctrl+a, ctrl+c, and read here. Empty if the clipboard is unset."
     )]
     async fn desktop_get_clipboard(
         &self,
@@ -807,6 +844,44 @@ impl VmetteServer {
         )
         .await?;
         Ok(ok_text("launched".to_string()))
+    }
+
+    #[tool(
+        description = "Run a short shell command to completion inside the desktop guest and return its combined stdout/stderr plus exit code. Use this to read a file, inspect state, or run a probe in the desktop session (e.g. command='cat /etc/os-release', 'ls /mnt', 'curl -s http://localhost:8080/health'). NOT for launching GUI apps — use desktop_launch/desktop_exec for those: the in-guest agent is single-threaded, so a long-running command blocks every other desktop action until it finishes or hits timeout_ms. Stdin is /dev/null."
+    )]
+    async fn desktop_exec_capture(
+        &self,
+        Parameters(args): Parameters<DesktopExecCaptureArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reply = self
+            .action(
+                &args.session_id,
+                Action::ExecCapture {
+                    command: args.command,
+                    timeout_ms: args.timeout_ms,
+                },
+            )
+            .await?;
+        let output = reply.text.unwrap_or_default();
+        let status = match reply.exit_code {
+            Some(code) => format!("exit code: {code}"),
+            None => "did not exit cleanly (timed out or killed)".to_string(),
+        };
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{status}\n{output}"
+        ))]))
+    }
+
+    #[tool(
+        description = "Open a URL in the desktop's browser deterministically. Unlike typing into the address bar, this hands the URL straight to the browser with no shell and no synthetic keystrokes — no omnibox focus races, no autocomplete surprises. Fire-and-forget: it returns once the browser is told to navigate, not when the page has loaded, so follow it with desktop_screenshot_when_settled to wait for paint. The session must have been started with network=true for the page to load."
+    )]
+    async fn desktop_navigate(
+        &self,
+        Parameters(args): Parameters<DesktopNavigateArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.action(&args.session_id, Action::Navigate { url: args.url })
+            .await?;
+        Ok(ok_text("navigating".to_string()))
     }
 
     #[tool(

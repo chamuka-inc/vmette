@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish release assets init guest-bin desktop-image run shell test test-desktop test-view clean
+.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-image run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -61,17 +61,25 @@ universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	    target/universal/release/vmette-mcp
 	@lipo -info target/universal/release/vmette target/universal/release/vmetted target/universal/release/vmette-mcp target/universal/release/libvmette.dylib
 
-assets:        ## Download alpine vmlinuz + initramfs + minirootfs
+assets:        ## Download alpine vmlinuz + initramfs + minirootfs for the host guest arch
 	bash scripts/fetch-assets.sh
 	bash scripts/fetch-alpine-rootfs.sh
 
 init: assets   ## Repack initramfs with vmette's custom /init
 	bash scripts/build-initramfs.sh
 
-guest-bin: assets  ## Cross-compile static guest helpers (vsock-send + vsock-runner)
+guest-bin: assets  ## Cross-compile static guest helpers for the host guest arch
 	bash scripts/build-vsock-send.sh
 
-desktop-image: ## Build the desktop rootfs from source → assets/vmette-desktop-rootfs.tar (the local source of truth the CLI/MCP auto-discover)
+guest-assets-all: ## Build boot assets + guest helpers for both x86_64 and aarch64 guests
+	for arch in x86_64 aarch64; do \
+	    ARCH=$$arch bash scripts/fetch-assets.sh; \
+	    ARCH=$$arch bash scripts/fetch-alpine-rootfs.sh; \
+	    ARCH=$$arch bash scripts/build-initramfs.sh; \
+	    ARCH=$$arch bash scripts/build-vsock-send.sh; \
+	done
+
+desktop-image: ## Build the desktop rootfs from source → assets/<arch>/vmette-desktop-rootfs.tar
 	bash scripts/build-desktop-image.sh --export
 
 run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
@@ -93,7 +101,7 @@ test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and dri
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
 
-dist: universal init guest-bin header ## Produce dist/$(DIST_NAME).tar.gz with binaries + lib + header + boot assets + guest helpers + LICENSE
+dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers + LICENSE
 	rm -rf dist
 	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,assets,share/vmette/guest}
 	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/
@@ -101,10 +109,26 @@ dist: universal init guest-bin header ## Produce dist/$(DIST_NAME).tar.gz with b
 	cp target/universal/release/vmette-mcp dist/staging/$(DIST_NAME)/bin/
 	cp target/universal/release/libvmette.dylib dist/staging/$(DIST_NAME)/lib/
 	cp crates/vmette/include/vmette.h      dist/staging/$(DIST_NAME)/include/
-	cp assets/vmlinuz-virt                 dist/staging/$(DIST_NAME)/assets/
-	cp assets/initramfs-vmette             dist/staging/$(DIST_NAME)/assets/
-	cp assets/alpine-rootfs/usr/local/bin/vsock-send   dist/staging/$(DIST_NAME)/share/vmette/guest/
-	cp assets/alpine-rootfs/usr/local/bin/vsock-runner dist/staging/$(DIST_NAME)/share/vmette/guest/
+	for arch in x86_64 aarch64; do \
+	    if [[ -s assets/$$arch/vmlinuz-virt && -s assets/$$arch/initramfs-vmette ]]; then \
+	        mkdir -p dist/staging/$(DIST_NAME)/assets/$$arch; \
+	        cp assets/$$arch/vmlinuz-virt dist/staging/$(DIST_NAME)/assets/$$arch/; \
+	        cp assets/$$arch/initramfs-vmette dist/staging/$(DIST_NAME)/assets/$$arch/; \
+	    fi; \
+	    if [[ -x assets/$$arch/alpine-rootfs/usr/local/bin/vsock-send ]]; then \
+	        mkdir -p dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch; \
+	        cp assets/$$arch/alpine-rootfs/usr/local/bin/vsock-send dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch/; \
+	        cp assets/$$arch/alpine-rootfs/usr/local/bin/vsock-runner dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch/; \
+	    fi; \
+	done
+	if [[ -s assets/vmlinuz-virt && -s assets/initramfs-vmette ]]; then \
+	    cp assets/vmlinuz-virt dist/staging/$(DIST_NAME)/assets/; \
+	    cp assets/initramfs-vmette dist/staging/$(DIST_NAME)/assets/; \
+	fi
+	if [[ -x assets/alpine-rootfs/usr/local/bin/vsock-send ]]; then \
+	    cp assets/alpine-rootfs/usr/local/bin/vsock-send dist/staging/$(DIST_NAME)/share/vmette/guest/; \
+	    cp assets/alpine-rootfs/usr/local/bin/vsock-runner dist/staging/$(DIST_NAME)/share/vmette/guest/; \
+	fi
 	cp entitlements.plist                  dist/staging/$(DIST_NAME)/
 	cp LICENSE                             dist/staging/$(DIST_NAME)/
 	cp README.md                           dist/staging/$(DIST_NAME)/

@@ -8,12 +8,12 @@
 #                                  [--export [PATH]]
 #
 # Notes:
-#   * vmette's guest assets are x86_64-only, so we pin --platform linux/amd64.
-#     On Apple Silicon this needs Docker/qemu emulation (buildx).
+#   * The default platform follows the vmette guest architecture. Override with
+#     --platform to build/push a different variant.
 #   * --push requires you to be logged in to the target registry
 #     (`docker login ghcr.io`). Pushing is a deliberate, user-initiated step.
 #   * --export writes the built rootfs to a tarball (default:
-#     assets/vmette-desktop-rootfs.tar). That is the canonical local source of
+#     assets/<arch>/vmette-desktop-rootfs.tar). That is the canonical local source of
 #     truth: the CLI and vmette-mcp auto-discover it (as `tar+file://…`) ahead
 #     of the registry fallback, so `make desktop-image` is all a dev needs to
 #     run computer-use against the current source. `make desktop-image` wraps
@@ -22,6 +22,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$HERE/scripts/guest-arch.sh"
+ARCH="$(vmette_guest_arch)"
 CTX="$HERE/images/vmette-desktop"
 
 TAG="ghcr.io/chamuka-inc/vmette-desktop:latest"
@@ -30,8 +32,12 @@ EXPORT=""        # set to a path by --export; "" means no export
 # Filename MUST match vmette_assets::DESKTOP_ROOTFS_ASSET (crates/vmette-assets/src/lib.rs):
 # that is how the CLI / vmette-mcp auto-discover this export. Renaming one without
 # the other silently breaks discovery (desktop_start falls back to the registry).
-DEFAULT_EXPORT="$HERE/assets/vmette-desktop-rootfs.tar"
-PLATFORM="linux/amd64"
+DEFAULT_EXPORT="$HERE/assets/$ARCH/vmette-desktop-rootfs.tar"
+case "$ARCH" in
+    x86_64) PLATFORM="linux/amd64" ;;
+    aarch64) PLATFORM="linux/arm64" ;;
+    *) echo "✗ unsupported guest arch: $ARCH" >&2; exit 1 ;;
+esac
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

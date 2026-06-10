@@ -24,7 +24,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASSETS="$HERE/assets"
+source "$HERE/scripts/guest-arch.sh"
+ASSETS="$(vmette_guest_assets_dir "$HERE")"
 KERNEL="$ASSETS/vmlinuz-virt"
 INITRAMFS="$ASSETS/initramfs-vmette"
 IMAGE_TAR="$ASSETS/vmette-desktop-rootfs.tar"
@@ -81,16 +82,39 @@ check() {  # check NAME  (preceding command's $? is the verdict)
 skip() {  # skip NAME WHY  — not a failure; keeps the suite green offline
     printf "  %-46s SKIP (%s)\n" "$1" "$2"; SKIP=$((SKIP+1))
 }
-ghcr_reachable() {  # anonymous pull-scope manifest fetch for the public image
-    local repo="chamuka-inc/vmette-desktop" tok
+ghcr_has_guest_platform() {  # anonymous pull-scope manifest fetch for the public image
+    local repo="chamuka-inc/vmette-desktop" tok manifest arch
+    arch="$(vmette_guest_arch)"
     tok="$(curl -fsS --max-time 10 \
         "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null \
         | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
     [[ -n "$tok" ]] || return 1
-    curl -fsS --max-time 15 -o /dev/null \
+    manifest="$(mktemp "${TMPDIR:-/tmp}/vmette-ghcr-manifest-XXXXXX.json")"
+    curl -fsS --max-time 15 -o "$manifest" \
         -H "Authorization: Bearer $tok" \
-        -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-        "https://ghcr.io/v2/${repo}/manifests/latest"
+        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+        "https://ghcr.io/v2/${repo}/manifests/latest" || { rm -f "$manifest"; return 1; }
+    python3 - "$manifest" "$arch" <<'PY'
+import json
+import sys
+
+path, arch = sys.argv[1:]
+want = {"aarch64": "arm64", "x86_64": "amd64"}.get(arch, arch)
+data = json.load(open(path))
+manifests = data.get("manifests") or []
+if not manifests:
+    # Historical GHCR image was a single linux/amd64 manifest. Treat that as
+    # usable on Intel only; Apple Silicon needs an explicit arm64 variant.
+    sys.exit(0 if want == "amd64" else 1)
+for entry in manifests:
+    platform = entry.get("platform") or {}
+    if platform.get("os") == "linux" and platform.get("architecture") == want:
+        sys.exit(0)
+sys.exit(1)
+PY
+    local ok=$?
+    rm -f "$manifest"
+    return "$ok"
 }
 
 echo
@@ -151,8 +175,8 @@ echo
 echo "--- registry fallback (no local image → ghcr) ---"
 if ! command -v curl >/dev/null 2>&1; then
     skip "ghcr fallback boots" "curl unavailable"
-elif ! ghcr_reachable; then
-    skip "ghcr fallback boots" "ghcr unreachable / offline"
+elif ! ghcr_has_guest_platform; then
+    skip "ghcr fallback boots" "ghcr unreachable/offline or no $(vmette_guest_arch) image published"
 else
     ISO="$(mktemp -d "${TMPDIR:-/tmp}/vmette-iso-XXXXXX")"
     SESSION="$( (cd "$ISO" && env -u VMETTE_ASSETS_DIR -u VMETTE_DESKTOP_IMAGE \

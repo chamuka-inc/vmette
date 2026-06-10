@@ -32,8 +32,12 @@
 #define _GNU_SOURCE
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/wait.h>
+#include <sys/time.h>
 #include <linux/vm_sockets.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -139,6 +143,25 @@ static int send_coords(int fd, int x, int y) {
 static int send_payload(int fd, const unsigned char *payload, size_t plen) {
     char h[64];
     int n = snprintf(h, sizeof(h), "{\"ok\":true,\"payload_len\":%zu}", plen);
+    if (n < 0) return -1;
+    return send_frame(fd, h, (size_t)n, payload, plen);
+}
+
+// Reply for a synchronous exec: `plen` payload bytes (the combined
+// stdout/stderr) follow the header, and the header carries the child's exit
+// code. A negative `exit_code` means the child was killed (e.g. timeout) and
+// is serialized as JSON `null`, which the host reads as "no clean exit".
+static int send_exec_result(int fd, int exit_code,
+                            const unsigned char *payload, size_t plen) {
+    char h[96];
+    char code[16];
+    if (exit_code < 0)
+        snprintf(code, sizeof(code), "null");
+    else
+        snprintf(code, sizeof(code), "%d", exit_code);
+    int n = snprintf(h, sizeof(h),
+                     "{\"ok\":true,\"exit_code\":%s,\"payload_len\":%zu}", code,
+                     plen);
     if (n < 0) return -1;
     return send_frame(fd, h, (size_t)n, payload, plen);
 }
@@ -589,24 +612,38 @@ static int do_get_clipboard(int fd) {
     if (g_clip && XGetSelectionOwner(g_dpy, A_CLIPBOARD) == g_clip_win) {
         return send_payload(fd, (unsigned char *)g_clip, g_clip_len);
     }
-    // Otherwise ask the current owner to convert into our scratch property and
-    // wait for the SelectionNotify, serving any requests that arrive meanwhile.
-    XDeleteProperty(g_dpy, g_clip_win, A_PROP);
-    XConvertSelection(g_dpy, A_CLIPBOARD, A_UTF8, A_PROP, g_clip_win,
-                      CurrentTime);
-    XFlush(g_dpy);
     int xfd = ConnectionNumber(g_dpy);
-    // Bounded so a missing or buggy owner can't hang the agent: block on the X
-    // fd (no busy spin), up to ~2s total.
-    for (int tries = 0; tries < 20; tries++) {
+    // (Re)issue the conversion until an owner answers with data, or until a
+    // deadline. Re-issuing is what makes the *first* read after a Ctrl+C
+    // reliable: a GUI app (e.g. the browser) asserts CLIPBOARD ownership
+    // asynchronously, so a convert fired immediately after the copy keystroke
+    // can race ahead of that and get a "no owner" reply (SelectionNotify with
+    // property == None). Rather than returning a spuriously-empty clipboard, we
+    // retry across that ownership handoff. A genuinely unset clipboard simply
+    // costs this bounded wait before returning empty. Bounded so a missing or
+    // buggy owner can't hang the agent.
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+    int need_convert = 1;
+    for (;;) {
+        if (need_convert) {
+            XDeleteProperty(g_dpy, g_clip_win, A_PROP);
+            XConvertSelection(g_dpy, A_CLIPBOARD, A_UTF8, A_PROP, g_clip_win,
+                              CurrentTime);
+            XFlush(g_dpy);
+            need_convert = 0;
+        }
         while (XPending(g_dpy)) {
             XEvent ev;
             XNextEvent(g_dpy, &ev);
             if (ev.type == SelectionNotify &&
                 ev.xselection.requestor == g_clip_win &&
                 ev.xselection.selection == A_CLIPBOARD) {
-                if (ev.xselection.property == None)
-                    return send_payload(fd, NULL, 0); // empty / no owner
+                if (ev.xselection.property == None) {
+                    // No owner / nothing to convert yet — retry until deadline.
+                    need_convert = 1;
+                    break;
+                }
                 Atom type;
                 int format;
                 unsigned long nitems, after;
@@ -625,14 +662,28 @@ static int do_get_clipboard(int fd) {
             }
             serve_selection(&ev);
         }
-        // Block until the X connection has data or 100ms passes, then re-drain.
-        fd_set r;
-        FD_ZERO(&r);
-        FD_SET(xfd, &r);
-        struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
-        select(xfd + 1, &r, NULL, NULL, &tv);
+        gettimeofday(&now, NULL);
+        long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L +
+                          (now.tv_usec - start.tv_usec) / 1000L;
+        if (elapsed_ms >= 1500) {
+            // Bounded out: an unset/unavailable clipboard is a normal state, so
+            // report it as empty rather than an error.
+            return send_payload(fd, NULL, 0);
+        }
+        if (need_convert) {
+            // Got a "no owner" answer; pause briefly so we don't spin re-issuing
+            // the convert before the copying app can take ownership.
+            usleep(50000); // 50ms
+        } else {
+            // Awaiting the notify from a present-but-slow owner; block on the X
+            // connection (no busy spin) until data arrives or 100ms passes.
+            fd_set r;
+            FD_ZERO(&r);
+            FD_SET(xfd, &r);
+            struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+            select(xfd + 1, &r, NULL, NULL, &tv);
+        }
     }
-    return send_err(fd, "clipboard read timed out");
 }
 
 // ---- request dispatch ---------------------------------------------------
@@ -645,6 +696,119 @@ static void launch_detached(const char *cmd) {
         _exit(127);
     }
     // Parent does not wait; the app runs in the session.
+}
+
+// Spawn `prog` with the single argument `arg`, detached, **without a shell**.
+// Because `arg` is passed as one execlp argv element it is never word-split,
+// glob-expanded, or interpreted — so a hostile URL/path can't inject commands.
+// Used by the `navigate` action to hand a URL to the `vmette-open` launcher.
+static void launch_argv(const char *prog, const char *arg) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        execlp(prog, prog, arg, (char *)NULL);
+        _exit(127);
+    }
+    // Parent does not wait; the app runs in the session.
+}
+
+// Run `cmd` to completion via `/bin/sh -c`, capturing its combined
+// stdout+stderr, and reply with [`send_exec_result`]. Bounded by `timeout_ms`
+// (the agent is single-threaded, so a runaway command would wedge the whole
+// session) — on expiry the child is SIGKILLed and the exit code reported as
+// `null`. Output is capped at EXEC_CAPTURE_MAX_OUTPUT bytes (excess dropped).
+//
+// Intended for short, terminating commands (read a file, run a probe). Do not
+// use it to launch a long-lived GUI app — use `exec`/`navigate` for that.
+#define EXEC_CAPTURE_MAX_OUTPUT (256 * 1024)
+static int do_exec_capture(int fd, const char *cmd, long timeout_ms) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return send_err(fd, "pipe failed");
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return send_err(fd, "fork failed");
+    }
+    if (pid == 0) {
+        // Child: route stdout+stderr into the pipe, detach the controlling
+        // tty, then exec the shell. stdin is closed so a command that reads it
+        // sees EOF rather than blocking forever.
+        setsid();
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            if (devnull > STDIN_FILENO) close(devnull);
+        }
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+
+    // Parent: drain the pipe until EOF (child exit) or the deadline, then reap.
+    close(pipefd[1]);
+    unsigned char *buf = (unsigned char *)malloc(EXEC_CAPTURE_MAX_OUTPUT);
+    if (!buf) {
+        close(pipefd[0]);
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        return send_err(fd, "oom");
+    }
+    size_t len = 0;
+    int killed = 0;
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+    for (;;) {
+        gettimeofday(&now, NULL);
+        long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L +
+                          (now.tv_usec - start.tv_usec) / 1000L;
+        long remaining = timeout_ms - elapsed_ms;
+        if (remaining <= 0) {
+            kill(pid, SIGKILL);
+            killed = 1;
+            break;
+        }
+        fd_set r;
+        FD_ZERO(&r);
+        FD_SET(pipefd[0], &r);
+        struct timeval tv = {.tv_sec = remaining / 1000,
+                             .tv_usec = (remaining % 1000) * 1000};
+        int sel = select(pipefd[0] + 1, &r, NULL, NULL, &tv);
+        if (sel < 0) { if (errno == EINTR) continue; break; }
+        if (sel == 0) { kill(pid, SIGKILL); killed = 1; break; }
+        // Read into the remaining buffer; once full, keep draining into a
+        // scratch byte so the child isn't blocked on a full pipe.
+        if (len < EXEC_CAPTURE_MAX_OUTPUT) {
+            ssize_t got = read(pipefd[0], buf + len, EXEC_CAPTURE_MAX_OUTPUT - len);
+            if (got < 0) { if (errno == EINTR) continue; break; }
+            if (got == 0) break; // EOF: child closed all write ends
+            len += (size_t)got;
+        } else {
+            unsigned char scratch[4096];
+            ssize_t got = read(pipefd[0], scratch, sizeof(scratch));
+            if (got < 0) { if (errno == EINTR) continue; break; }
+            if (got == 0) break;
+        }
+    }
+    close(pipefd[0]);
+
+    int wstatus = 0;
+    waitpid(pid, &wstatus, 0);
+    int exit_code;
+    if (killed) {
+        exit_code = -1; // serialized as null: no clean exit (timed out)
+    } else if (WIFEXITED(wstatus)) {
+        exit_code = WEXITSTATUS(wstatus);
+    } else {
+        exit_code = -1; // killed by a signal: also "no clean exit"
+    }
+
+    int rc = send_exec_result(fd, exit_code, buf, len);
+    free(buf);
+    return rc;
 }
 
 static int handle(int fd, const char *json) {
@@ -718,6 +882,31 @@ static int handle(int fd, const char *json) {
             return send_err(fd, "missing command");
         launch_detached(cmd);
         return send_ok(fd);
+    } else if (!strcmp(action, "navigate")) {
+        // Size the URL buffer to the header; a long URL must not be truncated.
+        size_t cap = strlen(json) + 1;
+        char *url = (char *)malloc(cap);
+        if (!url) return send_err(fd, "oom");
+        if (!json_str(json, "url", url, cap)) {
+            free(url);
+            return send_err(fd, "missing url");
+        }
+        // Hand the URL to the launcher as one argv element — no shell, so it
+        // can't be word-split or used to inject commands.
+        launch_argv("vmette-open", url);
+        free(url);
+        return send_ok(fd);
+    } else if (!strcmp(action, "exec_capture")) {
+        char cmd[4096];
+        if (!json_str(json, "command", cmd, sizeof(cmd)))
+            return send_err(fd, "missing command");
+        long timeout_ms = 0;
+        json_int(json, "timeout_ms", &timeout_ms);
+        // Default and clamp below the host's per-read vsock timeout (30s), or a
+        // long command would trip that before the reply is sent.
+        if (timeout_ms <= 0) timeout_ms = 15000;
+        if (timeout_ms > 25000) timeout_ms = 25000;
+        return do_exec_capture(fd, cmd, timeout_ms);
     } else if (!strcmp(action, "set_clipboard")) {
         // The decoded text can't exceed the header length; size the buffer to
         // it so large pastes aren't truncated by a fixed cap.
