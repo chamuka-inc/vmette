@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-06-10
+
 ### Added
 
 - Settle-gated screenshots from the CLI: `vmette desktop screenshot` gains
