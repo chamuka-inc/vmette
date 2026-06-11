@@ -9,14 +9,13 @@
 //!   1. `$VMETTE_ASSETS_DIR/<guest-arch>/<name>` — explicit override
 //!   2. `./assets/<guest-arch>/<name>`           — running from a repo checkout
 //!   3. `<install prefix>/assets/<guest-arch>/<name>` — installed layout
-//!   4. the same directories without `<guest-arch>` — legacy flat layout
 //!
 //! The release tarball ships `vmlinuz-virt` and `initramfs-vmette` under
 //! `<prefix>/assets`, so a `curl | install.sh` user boots without flags.
 //!
 //! The desktop (Agent) workload needs one more input: the desktop rootfs
 //! image. Unlike the kernel/initramfs it is *provider-resolved* (a `tar+file://`
-//! / OCI spec, not a direct path), so [`default_desktop_image`] returns a spec
+//! / OCI spec, not a direct path), so [`resolve_desktop_image`] returns a spec
 //! string rather than a path — but it is discovered through the *same* search,
 //! so a locally built `vmette-desktop-rootfs.tar` in `assets/` takes precedence
 //! over the published registry image, letting a dev session reflect the current
@@ -47,6 +46,17 @@ pub const DESKTOP_IMAGE_ENV: &str = "VMETTE_DESKTOP_IMAGE";
 /// published to GHCR by CI on every release tag, so it is the zero-setup default
 /// for installed users; a locally built asset (above) takes precedence for devs.
 pub const DEFAULT_DESKTOP_IMAGE: &str = "ghcr.io/chamuka-inc/vmette-desktop:latest";
+
+/// Env var pinning a host directory of CA certificates to trust inside *every*
+/// guest (a TLS-inspecting proxy root, an enterprise CA, …). Overrides the
+/// default location but not an explicit per-call `--ca-certs`. Read client-side
+/// (CLI / `vmette-mcp`), like the desktop-image and asset envs.
+pub const CA_CERTS_ENV: &str = "VMETTE_CA_CERTS";
+
+/// virtio-fs share tag the guest's PID-1 init looks for to install host CA
+/// certificates (mounted at `/mnt/certs`). MUST match the tag handled in
+/// `scripts/custom-init.sh` and the desktop image's entrypoint.
+pub const CA_CERTS_SHARE_TAG: &str = "certs";
 
 /// Architecture name used by Alpine's release directories and by vmette's
 /// per-guest-arch asset layout under `assets/`.
@@ -88,16 +98,16 @@ pub fn asset_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn asset_candidates(base: &Path, name: &str) -> [PathBuf; 2] {
-    [base.join(guest_arch()).join(name), base.join(name)]
+fn asset_candidate(base: &Path, name: &str) -> PathBuf {
+    base.join(guest_arch()).join(name)
 }
 
-/// Probe [`asset_dirs`] for `name`, returning every path that would be checked.
-/// Per-arch candidates are listed before legacy flat candidates for each base.
+/// Probe [`asset_dirs`] for `name`, returning every path that would be checked
+/// (the per-arch `assets/<arch>/<name>` under each search root).
 pub fn candidate_paths(name: &str) -> Vec<PathBuf> {
     asset_dirs()
         .into_iter()
-        .flat_map(|base| asset_candidates(&base, name))
+        .map(|base| asset_candidate(&base, name))
         .collect()
 }
 
@@ -181,7 +191,7 @@ pub fn require_asset(explicit: Option<PathBuf>, name: &str) -> Result<PathBuf, S
 /// Mirrors [`require_asset`]'s "explicit wins" shape but yields a provider spec
 /// string, since the desktop rootfs is provider-resolved rather than a path the
 /// VM boots directly.
-pub fn default_desktop_image(explicit: Option<String>) -> String {
+pub fn resolve_desktop_image(explicit: Option<String>) -> String {
     if let Some(img) = explicit.filter(|s| !s.trim().is_empty()) {
         return img;
     }
@@ -197,4 +207,36 @@ pub fn default_desktop_image(explicit: Option<String>) -> String {
         return format!("tar+file://{}", abs.display());
     }
     DEFAULT_DESKTOP_IMAGE.to_string()
+}
+
+/// Default host directory scanned for CA certificates when neither an explicit
+/// path nor [`CA_CERTS_ENV`] is set: `$HOME/.config/vmette/certs`. Returned
+/// only when it exists and is a directory.
+pub fn default_ca_certs_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let dir = PathBuf::from(home).join(".config/vmette/certs");
+    dir.is_dir().then_some(dir)
+}
+
+/// Resolve the host CA-certificate directory to trust inside guests, highest
+/// priority first: an explicit per-call path, then [`CA_CERTS_ENV`], then the
+/// machine-wide [`default_ca_certs_dir`]. Returns `None` when none apply (the
+/// common case — no proxy CA configured), so callers add no share.
+///
+/// Unlike [`resolve_desktop_image`] this has no registry floor: trusting an
+/// extra CA is opt-in (it weakens isolation), so it only activates when the
+/// user explicitly points at certs or stages them in the default location.
+pub fn resolve_ca_certs(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    if let Some(v) = std::env::var_os(CA_CERTS_ENV) {
+        let p = PathBuf::from(v);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    default_ca_certs_dir()
 }

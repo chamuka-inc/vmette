@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Machine-wide host CA-certificate trust for **every** guest, not just desktops.
+  When a CA directory is configured it is mounted into each root the binaries
+  boot — `execute`, `fetch_url`, `workspace_run`, the `vmette` CLI one-shot, and
+  `desktop_*` — and the guest's PID-1 init installs it into the trust store
+  before the workload runs, so HTTPS through a TLS-inspecting proxy / enterprise
+  CA succeeds across the board (previously only `desktop_start --ca-certs` did,
+  and only for the desktop image). The directory is resolved highest-priority
+  first: an explicit `--ca-certs DIR` (now also on `vmette-mcp`), then the
+  `VMETTE_CA_CERTS` environment variable, then `~/.config/vmette/certs`. Opt-in:
+  with none configured, nothing is mounted and isolation is unchanged.
+- `scripts/export-macos-ca-certs.sh`: exports the macOS keychain trust store
+  into per-cert PEMs under `~/.config/vmette/certs` (or `$VMETTE_CA_CERTS`), so
+  a Mac behind a TLS-inspecting proxy can stage its roots for guests in one
+  command. Works on both Apple Silicon and Intel.
+
 ## [0.9.0] — 2026-06-10
 
 ### Added

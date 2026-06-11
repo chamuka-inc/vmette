@@ -43,8 +43,8 @@ crates.io** — get them from a
 (under `assets/<arch>/`) or build them with
 `git clone … && make assets init`, then pass their paths to `Config::new`
 (or let the [`vmette-assets`](https://crates.io/crates/vmette-assets) crate
-discover them via `$VMETTE_ASSETS_DIR/<arch>` / `./assets/<arch>`, with legacy
-flat fallbacks). Apple Silicon uses `aarch64`; Intel uses `x86_64`. See
+discover them via `$VMETTE_ASSETS_DIR/<arch>` / `./assets/<arch>`). Apple Silicon
+uses `aarch64`; Intel uses `x86_64`. See
 [`docs/API.md`](https://github.com/chamuka-inc/vmette/blob/main/docs/API.md).
 
 ## Platform

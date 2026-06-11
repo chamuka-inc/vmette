@@ -146,10 +146,15 @@ vmette desktop stop "$SID"                   # tear it down
 `assets/<arch>/vmlinuz-virt` and `assets/<arch>/initramfs-vmette` when run from the repo).
 
 `--ca-certs DIR` mounts a host directory of `.crt` / `.pem` enterprise CA
-certificates at `/mnt/certs`. At desktop boot the image installs them into
-Debian's trust store and writes Chromium's managed `CACertificates` policy, so
-browser automation works behind TLS-inspecting proxies without
-`--ignore-certificate-errors`.
+certificates at `/mnt/certs`. At desktop boot the guest installs them into the
+system trust store (generically, in the initramfs init) and the desktop image
+additionally writes Chromium's managed `CACertificates` policy, so browser
+automation works behind TLS-inspecting proxies without
+`--ignore-certificate-errors`. When `--ca-certs` is omitted it falls back to the
+machine-wide source (`$VMETTE_CA_CERTS`, else `~/.config/vmette/certs`) — the
+same certificates every other vmette root trusts (see
+[HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest)). On macOS,
+`scripts/export-macos-ca-certs.sh` stages the keychain roots there in one step.
 
 Global: `--socket PATH` overrides the daemon socket (default
 `~/Library/Caches/vmette/vmette.sock`).

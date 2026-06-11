@@ -14,6 +14,26 @@ use vmette::provider::{Context, Registry};
 use vmette::{Config, RootfsArtifact, ShareMount, VsockPort};
 use vmette_providers::default_registry;
 
+/// Append the machine-wide host CA-cert share (`$VMETTE_CA_CERTS` /
+/// `~/.config/vmette/certs`) to `shares`, unless the caller already supplied a
+/// `certs` share. Lets a guest trust a TLS-inspecting proxy / enterprise CA
+/// with no per-call flag; opt-in (no-op when nothing is configured). Shared by
+/// the one-shot CLI and `vmette desktop start` so both resolve it identically.
+pub(crate) fn ensure_ca_share(shares: &mut Vec<ShareMount>) {
+    if shares
+        .iter()
+        .any(|s| s.tag == vmette_assets::CA_CERTS_SHARE_TAG)
+    {
+        return;
+    }
+    if let Some(path) = vmette_assets::resolve_ca_certs(None) {
+        shares.push(ShareMount {
+            tag: vmette_assets::CA_CERTS_SHARE_TAG.into(),
+            path,
+        });
+    }
+}
+
 fn usage() -> ! {
     eprintln!(
         "vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]\n\
@@ -362,6 +382,12 @@ fn parse_args() -> ParsedArgs {
     if let Some(s) = cfg_cmdline {
         c.cmdline = s;
     }
+    // Trust a machine-wide host CA (TLS-inspecting proxy / enterprise root) in
+    // the guest when one is configured (`$VMETTE_CA_CERTS` /
+    // `~/.config/vmette/certs`) and the caller didn't already pass an explicit
+    // `--share certs=…`. The guest's PID-1 init installs the `certs` share into
+    // its trust store before exec; same resolution every vmette root uses.
+    ensure_ca_share(&mut shares);
     c.shares = shares;
     c.disks = disks;
     c.scratch_mib = scratch_mib;

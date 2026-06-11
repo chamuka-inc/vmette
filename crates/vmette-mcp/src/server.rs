@@ -293,6 +293,12 @@ pub struct VmetteServer {
     daemon: Arc<DaemonClient>,
     default_image: String,
     allow_network: bool,
+    /// Host CA-certificate share mounted into *every* root this server boots
+    /// (`execute`, `fetch_url`, `workspace_run`, and the default for
+    /// `desktop_start`), so a TLS-inspecting proxy / enterprise CA is trusted
+    /// guest-wide. Resolved once at startup from `--ca-certs` /
+    /// `$VMETTE_CA_CERTS` / `~/.config/vmette/certs`; `None` when unconfigured.
+    ca_share: Option<ShareMount>,
     /// Populated by `Self::tool_router()` from the `#[tool_router]`
     /// macro; the `#[tool_handler]` macro reads it via the macro's
     /// generated code, which the dead-code lint can't see.
@@ -307,14 +313,37 @@ impl VmetteServer {
         daemon: DaemonClient,
         default_image: String,
         allow_network: bool,
+        ca_certs: Option<PathBuf>,
     ) -> Self {
+        let ca_share = vmette_assets::resolve_ca_certs(ca_certs).map(|path| {
+            tracing::info!(certs = %path.display(), "trusting host CA certs in all guests");
+            ShareMount {
+                tag: vmette_assets::CA_CERTS_SHARE_TAG.to_string(),
+                path,
+            }
+        });
         Self {
             sandbox: Arc::new(sandbox),
             workspaces: Arc::new(workspaces),
             daemon: Arc::new(daemon),
             default_image,
             allow_network,
+            ca_share,
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Prepend the host CA-certificate share (if configured) to a root's shares
+    /// so the guest's PID-1 init installs it into the trust store before exec.
+    fn with_ca_share(&self, shares: Vec<ShareMount>) -> Vec<ShareMount> {
+        match &self.ca_share {
+            Some(s) => {
+                let mut v = Vec::with_capacity(shares.len() + 1);
+                v.push(s.clone());
+                v.extend(shares);
+                v
+            }
+            None => shares,
         }
     }
 
@@ -348,7 +377,7 @@ impl VmetteServer {
         let req = RunRequest {
             rootfs,
             exec,
-            shares: Vec::new(),
+            shares: self.with_ca_share(Vec::new()),
             net,
             timeout_seconds: Some(args.timeout.unwrap_or(DEFAULT_TIMEOUT_S)),
             offline: false,
@@ -393,7 +422,7 @@ impl VmetteServer {
         let req = RunRequest {
             rootfs: "python:3.12-alpine".into(),
             exec: shell_quoted_python(&py),
-            shares: Vec::new(),
+            shares: self.with_ca_share(Vec::new()),
             net: true,
             timeout_seconds: Some(DEFAULT_TIMEOUT_S),
             offline: false,
@@ -493,10 +522,10 @@ impl VmetteServer {
         let req = RunRequest {
             rootfs: ws.image.clone(),
             exec,
-            shares: vec![ShareMount {
+            shares: self.with_ca_share(vec![ShareMount {
                 tag: "work".into(),
                 path: ws.dir.clone(),
-            }],
+            }]),
             net: ws.net,
             timeout_seconds: Some(args.timeout.unwrap_or(DEFAULT_WORKSPACE_TIMEOUT_S)),
             offline: false,
@@ -543,11 +572,14 @@ impl VmetteServer {
         // offline), independent of whether the guest VM gets network. Tying
         // offline to `net` would make the default (network=false) unable to
         // fetch the baked-in desktop image on first use.
-        let shares = args
-            .ca_certs
+        //
+        // CA certs: an explicit per-call `ca_certs` wins; otherwise fall back to
+        // the same machine-wide source every other root uses (so the desktop
+        // trusts the proxy with no per-call flag once it's configured once).
+        let shares = vmette_assets::resolve_ca_certs(args.ca_certs)
             .map(|path| {
                 vec![ShareMount {
-                    tag: "certs".to_string(),
+                    tag: vmette_assets::CA_CERTS_SHARE_TAG.to_string(),
                     path,
                 }]
             })

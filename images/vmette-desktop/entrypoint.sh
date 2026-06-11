@@ -35,9 +35,11 @@ export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 install_ca_certs() {
     [ -d /mnt/certs ] || return 0
 
-    mkdir -p /usr/local/share/ca-certificates/vmette \
-        /etc/chromium/policies/managed \
-        /etc/opt/chrome/policies/managed
+    # System trust is installed by the initramfs init (custom-init.sh step 4b)
+    # before it chroots into this rootfs, so here we only generate Chromium's
+    # managed CACertificates policy (DER+base64 per cert), which Chromium reads
+    # from /etc/chromium/policies/managed and the trust store doesn't cover.
+    mkdir -p /etc/chromium/policies/managed /etc/opt/chrome/policies/managed
 
     json=/etc/chromium/policies/managed/vmette-certs.json
     tmp="${json}.tmp"
@@ -47,7 +49,7 @@ install_ca_certs() {
     # `openssl x509 -in FILE` only reads the FIRST certificate in FILE, so a
     # combined bundle — or a full chain shipped as one .crt/.pem — would import
     # just its leading cert. Split every input file into one-cert PEMs first,
-    # then import each individually.
+    # then convert each individually.
     src_idx=0
     for src in /mnt/certs/*.crt /mnt/certs/*.pem; do
         [ -f "$src" ] || continue
@@ -62,12 +64,11 @@ install_ca_certs() {
     printf '{\n  "CAPlatformIntegrationEnabled": true,\n  "CACertificates": [\n' >"$tmp"
     for cert in "$split_dir"/*.pem; do
         [ -f "$cert" ] || continue
-        out="/usr/local/share/ca-certificates/vmette/vmette-$((count + 1)).crt"
-        if ! openssl x509 -in "$cert" -out "$out" 2>/var/log/vmette-ca.err; then
+        der=$(openssl x509 -in "$cert" -outform DER 2>/var/log/vmette-ca.err | base64 -w0)
+        if [ -z "$der" ]; then
             echo "[desktop] warning: skipping unreadable CA certificate" >&2
             continue
         fi
-        der=$(openssl x509 -in "$out" -outform DER | base64 -w0)
         [ "$count" -gt 0 ] && printf ',\n' >>"$tmp"
         printf '    "%s"' "$der" >>"$tmp"
         count=$((count + 1))
@@ -79,8 +80,7 @@ install_ca_certs() {
     if [ "$count" -gt 0 ]; then
         mv "$tmp" "$json"
         cp "$json" /etc/opt/chrome/policies/managed/vmette-certs.json
-        update-ca-certificates >/var/log/vmette-ca.log 2>&1 || true
-        echo "[desktop] installed $count CA certificate(s) for system trust and Chromium" >&2
+        echo "[desktop] installed $count CA certificate(s) into Chromium policy" >&2
     else
         rm -f "$tmp"
         echo "[desktop] warning: /mnt/certs contained no readable .crt/.pem CA certificates" >&2

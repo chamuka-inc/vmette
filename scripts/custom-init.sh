@@ -256,6 +256,61 @@ for tag in $(cmdline_all vmette.share); do
     fi
 done
 
+# ---- step 4b: install host CA certificates (the 'certs' share) -----------
+#
+# A virtio-fs share tagged 'certs' (mounted at /newroot/mnt/certs above)
+# carries host/enterprise CA certificates — typically the root of a
+# TLS-inspecting proxy that would otherwise make every HTTPS call in the guest
+# fail with a cert-authority error. Install them into the image's system trust
+# store regardless of distro:
+#
+#   1. append the PEMs to whatever system trust bundle(s) already exist, so
+#      OpenSSL-default consumers pick them up with no extra step;
+#   2. drop the bundle into the canonical anchor dirs and opportunistically run
+#      the distro's update tool inside the chroot (covers NSS / regenerated
+#      bundles when the tool is present).
+#
+# This runs for every guest, including the desktop image (which layers its own
+# Chromium managed-policy on top of this shared system-trust step).
+if [ -d /newroot/mnt/certs ]; then
+    # The PEM we assemble from the share (the host CA(s) to add).
+    _host_ca_pem=/newroot/etc/ssl/certs/vmette-host-ca.pem
+    mkdir -p /newroot/etc/ssl/certs 2>/dev/null
+    : > "$_host_ca_pem"
+    _cacount=0
+    for _caf in /newroot/mnt/certs/*.pem /newroot/mnt/certs/*.crt /newroot/mnt/certs/*.cer; do
+        [ -f "$_caf" ] || continue
+        cat "$_caf" >> "$_host_ca_pem" 2>/dev/null
+        echo >> "$_host_ca_pem"
+        _cacount=$((_cacount + 1))
+    done
+
+    if [ "$_cacount" -gt 0 ]; then
+        # (1) append to existing system bundles.
+        for _dst in etc/ssl/certs/ca-certificates.crt etc/ssl/cert.pem \
+                    etc/pki/tls/certs/ca-bundle.crt; do
+            if [ -f "/newroot/$_dst" ]; then
+                cat "$_host_ca_pem" >> "/newroot/$_dst" 2>/dev/null
+            fi
+        done
+
+        # (2) canonical anchor dirs + opportunistic distro refresh in-chroot.
+        mkdir -p /newroot/usr/local/share/ca-certificates 2>/dev/null
+        cp "$_host_ca_pem" /newroot/usr/local/share/ca-certificates/vmette-host-ca.crt 2>/dev/null
+        mkdir -p /newroot/etc/pki/ca-trust/source/anchors 2>/dev/null
+        cp "$_host_ca_pem" /newroot/etc/pki/ca-trust/source/anchors/vmette-host-ca.crt 2>/dev/null
+        chroot /newroot /bin/sh -c \
+            'command -v update-ca-certificates >/dev/null 2>&1 && update-ca-certificates' \
+            >/dev/null 2>&1
+        chroot /newroot /bin/sh -c \
+            'command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust extract' \
+            >/dev/null 2>&1
+        log "installed $_cacount host CA file(s) into guest trust"
+    else
+        log "certs share present but held no .pem/.crt/.cer files"
+    fi
+fi
+
 # ---- step 5: prepare /proc /sys /dev for chroot or switch_root ---------
 
 mkdir -p /newroot/tmp

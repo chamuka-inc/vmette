@@ -326,7 +326,7 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
             "--ca-certs" => {
                 let path = it.next().map(PathBuf::from).ok_or("--ca-certs needs DIR")?;
                 shares.push(ShareMount {
-                    tag: "certs".to_string(),
+                    tag: vmette_assets::CA_CERTS_SHARE_TAG.to_string(),
                     path,
                 });
             }
@@ -334,12 +334,18 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
         }
     }
 
+    // No explicit `--ca-certs`? Fall back to the machine-wide source
+    // (`$VMETTE_CA_CERTS` / `~/.config/vmette/certs`) so a desktop trusts a
+    // configured proxy CA without a per-call flag — same resolution every
+    // other vmette root uses.
+    crate::ensure_ca_share(&mut shares);
+
     let kernel = vmette_assets::require_asset(kernel, "vmlinuz-virt")?;
     let initramfs = vmette_assets::require_asset(initramfs, "initramfs-vmette")?;
     // Resolve the desktop rootfs spec like the kernel/initramfs: explicit
     // `--image` → `$VMETTE_DESKTOP_IMAGE` → local `vmette-desktop-rootfs.tar` →
     // registry fallback. The daemon receives a concrete spec.
-    let image = vmette_assets::default_desktop_image(image);
+    let image = vmette_assets::resolve_desktop_image(image);
 
     // `vcpus`/`mem_mib` left unset → the daemon applies its desktop defaults.
     let reply = call(

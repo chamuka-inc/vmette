@@ -132,8 +132,35 @@ to Alpine `aarch64`, Intel maps to `x86_64`. Override with `ARCH=x86_64` or
 `ARCH=aarch64` when you need to build a different guest set.
 
 Per-arch assets live under `assets/{x86_64,aarch64}/`. Runtime discovery checks
-the matching per-arch directory first, then the old flat `assets/` layout for
-compatibility.
+the matching per-arch directory under each search root.
+
+## Trusting a host CA in every guest
+
+Behind a TLS-inspecting proxy (or with an enterprise CA), HTTPS from inside a
+guest fails with `CERTIFICATE_VERIFY_FAILED` because the intercepting root lives
+only on the host. Stage that root where vmette looks for it and **every** root
+the binaries boot — `execute`, `fetch_url`, `workspace_run`, the `vmette` CLI
+one-shot, and `desktop_*` — trusts it:
+
+```bash
+# macOS: export the keychain trust store into per-cert PEMs (Apple Silicon + Intel)
+scripts/export-macos-ca-certs.sh            # → ~/.config/vmette/certs
+```
+
+Resolution order (highest first): an explicit `--ca-certs DIR` flag, the
+`VMETTE_CA_CERTS` environment variable, then `~/.config/vmette/certs`. When a
+directory resolves, the host mounts it as the `certs` virtio-fs share and the
+guest's PID-1 init (`scripts/custom-init.sh`) installs it before the workload
+runs: it appends the PEMs to the image's existing system trust bundle(s) and
+drops them into the distro anchor dirs, running `update-ca-certificates` /
+`update-ca-trust` opportunistically when present. The mechanism is
+distro-agnostic. It is **opt-in**: with no directory configured, nothing is
+mounted and guest isolation is unchanged. The same step runs for the desktop
+image too, which layers its own Chromium managed-policy (`CACertificates`) on
+top of this shared system-trust step.
+
+After editing `scripts/custom-init.sh`, rebuild the initramfs
+(`bash scripts/build-initramfs.sh`) — the live `initramfs-vmette` embeds a copy.
 
 ## Common issues
 

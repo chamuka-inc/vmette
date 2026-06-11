@@ -61,8 +61,8 @@ These are **not distributed on crates.io** — the crate is the code, not the
 
 If you place them in a conventional location, the `vmette-assets` crate can
 discover them for you — `vmette_assets::find("vmlinuz-virt")` searches
-`$VMETTE_ASSETS_DIR/<arch>`, then `./assets/<arch>`, then the install prefix,
-with legacy flat fallbacks — so you can feed `Config::new` without hard-coding
+`$VMETTE_ASSETS_DIR/<arch>`, then `./assets/<arch>`, then the install prefix —
+so you can feed `Config::new` without hard-coding
 paths. Apple Silicon uses `aarch64`; Intel uses `x86_64`.
 
 ### Types

@@ -22,8 +22,7 @@ vmette --version                                # print version (also -V)
 `--kernel` and `--initramfs` are optional and auto-discovered. When
 omitted, vmette searches, in order: `$VMETTE_ASSETS_DIR/<arch>`,
 `./assets/<arch>` (repo checkout), and `<install-prefix>/assets/<arch>`
-(the `assets` dir that is a sibling of the binary's `bin/`). It also checks
-the same locations without `<arch>` for older flat installs. The release
+(the `assets` dir that is a sibling of the binary's `bin/`). The release
 tarball ships both under `<prefix>/assets/<arch>`, so a `curl | install.sh`
 install boots with no asset flags.
 

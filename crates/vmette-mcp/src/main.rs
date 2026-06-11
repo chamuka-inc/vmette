@@ -46,6 +46,7 @@ struct Args {
     initramfs: Option<PathBuf>,
     vmette_bin: Option<PathBuf>,
     daemon_socket: Option<PathBuf>,
+    ca_certs: Option<PathBuf>,
 }
 
 fn usage() -> ! {
@@ -60,6 +61,7 @@ fn usage() -> ! {
            --initramfs PATH      override autodiscovered initramfs path\n  \
            --vmette PATH         override autodiscovered `vmette` binary path\n  \
            --socket PATH         vmetted socket for desktop_* tools (default ~/Library/Caches/vmette/vmette.sock)\n  \
+           --ca-certs DIR        host CA certs to trust in every guest (default: $VMETTE_CA_CERTS or ~/.config/vmette/certs)\n  \
            -h, --help            this message\n  \
            -V, --version         print version and exit\n\n\
          the server speaks MCP over stdio; configure your client to launch this binary.\n"
@@ -77,6 +79,7 @@ fn parse_args() -> Args {
         initramfs: None,
         vmette_bin: None,
         daemon_socket: None,
+        ca_certs: None,
     };
     let take = |i: usize, flag: &str| -> String {
         if i + 1 >= raw.len() {
@@ -118,6 +121,10 @@ fn parse_args() -> Args {
             }
             "--socket" => {
                 a.daemon_socket = Some(take(i, "--socket").into());
+                i += 2;
+            }
+            "--ca-certs" => {
+                a.ca_certs = Some(take(i, "--ca-certs").into());
                 i += 2;
             }
             "--version" | "-V" => {
@@ -168,6 +175,7 @@ async fn main() -> ExitCode {
             daemon,
             args.default_image,
             args.allow_network,
+            args.ca_certs,
         );
         tracing::info!(
             allow_network = args.allow_network,

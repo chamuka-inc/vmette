@@ -301,8 +301,8 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 
 - **macOS only.** VZ is Apple-private. No Linux/Windows port planned.
 - **Guest assets are architecture-specific.** Apple Silicon uses Alpine
-  `aarch64`; Intel uses `x86_64`. Runtime discovery checks
-  `assets/<arch>/` first and falls back to the legacy flat `assets/` layout.
+  `aarch64`; Intel uses `x86_64`. Runtime discovery checks the per-arch
+  `assets/<arch>/` directory under each search root.
 - **Snapshot/restore is Apple-Silicon-only.** Apple gates the save/restore calls
   behind `#if defined(__arm64__)`. On Intel, `--build-snapshot` / `--resume-snapshot`
   return `VmetteStatus::SnapshotUnsupported`. The daemon's snapshot-warm-pool is a

@@ -59,7 +59,7 @@ use crate::view::ViewServer;
 const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(120);
 
 // The desktop rootfs spec arrives already resolved in the `start` request —
-// the client (CLI / `vmette-mcp`) picks it via `vmette_assets::default_desktop_image`
+// the client (CLI / `vmette-mcp`) picks it via `vmette_assets::resolve_desktop_image`
 // (explicit `--image` → `$VMETTE_DESKTOP_IMAGE` → local `vmette-desktop-rootfs.tar`
 // → registry fallback), exactly as it resolves the kernel/initramfs. The daemon
 // stays a pure resolver and owns no desktop-image default.

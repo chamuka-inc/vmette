@@ -164,6 +164,7 @@ binary path as `command` and the flags as `args`.
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
 | `--vmette PATH` | autodiscovered | Override `vmette` binary path. Default: `$VMETTE_BIN`, sibling-of-this-binary, then `$PATH` lookup. |
 | `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. The daemon is started automatically on first desktop use if it isn't already running. |
+| `--ca-certs DIR` | `$VMETTE_CA_CERTS`, else `~/.config/vmette/certs` | Host directory of `.crt`/`.pem` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
 
 `vmette-mcp` writes structured logs (tracing) to **stderr**. `stdout`
 is reserved for MCP frames; anything written there desyncs the client.
