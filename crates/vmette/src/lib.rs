@@ -215,9 +215,11 @@ impl Config {
     /// Build a one-shot [`Config`] from a daemon run
     /// [`Request`](vmette_proto::daemon::Request) plus its already-resolved
     /// rootfs `artifact`, for running the workload **in-process**. This is the
-    /// single owner of the `Request` → `Config` mapping (shared by the daemon and
-    /// the MCP server). It superseded an earlier path that rendered the request
-    /// to `vmette` CLI argv and forked a subprocess.
+    /// owner of the daemon's `Request` → `Config` mapping; it superseded an
+    /// earlier path that rendered the request to `vmette` CLI argv and forked a
+    /// subprocess. (The MCP server's one-shot sandbox does not carry a daemon
+    /// `Request` — it sets the small subset of fields its tools expose directly
+    /// on a `Config`.)
     ///
     /// Rootfs resolution (the provider registry / network I/O) stays with the
     /// caller — it passes the resolved `artifact` and the request's `rootfs_ro`.
