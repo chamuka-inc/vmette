@@ -616,24 +616,8 @@ impl Session {
             _ => None,
         };
         let scratch_path = scratch_file.as_ref().map(|g| g.0.clone());
-        // Name the device the same way the guest will see it (attach order in
-        // build_vz_config below); `boot.env` carries it so /init knows which
-        // block device to format ext4.
-        let scratch_dev = scratch_path
-            .as_ref()
-            .map(|_| cmdline::scratch_device_name(&working));
 
         let mut cmdline = cmdline::build(&working, vsock_port);
-
-        // C1: write the typed boot envelope the guest's `/init` sources from the
-        // `ctl` share. Built from the caller's original `config` (not `working`),
-        // so the implicit `ctl` share is excluded from `shares`. `capture_output`
-        // rides through `from_config` so the guest redirects the exec to `hvc0`.
-        if let Some(guard) = &control_dir {
-            let params = crate::boot::from_config(config, scratch_dev.as_deref());
-            std::fs::write(guard.0.join("boot.env"), crate::boot::to_env(&params))
-                .map_err(Error::Io)?;
-        }
 
         // C2 capture: when the caller wants the guest output captured in-process
         // (daemon/MCP), wire `hvc0` to a host pipe and push the kernel console +
@@ -660,13 +644,28 @@ impl Session {
             None => SerialSink::Inherit,
         };
 
-        let cfg = build_vz_config(
+        // `build` assigns the scratch disk's guest device name from its actual
+        // slot in the storage array and hands it back, so the attach order and
+        // the name have one owner (no separate `scratch_device_name` formula).
+        let (cfg, scratch_dev) = build_vz_config(
             &working,
             &cmdline,
             vsock_port,
             scratch_path.as_deref(),
             sink,
         )?;
+
+        // C1: write the typed boot envelope the guest's `/init` sources from the
+        // `ctl` share. Built from the caller's original `config` (not `working`),
+        // so the implicit `ctl` share is excluded from `shares`. `capture_output`
+        // rides through `from_config` so the guest redirects the exec to `hvc0`.
+        // Written after `build` so it can carry the scratch device name `build`
+        // assigned; the guest only reads it once the VM starts (below).
+        if let Some(guard) = &control_dir {
+            let params = crate::boot::from_config(config, scratch_dev.as_deref());
+            std::fs::write(guard.0.join("boot.env"), crate::boot::to_env(&params))
+                .map_err(Error::Io)?;
+        }
 
         // Private serial queue for this VM. libdispatch services it on its
         // worker pool, so all VZ callbacks fire there without a run loop, and

@@ -7,15 +7,12 @@
 
 use crate::Config;
 
-/// The guest block-device name (`vda`, `vdb`, …) the scratch disk will
-/// enumerate as. virtio-blk devices appear in attach order, and
-/// [`crate::vz::config::build`] attaches the scratch image *last* — after the
-/// optional block rootfs (slot 0) and any user `--disk`s. So its index is the
-/// number of those preceding devices. Keep this in lockstep with the attach
-/// order in `vz::config::build`.
-pub(crate) fn scratch_device_name(config: &Config) -> String {
-    let has_block = matches!(config.rootfs, Some(crate::Rootfs::Block(_)));
-    let index = has_block as usize + config.disks.len();
+/// The guest device name (`vda`, `vdb`, …) a virtio-blk device at attach
+/// `index` enumerates as. Pure index→name mapping; the *order* (which slot a
+/// disk lands in) is owned by [`crate::vz::config::build`], which assigns the
+/// scratch disk's name from its actual position in the storage array — so the
+/// name and the attach order have a single owner there, not a formula here.
+pub(crate) fn blk_device_name(index: usize) -> String {
     // 26 virtio-blk devices is far more than any real config; the simple
     // single-letter form covers every case we can actually attach.
     let letter = (b'a' + index as u8) as char;
@@ -106,20 +103,11 @@ mod tests {
     }
 
     #[test]
-    fn scratch_device_name_follows_block_rootfs_and_disks() {
-        // Block rootfs occupies vda, so scratch lands on vdb.
-        let mut c = base();
-        c.rootfs = Some(crate::Rootfs::Block(crate::RootfsBlock {
-            path: PathBuf::from("/img.sqfs"),
-            fstype: crate::BlockFs::Squashfs,
-        }));
-        assert_eq!(scratch_device_name(&c), "vdb");
-        // Two user --disks after the block rootfs push scratch to vdd.
-        c.disks = vec![PathBuf::from("/d1"), PathBuf::from("/d2")];
-        assert_eq!(scratch_device_name(&c), "vdd");
-        // Directory rootfs (no block device) with one --disk → scratch is vdb.
-        let mut d = base();
-        d.disks = vec![PathBuf::from("/d1")];
-        assert_eq!(scratch_device_name(&d), "vdb");
+    fn blk_device_name_maps_index_to_letter() {
+        // Pure index→name: slot 0 = vda, 1 = vdb, … The attach-order logic that
+        // decides the scratch disk's index lives in vz::config::build.
+        assert_eq!(blk_device_name(0), "vda");
+        assert_eq!(blk_device_name(1), "vdb");
+        assert_eq!(blk_device_name(3), "vdd");
     }
 }

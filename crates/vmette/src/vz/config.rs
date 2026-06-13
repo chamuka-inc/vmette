@@ -55,13 +55,18 @@ pub(crate) enum SerialSink {
 /// `vsock_port` is the already-resolved port (None to skip vsock device).
 /// `cmdline` is the already-assembled kernel cmdline string. `sink` selects the
 /// serial console wiring (inherit the host terminal, or capture to a pipe).
+/// Returns the built configuration plus the guest device name assigned to the
+/// ephemeral scratch disk (`Some("vdb")`, …), or `None` when no scratch disk is
+/// attached. The name is derived from the disk's actual slot in the storage
+/// array, so the caller can write it into `boot.env` without re-deriving the
+/// attach order.
 pub(crate) fn build(
     config: &Config,
     cmdline: &str,
     vsock_port: Option<u32>,
     scratch_path: Option<&std::path::Path>,
     sink: SerialSink,
-) -> Result<Retained<VZVirtualMachineConfiguration>, Error> {
+) -> Result<(Retained<VZVirtualMachineConfiguration>, Option<String>), Error> {
     unsafe {
         let cfg = VZVirtualMachineConfiguration::new();
 
@@ -238,10 +243,15 @@ pub(crate) fn build(
             storage.push(blk.into_super());
         }
         // Ephemeral scratch disk (--scratch), attached LAST and read-write so
-        // it enumerates after the rootfs block (slot 0) and user --disks —
-        // the order cmdline::scratch_device_name() relies on to name it. The
-        // guest formats it ext4 and uses it as the overlay upper layer.
+        // it enumerates after the rootfs block (slot 0) and user --disks. The
+        // guest formats it ext4 and uses it as the overlay upper layer. Its
+        // guest device name is taken from its *actual* position in `storage`
+        // (the count of preceding virtio-blk devices), so the name and the
+        // attach order have a single owner here — `boot.env` carries it to the
+        // guest. `None` when no scratch disk is attached.
+        let mut scratch_dev = None;
         if let Some(path) = scratch_path {
+            scratch_dev = Some(crate::cmdline::blk_device_name(storage.len()));
             let url = file_url(path);
             let att = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_error(
                 VZDiskImageStorageDeviceAttachment::alloc(),
@@ -288,6 +298,6 @@ pub(crate) fn build(
         cfg.validateWithError()
             .map_err(|e| Error::InvalidConfig(e.localizedDescription().to_string()))?;
 
-        Ok(cfg)
+        Ok((cfg, scratch_dev))
     }
 }
