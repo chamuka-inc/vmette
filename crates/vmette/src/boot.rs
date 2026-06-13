@@ -13,6 +13,9 @@
 //! `exec` and `env_exports` are base64 (they carry arbitrary multi-line shell);
 //! everything else is a bare token. Keys:
 //!
+//! Listed in emission order (the guest sources by key, so order is not load
+//! bearing, but the doc mirrors [`to_env`] to keep the contract drift-free):
+//!
 //! ```text
 //! VMETTE_PROTO_VERSION='1'
 //! VMETTE_ROOTFS_MODE='share'|'block'
@@ -24,8 +27,10 @@
 //! VMETTE_ENV_B64='…'                 # omitted when no env
 //! VMETTE_SWITCH_ROOT='0'|'1'
 //! VMETTE_NET='0'|'1'
-//! VMETTE_STRATEGY='oneshot'|'agent'
+//! VMETTE_CAPTURE='0'|'1'             # capture guest output to hvc0 (daemon/MCP)
+//! VMETTE_STRATEGY='oneshot'|'agent'|'snapshot'
 //! VMETTE_DISPLAY='1280x800'          # agent strategy only
+//! VMETTE_GUEST_VSOCK_PORT='5000'     # snapshot strategy only
 //! ```
 //!
 //! `from_env` parses the same format back; it is the round-trip oracle for the
@@ -62,6 +67,11 @@ pub(crate) fn from_config(config: &Config, scratch_dev: Option<&str>) -> BootPar
         None => RootfsSpec::Share { read_only: false },
     };
 
+    // NOTE: `from_config` only ever produces OneShot/Agent — `WorkloadStrategy`
+    // has no snapshot arm. `Strategy::Snapshot` (and the guest's `snapshot`
+    // branch + `VMETTE_GUEST_VSOCK_PORT` key) is forward-looking Phase-5 wiring
+    // that no live path exercises yet; when snapshot lands it must route its
+    // config through here / `to_env` so the guest branch stops being dead.
     let strategy = match config.workload {
         WorkloadStrategy::OneShot => Strategy::OneShot,
         WorkloadStrategy::Agent => {
@@ -150,6 +160,11 @@ pub(crate) enum BootEnvError {
     MissingKey(&'static str),
     /// A key held a value the codec can't interpret.
     BadValue { key: &'static str, value: String },
+    /// A line's value was not wrapped in single quotes. `to_env` always emits
+    /// `KEY='VALUE'`; an unquoted value would word-split / execute when the
+    /// guest sources the envelope, so the oracle rejects it loudly rather than
+    /// silently accepting the shell-unsafe form.
+    UnquotedValue(String),
 }
 
 #[cfg(test)]
@@ -159,6 +174,9 @@ impl std::fmt::Display for BootEnvError {
             BootEnvError::MissingKey(k) => write!(f, "boot.env: missing key {k}"),
             BootEnvError::BadValue { key, value } => {
                 write!(f, "boot.env: bad value for {key}: {value:?}")
+            }
+            BootEnvError::UnquotedValue(line) => {
+                write!(f, "boot.env: value not single-quoted: {line:?}")
             }
         }
     }
@@ -181,11 +199,15 @@ pub(crate) fn from_env(text: &str) -> Result<BootParams, BootEnvError> {
         let Some((k, v)) = raw.split_once('=') else {
             continue;
         };
-        // Strip one layer of surrounding single quotes.
+        // REQUIRE the surrounding single quotes that `to_env` always emits. A
+        // value missing them is a shell-unsafe emission (would word-split when
+        // the guest sources the envelope); reject it so the round-trip catches
+        // exactly the regression this oracle exists to guard, instead of
+        // silently accepting it. (`''` → empty string is fine.)
         let v = v
             .strip_prefix('\'')
             .and_then(|v| v.strip_suffix('\''))
-            .unwrap_or(v);
+            .ok_or_else(|| BootEnvError::UnquotedValue(raw.to_string()))?;
         kv.insert(k.trim(), v.to_string());
     }
 
@@ -421,6 +443,19 @@ mod tests {
                 v.starts_with('\'') && v.ends_with('\''),
                 "value not single-quoted: {line}"
             );
+        }
+    }
+
+    #[test]
+    fn from_env_rejects_an_unquoted_value() {
+        // The oracle must FAIL the round-trip if a value loses its single
+        // quotes — that is the shell-unsafe emission it exists to catch. A
+        // silent accept (the old `unwrap_or`) would let a `to_env` regression
+        // slip past every round-trip test.
+        let env = to_env(&sample()).replace("VMETTE_NET='1'", "VMETTE_NET=1");
+        match from_env(&env) {
+            Err(BootEnvError::UnquotedValue(line)) => assert!(line.contains("VMETTE_NET=1")),
+            other => panic!("expected UnquotedValue, got {other:?}"),
         }
     }
 
