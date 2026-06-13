@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `vmette::run` (and the C ABI `vmette_run`) now **returns** with the guest's exit
+  code instead of exiting the process. Library/FFI embedders get a `RunOutput`
+  (read its `exit_code`) and choose the process exit code themselves; the `vmette`
+  CLI forwards it. Previously the happy path called `std::process::exit` and never
+  returned, which was hostile to embedders. `RunOutput` gained an `output` field
+  (captured guest output; empty for the interactive `run` path) and is no longer
+  `Copy`.
 - `RootfsArtifact::Directory` gained an `image_env: Vec<(String, String)>` field
   (the OCI image's declared `Env`, empty for dir/tar rootfses). External
   `RootfsProvider` implementors constructing or exhaustively matching this

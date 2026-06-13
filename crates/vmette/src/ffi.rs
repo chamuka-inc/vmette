@@ -349,12 +349,10 @@ pub unsafe extern "C" fn vmette_config_set_resume_snapshot(
 /// Run a configured guest. Blocks until the guest powers off.
 ///
 /// On success returns [`VmetteStatus::Ok`] and writes a newly-allocated
-/// run output handle to `*out` (caller must `vmette_run_output_free`).
-/// On error returns the matching status and leaves `*out` untouched.
-///
-/// Note: in the common path this function never returns — the underlying
-/// `vmette::run` exits the process via the VM's lifecycle delegate with
-/// the guest's exit code.
+/// run output handle to `*out` (caller must `vmette_run_output_free`); read the
+/// guest's exit code from it with `vmette_run_output_exit_code`. On error
+/// returns the matching status and leaves `*out` untouched. The call returns
+/// normally — it does not exit the host process.
 ///
 /// # Safety
 /// See the module-level safety contract. `out` must be a valid, writable

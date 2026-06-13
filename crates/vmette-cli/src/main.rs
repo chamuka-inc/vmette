@@ -610,12 +610,9 @@ fn main() -> ExitCode {
     config.set_rootfs_artifact(artifact, parsed.rootfs_ro);
 
     match vmette::run(&config) {
-        Ok(out) => {
-            // Note: vmette::run normally exits via the VM's stop delegate
-            // and never returns here. This branch only fires for snapshot
-            // ops which return without going through the runloop.
-            ExitCode::from(out.exit_code as u8)
-        }
+        // `run` returns the guest's exit code (it no longer exits the process);
+        // the CLI owns the exit decision and forwards it.
+        Ok(out) => ExitCode::from(out.exit_code as u8),
         Err(e) => {
             eprintln!("[vmette] error: {}", e);
             ExitCode::from(1)
