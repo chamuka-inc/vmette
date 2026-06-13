@@ -414,6 +414,19 @@ impl Session {
             .map(|_| cmdline::scratch_device_name(&working));
 
         let cmdline = cmdline::build(&working, vsock_port, scratch_dev.as_deref());
+
+        // C1 (phase 1b, additive): write the typed boot envelope to the `ctl`
+        // share alongside the legacy `vmette.*` cmdline tokens. The guest still
+        // boots from the cmdline for now; `boot.env` is laid down so the
+        // guest-side switch (and the cmdline shrink) can follow without changing
+        // the host write path again. Built from the caller's original `config`
+        // (not `working`), so the implicit `ctl` share is excluded from `shares`.
+        if let Some(guard) = &control_dir {
+            let params = crate::boot::from_config(config, scratch_dev.as_deref());
+            std::fs::write(guard.0.join("boot.env"), crate::boot::to_env(&params))
+                .map_err(Error::Io)?;
+        }
+
         let cfg = build_vz_config(&working, &cmdline, vsock_port, scratch_path.as_deref())?;
 
         // Private serial queue for this VM. libdispatch services it on its

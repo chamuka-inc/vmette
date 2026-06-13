@@ -14,6 +14,7 @@ use std::path::PathBuf;
 pub mod error;
 pub use error::Error;
 
+mod boot;
 mod cmdline;
 mod lifecycle;
 mod session;
