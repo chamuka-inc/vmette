@@ -742,12 +742,13 @@ static void launch_argv(const char *prog, const char *arg) {
 // After an exec job's pipe hits EOF the child has usually exited — but the
 // kernel closes the pipe write end a hair before the task becomes reapable, so
 // `waitpid(WNOHANG)` often returns 0 right at EOF for a perfectly clean exit. We
-// therefore *poll* for the exit (every EXEC_EOF_POLL_MS) instead of assuming the
-// child is detached, and only force-kill it as genuinely-detached (e.g. `exec
-// foo >/dev/null`) once EXEC_EOF_GRACE_MS has passed with it still alive. The
-// grace is generous precisely because the poll is non-blocking — it costs no
-// interactivity, so a clean-but-slow-to-reap exit is never mis-killed.
-#define EXEC_EOF_GRACE_MS 2000
+// therefore *poll* for the exit (every EXEC_EOF_POLL_MS) rather than assuming
+// the child is detached. The kill bound stays the job's original run-timeout
+// deadline (timeout_ms): a command that merely redirected its stdout (`exec foo
+// >/dev/null`) but keeps doing real work is reaped with its true exit code when
+// it finishes, and only a child still alive at its run-timeout is force-killed —
+// so EOF never shortens the caller's timeout budget. The poll is non-blocking,
+// so this costs no interactivity.
 #define EXEC_EOF_POLL_MS 5
 
 struct job {
@@ -896,13 +897,13 @@ static void drain_job(int fd, struct job *j) {
         deliver_exec(fd, j, exit_code_of(wstatus)); // common case: already exited
     } else {
         // Not reapable yet: either the exit just hasn't landed (the usual race —
-        // resolved within a poll or two) or the child detached its stdio and
-        // will run on. Stop reading the pipe and await the exit via expire_jobs;
-        // the deadline becomes the detached force-kill grace.
+        // resolved within a poll or two) or the child redirected/detached its
+        // stdio and is still working. Stop reading the pipe and await the exit
+        // via expire_jobs, keeping the original run-timeout deadline as the
+        // kill bound (EOF must not shorten the caller's timeout_ms budget).
         close(j->outfd);
         j->outfd = -1;
         j->eof = 1;
-        j->deadline = deadline_in(EXEC_EOF_GRACE_MS);
     }
 }
 
@@ -918,10 +919,12 @@ static void expire_jobs(int fd) {
         if (j->eof) {
             int wstatus = 0;
             if (try_reap(j->pid, &wstatus)) {
+                // Exited — deliver its real code even if the deadline just
+                // passed (a finished child is preferred over a spurious kill).
                 deliver_exec(fd, j, exit_code_of(wstatus));
             } else if (ms_until(&j->deadline) <= 0) {
-                // Grace elapsed, still alive → detached. Kill the whole session
-                // group (the child setsid()'d, so -pid reaches backgrounded
+                // Still alive at its run-timeout → kill the whole session group
+                // (the child setsid()'d, so -pid reaches backgrounded
                 // grandchildren too), reap, report null exit.
                 kill(-j->pid, SIGKILL);
                 reap_pid(j->pid, &wstatus);
