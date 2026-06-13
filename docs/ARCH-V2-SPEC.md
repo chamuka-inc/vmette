@@ -443,6 +443,42 @@ in place now so the feature is not stranded.
 - `Strategy::Snapshot` round-trips through `to_env`/`from_env`.
 - `tests/run.sh` stays green (the snapshot arch-guard + vsock-roundtrip gates).
 
+### 5.5 Feasibility validated from Apple docs (not yet run on Apple silicon)
+
+Snapshot has never been exercised on Apple silicon, so the Phase-5 feasibility was
+checked against Apple's documentation — WWDC23 **"Create seamless experiences with
+Virtualization"** (session 10007) and the `VZVirtualMachine` save/restore API
+reference. The documented workflow is:
+
+- **Save:** `pause()` → `saveMachineStateTo(url:)`; copy external resources (disk
+  images) separately.
+- **Restore:** create a `VZVirtualMachine` **from the same configuration** →
+  `restoreMachineStateFrom(url:)` → `resume()`.
+- macOS **14 (Sonoma)+**, **arm64 only** (`#if defined(__arm64__)`); save files are
+  hardware-encrypted (bound to the Mac + user account) and versioned.
+
+vmette's design (boot → guest `vsock-runner` signals READY and blocks on
+`accept()` → host pauses + saves at that blocker → restore + `resume()` → runner
+reads the per-request command) maps **1:1** onto this workflow — the `accept()`
+blocker is exactly the "pause at a stable point" the docs call for. Consistency
+check:
+
+| Apple requirement | vmette | Status |
+|---|---|---|
+| Pause at a stable point before save | `accept()` blocker | ✅ matches |
+| Restore VM built from the **same** configuration | resume must rebuild the identical `VZVirtualMachineConfiguration` (kernel, mem, device set, vsock port) | ⚠️ **Phase-5 must honor** — `resume_snapshot` has to reconstruct the matching config, not just the save path |
+| External disk images copied separately | read-only rootfs (dir share / squashfs) is external + stable; writable overlay is tmpfs, captured in the memory state | ✅ fine for a warm pool |
+| arm64 only | `cfg(target_arch = "aarch64")` already gates `vz/snapshot.rs` | ✅ matches |
+| macOS 14+ | not currently gated | ⚠️ **Phase-5 must require macOS 14+** for the save/restore symbols |
+| Hardware-encrypted, machine-bound save files | save + restore happen on the same host (in-process warm pool) | ✅ fine; rules out shipping prebuilt snapshots |
+
+No documented restriction prevents saving a config with a `VZVirtioSocketDevice`
+(vsock), virtio-fs share, or NAT network — the WWDC session states no device
+restrictions, and a targeted search surfaced none. **The one residual unknown the
+docs cannot close is device-level save/restore compatibility itself** (esp. vsock,
+which the design depends on); that needs a real Apple-silicon boot in Phase 5.
+Nothing in the documentation contraindicates the design.
+
 ---
 
 ## 6. C4 — Multiplexed desktop vsock codec
