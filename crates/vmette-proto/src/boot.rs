@@ -98,6 +98,13 @@ pub struct BootParams {
     pub net: bool,
     /// One-shot exec vs. persistent desktop agent.
     pub strategy: Strategy,
+    /// Capture mode: the host wired a dedicated clean console (`hvc0`) for the
+    /// exec's combined stdout+stderr and moved the kernel console + `/init`
+    /// chatter to a discarded second console (`hvc1`). The guest runs the user
+    /// command with its output redirected to `/dev/hvc0`, so the host reads a
+    /// clean stream with no kernel/init noise (replacing marker-scraping). When
+    /// `false`, the exec inherits the single console as before.
+    pub capture: bool,
 }
 
 impl BootParams {
@@ -114,6 +121,7 @@ impl BootParams {
             switch_root: false,
             net: false,
             strategy: Strategy::OneShot,
+            capture: false,
         }
     }
 }
@@ -134,6 +142,7 @@ mod tests {
         assert!(!p.switch_root);
         assert!(!p.net);
         assert_eq!(p.strategy, Strategy::OneShot);
+        assert!(!p.capture);
     }
 
     #[test]
@@ -155,6 +164,7 @@ mod tests {
                 width: 1280,
                 height: 800,
             },
+            capture: true,
         };
         let j = serde_json::to_string(&p).unwrap();
         let back: BootParams = serde_json::from_str(&j).unwrap();

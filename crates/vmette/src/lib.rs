@@ -120,6 +120,14 @@ pub struct Config {
     /// command runs (the CLI's `--env KEY=VALUE`). Applied *after* any OCI
     /// image `Env`, so these override the image's values — like `docker run -e`.
     pub env: Vec<(String, String)>,
+    /// Capture the guest's combined stdout+stderr into [`RunOutput`] instead of
+    /// streaming it to the host's stdio. When set, [`Session`] wires a dedicated
+    /// clean console (`hvc0`) for the exec output and moves the kernel console +
+    /// `/init` chatter to a discarded second console (`hvc1`), so the captured
+    /// stream carries no boot/init noise. Used by the daemon and MCP server to
+    /// run one-shot workloads in-process; the interactive CLI leaves it `false`
+    /// and inherits the host terminal. Read it back via [`Session::wait_captured`].
+    pub capture_output: bool,
     /// Optional ephemeral scratch disk size in **MiB** (the CLI's `--scratch`).
     /// When set, vmette materializes a sparse raw image of this size, attaches
     /// it read-write as the last virtio-blk device, and the guest formats it
@@ -157,6 +165,7 @@ impl Config {
             display_size: (1280, 800),
             quiet: false,
             env: Vec::new(),
+            capture_output: false,
             scratch_mib: None,
         }
     }

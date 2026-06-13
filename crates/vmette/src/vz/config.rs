@@ -1,6 +1,8 @@
 //! Translate a high-level [`crate::Config`] into a
 //! `VZVirtualMachineConfiguration` ready to validate and start.
 
+use std::os::fd::RawFd;
+
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
@@ -36,14 +38,29 @@ pub(crate) fn resolve_vsock_port(policy: VsockPort) -> Option<u32> {
     }
 }
 
+/// Where the guest's serial console(s) connect on the host side.
+pub(crate) enum SerialSink {
+    /// One virtio console (`hvc0`) bound to the host's stdin/stdout — the
+    /// interactive CLI path, where guest output streams straight to the terminal.
+    Inherit,
+    /// Two consoles for clean capture (validated against VZ's one-deliverable-
+    /// console limit): `hvc0` is bound to `write_fd` (the write end of a host
+    /// pipe) and carries *only* the exec's redirected output; `hvc1` is a null
+    /// sink that absorbs the kernel console + `/init` chatter (the cmdline sets
+    /// `console=hvc1`). The host reads `write_fd` as a clean stream.
+    Capture { write_fd: RawFd },
+}
+
 /// Build a fully-configured `VZVirtualMachineConfiguration` from `config`.
 /// `vsock_port` is the already-resolved port (None to skip vsock device).
-/// `cmdline` is the already-assembled kernel cmdline string.
+/// `cmdline` is the already-assembled kernel cmdline string. `sink` selects the
+/// serial console wiring (inherit the host terminal, or capture to a pipe).
 pub(crate) fn build(
     config: &Config,
     cmdline: &str,
     vsock_port: Option<u32>,
     scratch_path: Option<&std::path::Path>,
+    sink: SerialSink,
 ) -> Result<Retained<VZVirtualMachineConfiguration>, Error> {
     unsafe {
         let cfg = VZVirtualMachineConfiguration::new();
@@ -60,17 +77,65 @@ pub(crate) fn build(
         cfg.setCPUCount(config.vcpus as usize);
         cfg.setMemorySize(config.mem_mib * 1024 * 1024);
 
-        // Serial port → host stdio
-        let attach =
-            VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
-                VZFileHandleSerialPortAttachment::alloc(),
-                Some(&NSFileHandle::fileHandleWithStandardInput()),
-                Some(&NSFileHandle::fileHandleWithStandardOutput()),
-            );
-        let serial = VZVirtioConsoleDeviceSerialPortConfiguration::new();
-        serial.setAttachment(Some(&attach.into_super()));
+        // Serial console wiring. A virtio console port becomes `hvc{index}` in
+        // the guest in array order.
+        let serial_ports: Vec<Retained<VZSerialPortConfiguration>> = match sink {
+            SerialSink::Inherit => {
+                let attach =
+                    VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
+                        VZFileHandleSerialPortAttachment::alloc(),
+                        Some(&NSFileHandle::fileHandleWithStandardInput()),
+                        Some(&NSFileHandle::fileHandleWithStandardOutput()),
+                    );
+                let serial = VZVirtioConsoleDeviceSerialPortConfiguration::new();
+                serial.setAttachment(Some(&attach.into_super()));
+                vec![Retained::into_super(serial)]
+            }
+            SerialSink::Capture { write_fd } => {
+                // hvc0: the captured console — guest exec output → host pipe.
+                let write_handle = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
+                    NSFileHandle::alloc(),
+                    write_fd,
+                    false,
+                );
+                let cap_attach =
+                    VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
+                        VZFileHandleSerialPortAttachment::alloc(),
+                        None,
+                        Some(&write_handle),
+                    );
+                let cap = VZVirtioConsoleDeviceSerialPortConfiguration::new();
+                cap.setAttachment(Some(&cap_attach.into_super()));
+
+                // hvc1: discard sink for kernel console + /init chatter (cmdline
+                // sets console=hvc1). VZ reliably delivers only the first console
+                // to the host, which is fine: nothing reads hvc1. We wrap a real
+                // /dev/null fd (closeOnDealloc) — VZ accepts a file-descriptor
+                // attachment; `fileHandleWithNullDevice` is NOT a usable serial
+                // attachment (it throws an Obj-C exception when started).
+                let null_fd = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                if null_fd < 0 {
+                    return Err(Error::Io(std::io::Error::last_os_error()));
+                }
+                let null_handle = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
+                    NSFileHandle::alloc(),
+                    null_fd,
+                    true,
+                );
+                let null_attach =
+                    VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
+                        VZFileHandleSerialPortAttachment::alloc(),
+                        None,
+                        Some(&null_handle),
+                    );
+                let null_port = VZVirtioConsoleDeviceSerialPortConfiguration::new();
+                null_port.setAttachment(Some(&null_attach.into_super()));
+
+                vec![Retained::into_super(cap), Retained::into_super(null_port)]
+            }
+        };
         let serial_array: Retained<NSArray<VZSerialPortConfiguration>> =
-            NSArray::from_retained_slice(&[Retained::into_super(serial)]);
+            NSArray::from_retained_slice(&serial_ports);
         cfg.setSerialPorts(&serial_array);
 
         // Entropy + balloon

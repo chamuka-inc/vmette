@@ -81,6 +81,7 @@ pub(crate) fn from_config(config: &Config, scratch_dev: Option<&str>) -> BootPar
         switch_root: config.switch_root,
         net: config.net,
         strategy,
+        capture: config.capture_output,
     }
 }
 
@@ -124,6 +125,7 @@ pub(crate) fn to_env(p: &BootParams) -> String {
     }
     line("VMETTE_SWITCH_ROOT", if p.switch_root { "1" } else { "0" });
     line("VMETTE_NET", if p.net { "1" } else { "0" });
+    line("VMETTE_CAPTURE", if p.capture { "1" } else { "0" });
     match &p.strategy {
         Strategy::OneShot => line("VMETTE_STRATEGY", "oneshot"),
         Strategy::Agent { width, height } => {
@@ -292,6 +294,7 @@ pub(crate) fn from_env(text: &str) -> Result<BootParams, BootEnvError> {
         switch_root: flag("VMETTE_SWITCH_ROOT")?,
         net: flag("VMETTE_NET")?,
         strategy,
+        capture: flag("VMETTE_CAPTURE")?,
     })
 }
 
@@ -375,6 +378,7 @@ mod tests {
                 width: 1280,
                 height: 800,
             },
+            capture: true,
         }
     }
 

@@ -453,6 +453,13 @@ elif [ "$ROOTFS_RO" != "1" ]; then
     EXIT_FILE="/.vmette-exit"
 fi
 
+# Capture mode (boot.env VMETTE_CAPTURE=1): the host wired hvc0 as a clean
+# capture console and moved the kernel console + these /init logs to hvc1
+# (console=hvc1). Redirect ONLY the user command's stdout+stderr to /dev/hvc0 so
+# the host reads a clean stream; /init's own logging stays on hvc1 (discarded).
+CAP_REDIR=""
+[ "$VMETTE_CAPTURE" = "1" ] && CAP_REDIR=">/dev/hvc0 2>&1"
+
 if [ "$USE_SWITCH_ROOT" = "1" ]; then
     if [ "$ROOTFS_RO" = "1" ]; then
         log "WARNING: --switch-root with read-only rootfs — exit code won't propagate"
@@ -464,7 +471,7 @@ if [ "$USE_SWITCH_ROOT" = "1" ]; then
 export VMETTE_VSOCK_PORT='$VMETTE_VSOCK_PORT'
 [ -n "\$VMETTE_CALLER_ENV" ] && eval "\$VMETTE_CALLER_ENV"
 unset VMETTE_CALLER_ENV
-/bin/sh -c '$(printf '%s' "$USER_CMD" | sed "s/'/'\\\\''/g")'
+/bin/sh -c '$(printf '%s' "$USER_CMD" | sed "s/'/'\\\\''/g")' $CAP_REDIR
 RC=\$?
 sync
 ${EXIT_FILE:+echo "\$RC" > "$EXIT_FILE" 2>/dev/null}
@@ -490,8 +497,14 @@ else
     # Apply the env (image env + caller --env, already merged host-side into the
     # single VMETTE_CALLER_ENV block, image first so --env wins), then run the
     # user command. $USER_CMD is passed as a positional arg so it needs no
-    # re-escaping here.
-    chroot /newroot /bin/sh -c '[ -n "$VMETTE_CALLER_ENV" ] && eval "$VMETTE_CALLER_ENV"; unset VMETTE_CALLER_ENV; exec /bin/sh -c "$1"' vmette "$USER_CMD"
+    # re-escaping here. In capture mode the user command's output goes to hvc0
+    # (CAP_REDIR); /init's own logs stay on the console (hvc1).
+    INNER='[ -n "$VMETTE_CALLER_ENV" ] && eval "$VMETTE_CALLER_ENV"; unset VMETTE_CALLER_ENV; exec /bin/sh -c "$1"'
+    if [ -n "$CAP_REDIR" ]; then
+        chroot /newroot /bin/sh -c "$INNER" vmette "$USER_CMD" >/dev/hvc0 2>&1
+    else
+        chroot /newroot /bin/sh -c "$INNER" vmette "$USER_CMD"
+    fi
     RC=$?
     log "exit=$RC"
 fi

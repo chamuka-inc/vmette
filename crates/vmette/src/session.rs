@@ -40,7 +40,7 @@ use objc2_virtualization::{
 
 use crate::desktop::{self, Action, ResponseHeader};
 use crate::error::Error;
-use crate::vz::config::{build as build_vz_config, resolve_vsock_port};
+use crate::vz::config::{build as build_vz_config, resolve_vsock_port, SerialSink};
 use crate::vz::delegate::{DelegateState, VmetteDelegate};
 use crate::vz::vsock::{ListenerMode, ListenerState, VsockLogger};
 use crate::{cmdline, Config, ShareMount, WorkloadStrategy};
@@ -326,6 +326,65 @@ fn make_scratch_image(mib: u64) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
+/// Cap on captured guest output (matches the prior subprocess/MCP cap). Past
+/// this the buffer stops growing (but the pipe keeps draining so the guest never
+/// blocks) and a truncation marker is appended once.
+const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
+
+/// Owns the host end of the capture pipe (write side; the read side is owned by
+/// the reader thread, which closes it on exit). Closed on session drop so the
+/// daemon doesn't leak a descriptor per run.
+struct CapturePipe {
+    write_fd: RawFd,
+}
+
+impl Drop for CapturePipe {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.write_fd) };
+    }
+}
+
+/// Drain the capture pipe (`read_fd`, owned + closed here) into `buf` until the
+/// session ends and a short grace elapses with no further bytes. Non-blocking so
+/// it can observe `end` rather than block forever on a guest that never closes
+/// the console. Bounded by [`CAPTURE_CAP_BYTES`]; keeps reading past the cap so a
+/// chatty guest never blocks on a full pipe.
+fn drain_capture(read_fd: RawFd, end: Arc<EndSlot>, buf: Arc<Mutex<Vec<u8>>>) {
+    unsafe {
+        let fl = libc::fcntl(read_fd, libc::F_GETFL);
+        libc::fcntl(read_fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+    }
+    let mut tmp = [0u8; 8192];
+    let mut truncated = false;
+    let mut grace: u32 = 0;
+    loop {
+        let n = unsafe { libc::read(read_fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+        if n > 0 {
+            grace = 0;
+            let mut b = buf.lock().unwrap();
+            if b.len() < CAPTURE_CAP_BYTES {
+                let take = (n as usize).min(CAPTURE_CAP_BYTES - b.len());
+                b.extend_from_slice(&tmp[..take]);
+                if take < n as usize && !truncated {
+                    truncated = true;
+                    b.extend_from_slice(b"\n[output truncated at 1048576 bytes]\n");
+                }
+            }
+            continue;
+        }
+        // EOF (0) → done. EAGAIN/error (<0) → stop once the VM ended and a brief
+        // grace (~0.5s) has passed with no trailing bytes; else poll on.
+        if n == 0 || (end.is_set() && grace >= 25) {
+            break;
+        }
+        if end.is_set() {
+            grace += 1;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe { libc::close(read_fd) };
+}
+
 /// A booted VM and everything that must outlive its dispatch queue.
 pub struct Session {
     vm: Retained<VZVirtualMachine>,
@@ -342,6 +401,11 @@ pub struct Session {
     _control_dir: Option<ControlDirGuard>,
     // Ephemeral `--scratch` disk image; removed when the session drops.
     _scratch_file: Option<ScratchFileGuard>,
+    // C2 capture: the host pipe write end (closed on drop) + the buffer the
+    // reader thread fills + the reader handle (joined by `wait_captured`).
+    _capture: Option<CapturePipe>,
+    captured: Option<Arc<Mutex<Vec<u8>>>>,
+    reader: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Session {
@@ -408,18 +472,50 @@ impl Session {
             .as_ref()
             .map(|_| cmdline::scratch_device_name(&working));
 
-        let cmdline = cmdline::build(&working, vsock_port);
+        let mut cmdline = cmdline::build(&working, vsock_port);
 
         // C1: write the typed boot envelope the guest's `/init` sources from the
         // `ctl` share. Built from the caller's original `config` (not `working`),
-        // so the implicit `ctl` share is excluded from `shares`.
+        // so the implicit `ctl` share is excluded from `shares`. `capture_output`
+        // rides through `from_config` so the guest redirects the exec to `hvc0`.
         if let Some(guard) = &control_dir {
             let params = crate::boot::from_config(config, scratch_dev.as_deref());
             std::fs::write(guard.0.join("boot.env"), crate::boot::to_env(&params))
                 .map_err(Error::Io)?;
         }
 
-        let cfg = build_vz_config(&working, &cmdline, vsock_port, scratch_path.as_deref())?;
+        // C2 capture: when the caller wants the guest output captured in-process
+        // (daemon/MCP), wire `hvc0` to a host pipe and push the kernel console +
+        // `/init` chatter to a discarded `hvc1` (`console=hvc1`). A reader thread
+        // drains the pipe into a bounded buffer for [`Session::wait_captured`].
+        // Otherwise the single console inherits the host terminal.
+        // `capture` carries (read_fd for the reader thread, CapturePipe owning
+        // the write end). `None` when not capturing.
+        let capture: Option<(RawFd, CapturePipe)> = if config.capture_output {
+            let mut fds: [libc::c_int; 2] = [0; 2];
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return Err(Error::Io(std::io::Error::last_os_error()));
+            }
+            // Move the kernel console off hvc0 so it stays clean for the exec.
+            cmdline = cmdline.replace("console=hvc0", "console=hvc1");
+            Some((fds[0], CapturePipe { write_fd: fds[1] }))
+        } else {
+            None
+        };
+        let sink = match &capture {
+            Some((_, p)) => SerialSink::Capture {
+                write_fd: p.write_fd,
+            },
+            None => SerialSink::Inherit,
+        };
+
+        let cfg = build_vz_config(
+            &working,
+            &cmdline,
+            vsock_port,
+            scratch_path.as_deref(),
+            sink,
+        )?;
 
         // Private serial queue for this VM. libdispatch services it on its
         // worker pool, so all VZ callbacks fire there without a run loop, and
@@ -431,6 +527,24 @@ impl Session {
 
         let end = EndSlot::new();
         let timed_out = Arc::new(AtomicBool::new(false));
+
+        // Start draining the capture pipe now (before the VM runs) so the guest
+        // never blocks on a full pipe. The reader owns `read_fd` and stops once
+        // `end` is recorded; `Session` keeps the `write_fd` (CapturePipe) alive
+        // for the VM's lifetime.
+        let (captured, reader) = match &capture {
+            Some((read_fd, _)) => {
+                let buf = Arc::new(Mutex::new(Vec::new()));
+                let buf_for_reader = buf.clone();
+                let end_for_reader = end.clone();
+                let read_fd = *read_fd;
+                let handle = std::thread::spawn(move || {
+                    drain_capture(read_fd, end_for_reader, buf_for_reader)
+                });
+                (Some(buf), Some(handle))
+            }
+            None => (None, None),
+        };
 
         let delegate = VmetteDelegate::new(DelegateState {
             exit_code_file,
@@ -539,6 +653,9 @@ impl Session {
             _vsock_keepalive: vsock_keepalive,
             _control_dir: control_dir,
             _scratch_file: scratch_file,
+            _capture: capture.map(|(_, p)| p),
+            captured,
+            reader: Mutex::new(reader),
         })
     }
 
@@ -559,6 +676,30 @@ impl Session {
     /// pump any run loop — the VM runs on its own dispatch queue.
     pub fn wait(&self) -> SessionEnd {
         self.end.wait_end()
+    }
+
+    /// Block until the session ends, then return the exit code plus the captured
+    /// guest output (combined stdout+stderr) as a [`RunOutput`]. Only meaningful
+    /// for a session started with [`Config::capture_output`](crate::Config::capture_output);
+    /// otherwise `output` is empty. Joins the capture reader thread so all
+    /// trailing output flushed around poweroff is included.
+    pub fn wait_captured(&self) -> crate::RunOutput {
+        let end = self.end.wait_end();
+        if let Some(handle) = self.reader.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+        let output = self
+            .captured
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(&b.lock().unwrap()).into_owned())
+            .unwrap_or_default();
+        let exit_code = match end {
+            SessionEnd::Exited(code) => code,
+            SessionEnd::TimedOut => 124,
+            SessionEnd::Stopped => 0,
+            SessionEnd::Error(_) => 1,
+        };
+        crate::RunOutput { exit_code, output }
     }
 
     /// Request a graceful force-stop of the guest. The stop completes on the

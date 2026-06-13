@@ -15,11 +15,15 @@ use crate::session::{Session, SessionEnd};
 use crate::terminal::{enter_raw_mode, install_signal_handlers, restore_terminal};
 use crate::Config;
 
-/// Result of a completed [`run`]. Currently only carries the exit code,
-/// but kept as a struct so we can grow it without breaking callers.
-#[derive(Debug, Clone, Copy)]
+/// Result of a completed [`run`] or [`Session::wait_captured`](crate::Session::wait_captured).
+#[derive(Debug, Clone)]
 pub struct RunOutput {
     pub exit_code: i32,
+    /// Captured guest output (combined stdout+stderr) when the session ran with
+    /// [`Config::capture_output`](crate::Config::capture_output); empty otherwise
+    /// (the interactive `run` path streams to the terminal). Bounded — truncated
+    /// past 1 MiB with a marker.
+    pub output: String,
 }
 
 /// Boot the configured guest, exec the command, block until poweroff,
@@ -33,11 +37,17 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
     // Snapshot dispatch — both build and resume go through here.
     if let Some(p) = &config.build_snapshot {
         crate::vz::snapshot::build(config, p)?;
-        return Ok(RunOutput { exit_code: 0 });
+        return Ok(RunOutput {
+            exit_code: 0,
+            output: String::new(),
+        });
     }
     if let Some(p) = &config.resume_snapshot {
         let code = crate::vz::snapshot::resume(config, p)?;
-        return Ok(RunOutput { exit_code: code });
+        return Ok(RunOutput {
+            exit_code: code,
+            output: String::new(),
+        });
     }
 
     install_signal_handlers();
