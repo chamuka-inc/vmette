@@ -2,7 +2,7 @@
 //!
 //! Two families of tools:
 //!
-//! * one-shot / workspace (each call boots a fresh microVM, direct subprocess):
+//! * one-shot / workspace (each call boots a fresh microVM in-process):
 //!   * `execute`           — one-shot `python` / `node` / `shell` code
 //!   * `fetch_url`         — HTTPS GET with byte cap, returns body
 //!   * `workspace_create`  — allocate a scratch dir + per-call image

@@ -352,9 +352,9 @@ async fn run_workload_inproc(
     mut write_half: tokio::net::unix::OwnedWriteHalf,
 ) -> Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Frame>(64);
-    // Lets the async side force-stop the VM if the client disconnects mid-run
-    // (the subprocess path's `kill_on_drop` equivalent). The worker fills it
-    // once the session is live.
+    // Lets the async side force-stop the VM if the client disconnects mid-run,
+    // so a vanished client doesn't leak a VM running to its timeout. The worker
+    // fills it once the session is live.
     let stop_slot: Arc<std::sync::Mutex<Option<vmette::StopHandle>>> =
         Arc::new(std::sync::Mutex::new(None));
     let stop_for_worker = stop_slot.clone();
@@ -399,7 +399,7 @@ async fn run_workload_inproc(
         }
     }
     // If the client vanished mid-run, force-stop the VM so it doesn't keep
-    // running to its timeout (mirrors the subprocess `kill_on_drop`).
+    // running to its timeout.
     if client_gone {
         if let Some(h) = stop_slot.lock().unwrap().take() {
             h.stop();

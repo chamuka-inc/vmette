@@ -162,7 +162,6 @@ binary path as `command` and the flags as `args`.
 | `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
-| `--vmette PATH` | autodiscovered | Override `vmette` binary path. Default: `$VMETTE_BIN`, sibling-of-this-binary, then `$PATH` lookup. |
 | `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. The daemon is started automatically on first desktop use if it isn't already running. |
 | `--ca-certs DIR` | `$VMETTE_CA_CERTS`, else `~/.config/vmette/certs` | Host directory of `.crt`/`.pem` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
 
@@ -412,9 +411,8 @@ What the server **does not** isolate:
 
 | Symptom | Likely cause |
 |---------|--------------|
-| Server fails to start: `vmette binary not found` | `vmette` not on `PATH`. Pass `--vmette /path/to/vmette` or symlink it. |
 | Server fails: `kernel not found` | Assets not installed. Run `install.sh` or build them: `bash scripts/fetch-assets.sh && bash scripts/build-initramfs.sh`. |
-| Every tool call returns exit 1 with `start failed` | Codesigning lost. Re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime $(which vmette)`. |
+| Every tool call returns exit 1 with `start failed` | Codesigning lost. The MCP server boots VMs in-process, so **it** must carry the virtualization entitlement: re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime $(which vmette-mcp)`. |
 | `fetch_url` returns "this MCP server was started without --allow-network" | Add `--allow-network` to your client config and restart the host. |
 | `workspace_create` returns "workspace cap reached" | Destroy idle workspaces or raise `--workspace-cap`. |
 | `desktop_*` tools fail with "connect … failed (is vmetted running?)" | Start the daemon (`vmetted &`); the desktop tools route through it. |

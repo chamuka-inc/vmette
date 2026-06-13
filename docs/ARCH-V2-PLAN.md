@@ -125,17 +125,26 @@ Phase 3 (C3) are all unblocked.
 
 #### Environment recipe to reproduce the boot spikes
 
+> Note: `three_console_boot_spike` (the console-delivery probe that produced the
+> table above) was a Phase-0 throwaway. It built its own raw kernel cmdline and
+> was removed after C1 — once `boot.env` replaced the `vmette.*` cmdline tokens,
+> the guest `/init` rejects a cmdline without `vmette.boot=ctl`, so the spike no
+> longer boots. Its findings are recorded above. The surviving spikes —
+> `serial_capture_spike` (config validation), `inproc_soak_spike`, and
+> `capture_spike` (C2 in-process capture) — go through `Config`/`Session`, so
+> they track the current boot contract.
+
 ```
 bash scripts/fetch-assets.sh && bash scripts/fetch-alpine-rootfs.sh && \
   bash scripts/build-initramfs.sh
-cargo build -p vmette --example three_console_boot_spike
+# soak (validates in-process stability) — build, ad-hoc sign, run with assets:
+cargo build -p vmette --example inproc_soak_spike
 codesign -s - --entitlements entitlements.plist --force \
-  target/debug/examples/three_console_boot_spike
-VMETTE_KERNEL=assets/x86_64/vmlinuz-virt \
-VMETTE_INITRAMFS=assets/x86_64/initramfs-vmette \
-VMETTE_ROOTFS=assets/x86_64/alpine-rootfs \
-  ./target/debug/examples/three_console_boot_spike
-# soak: same build+sign for inproc_soak_spike, with VMETTE_SOAK_* env vars.
+  target/debug/examples/inproc_soak_spike
+VMETTE_SOAK_KERNEL=assets/x86_64/vmlinuz-virt \
+VMETTE_SOAK_INITRAMFS=assets/x86_64/initramfs-vmette \
+VMETTE_SOAK_ROOTFS=assets/x86_64/alpine-rootfs \
+  ./target/debug/examples/inproc_soak_spike
 ```
 
 ---

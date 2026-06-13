@@ -30,7 +30,7 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
 | `crates/vmette-providers` | Aggregator exposing `default_registry()` (DirProvider→Squashfs→Tar→Oci, the single load-bearing order). Used by the CLI + daemon so both resolve specs identically. |
 | `crates/vmette-assets` | Shared boot-asset (kernel + initramfs) discovery for the binaries. |
 | `crates/vmette-cli` | `vmette` CLI binary. Hand-rolled arg parsing (no clap — keeps the binary small). |
-| `crates/vmette-daemon` | `vmetted` — UNIX-socket dispatcher (tokio). Stateless subprocess dispatch + stateful desktop registry; owns the pixel-`settle` perception module. |
+| `crates/vmette-daemon` | `vmetted` — UNIX-socket dispatcher (tokio). In-process stateless run lane + stateful desktop registry; owns the pixel-`settle` perception module. |
 | `crates/vmette-mcp` | MCP server (`vmette-mcp`) exposing vmette to AI agents over stdio. |
 | `crates/vmette-provider-oci` | OCI/Docker image rootfs provider (catch-all for bare refs + `oci://`); per-registry `AuthResolver` for private images. |
 | `crates/vmette-provider-squashfs` | Squashfs block-image rootfs provider (`squashfs+file://`, `squashfs+https://`, `squashfs+http://`). Returns `BlockImage`. |
@@ -60,10 +60,16 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
   it carries live in `vmette-proto` and are re-exported here (and as
   `vmette::Action` etc.). The pixel-settle perception module is **not** here —
   it moved to the daemon, its only consumer.
-- **`cmdline.rs`** — assembles the kernel cmdline, emitting `vmette.*=…` tokens
-  (exec base64, rootfs, `rootfs_block=squashfs` + auto `ctl` control share for
-  block images, shares, net, vsock_port, switch_root, snapshot mode,
-  `vmette.desktop=1` + `vmette.display=WxH` for the Agent strategy).
+- **`cmdline.rs`** — assembles the kernel cmdline. After the typed-boot-contract
+  refactor it emits only `vmette.boot=ctl` (telling `/init` to source the
+  `boot.env` envelope) plus `vmette.vsock_port` when vsock is on; everything else
+  (exec, env, rootfs mode, shares, scratch device, switch-root, net, workload)
+  travels in **`boot.rs`**'s `BootParams` envelope written to the `ctl` share.
+- **`boot.rs`** — the host↔guest **boot contract** codec. `to_env` serializes the
+  typed `vmette_proto::boot::BootParams` to the `KEY=VALUE` `boot.env` envelope
+  `Session` writes to the `ctl` virtio-fs share; the guest `/init` sources it.
+  `BootParams` (versioned by `BOOT_PROTO_VERSION`) replaces the old `vmette.*`
+  cmdline tokens; `from_config` maps a `Config` to it.
 - **`ffi.rs`** — the C ABI (cbindgen → `include/vmette.h`). Opaque
   `#[repr(C)]` handles, paired `*_new`/`*_free`, `VmetteStatus` i32 codes. Every
   fn is `unsafe extern "C"`; safety contracts documented at the module level + a
@@ -80,11 +86,13 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
 
 Two **deliberately separate** subsystems:
 
-- **Stateless dispatch** (`main.rs`): the existing per-request path forks a
-  `vmette` subprocess and streams stdout/stderr/exit back over the socket. It
-  peeks `kind`: a `desktop_*` request deserializes into the typed
-  `vmette_proto::daemon::DesktopRequest` enum and is matched (no stringly second
-  dispatch); everything else is the untagged run `Request`.
+- **Stateless dispatch** (`main.rs`): the per-request path boots a one-shot
+  capture-aware `vmette::Session` **in-process** (`run_workload_inproc`), via
+  `Config::from_run_request`, and streams the guest's clean captured output back
+  as `Frame::Stdout`/`Frame::Exit` over the socket — no forked subprocess, no
+  console marker-scraping. It peeks `kind`: a `desktop_*` request deserializes
+  into the typed `vmette_proto::daemon::DesktopRequest` enum and is matched (no
+  stringly second dispatch); everything else is the untagged run `Request`.
 - **Stateful desktop registry** (`registry.rs`): holds live `vmette::Session`
   VMs (Agent workload) in-process so a desktop persists across many requests.
   Resolves rootfs images via `vmette_providers::default_registry()`. Guardrails:
@@ -100,9 +108,10 @@ Two **deliberately separate** subsystems:
 
 ## MCP server — `crates/vmette-mcp/src/`
 
-`server.rs` registers tools: `execute`, `fetch_url`, `workspace_*` (direct
-subprocess path), and `desktop_*` (routed through `vmetted` via
-`daemon_client.rs`, since persistence requires the daemon). `daemon_client.rs`
+`server.rs` registers tools: `execute`, `fetch_url`, `workspace_*` (booted
+**in-process** by `sandbox.rs` via a capture-aware `vmette::Session` — the MCP
+server itself carries the virtualization entitlement), and `desktop_*` (routed
+through `vmetted` via `daemon_client.rs`, since persistence requires the daemon). `daemon_client.rs`
 builds requests and parses replies as `vmette-proto` types (no hand-rolled
 `json!`), so a protocol change is a compile error here. `desktop_screenshot`
 returns an MCP image content block. `--allow-network` gates outbound network.

@@ -45,8 +45,8 @@ install boots with no asset flags.
 | `--share` | TAG=PATH | Extra virtio-fs mount at `/mnt/<TAG>` in the guest. Repeatable. |
 | `--disk` | PATH | Raw block image attached as virtio-blk. Repeatable. |
 | `--scratch` | SIZE | Ephemeral ext4 **scratch disk** used as the guest's writable overlay upper, so the writable root and `/tmp` are bounded by this disk instead of `--mem-mib`. Sizes accept `G`/`g` (GiB), `M`/`m` (MiB), or a bare number of MiB: `8G`, `512M`, `2048`. vmette materializes a sparse image per run and deletes it on teardown (nothing persists). No effect with `--rootfs-ro` (no writable overlay). Without this flag the overlay is a RAM-backed tmpfs — fine for light work, but a big build/extract that exceeds RAM will `No space left on device`. |
-| `--env` | KEY=VALUE | Export an env var in the guest before `--exec`. Repeatable. Applied **after** any OCI image `Env`, so it overrides the image's value (like `docker run -e`). Carried base64-encoded on the cmdline (shares the ~3000-char budget with `--exec`), so keep it modest. |
-| `--exec` | CMD | Shell command to run in the guest, then `poweroff -f`. Encoded as base64 in `vmette.exec=<b64>` on the kernel cmdline (~3000 char limit). |
+| `--env` | KEY=VALUE | Export an env var in the guest before `--exec`. Repeatable. Applied **after** any OCI image `Env`, so it overrides the image's value (like `docker run -e`). |
+| `--exec` | CMD | Shell command to run in the guest, then `poweroff -f`. Delivered to the guest in the typed `boot.env` envelope on the `ctl` virtio-fs share (no length limit). |
 | `--net` | — | Attach virtio-net with NAT. `/init` runs `udhcpc` on eth0. |
 | `--switch-root` | — | Use `switch_root` instead of `chroot` for the exec environment. Cleaner PID-1 (useful for systemd-style workloads). |
 

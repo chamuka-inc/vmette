@@ -1,8 +1,8 @@
 //! Desktop session registry — the daemon's **stateful** subsystem.
 //!
-//! This is deliberately separate from the stateless per-request dispatch in
-//! `main.rs` (which forks a `vmette` subprocess and forgets about it). Here we
-//! hold *live* [`vmette::Session`] VMs in-process so a desktop persists across
+//! This is deliberately separate from the stateless per-request run lane in
+//! `main.rs` (which boots a one-shot `vmette::Session`, streams its output, and
+//! drops it). Here we hold *live* [`vmette::Session`] VMs so a desktop persists across
 //! many client requests: a single VM boots Xvfb + a WM + the computer-use
 //! agent once, then services screenshot/click/type round-trips until it is
 //! explicitly stopped.

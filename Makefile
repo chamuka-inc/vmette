@@ -9,9 +9,9 @@ build:         ## cargo build the workspace + codesign vmette/vmetted/vmette-mcp
 	cargo build --release
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmetted
-	# vmette-mcp boots no VM itself (it spawns vmette / talks to vmetted), so
-	# it needs no virtualization entitlement — ad-hoc sign it with least privilege.
-	codesign --sign - --force --options=runtime target/release/vmette-mcp
+	# vmette-mcp boots one-shot VMs in-process (execute/fetch_url/workspace), so it
+	# needs the virtualization entitlement too — it no longer forks the vmette CLI.
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette-mcp
 
 header:        ## Regenerate the checked-in C header from src/ffi.rs (cbindgen)
 	cargo build -p vmette --features regenerate-header
@@ -54,10 +54,8 @@ universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	    target/universal/release/vmette
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
 	    target/universal/release/vmetted
-	# vmette-mcp boots no VM itself (it spawns vmette / talks to vmetted), so
-	# it needs no virtualization entitlement — ad-hoc sign it so it runs on
-	# Apple Silicon, with least privilege.
-	codesign --sign - --force --options=runtime \
+	# vmette-mcp boots one-shot VMs in-process now, so it needs the entitlement too.
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
 	    target/universal/release/vmette-mcp
 	@lipo -info target/universal/release/vmette target/universal/release/vmetted target/universal/release/vmette-mcp target/universal/release/libvmette.dylib
 

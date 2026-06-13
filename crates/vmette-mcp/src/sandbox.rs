@@ -96,7 +96,7 @@ impl Sandbox {
         let initramfs = self.initramfs.clone();
         let req = req.clone();
         // Lets the host guard force-stop the VM if it wedges past its own
-        // --timeout (the in-process equivalent of the old subprocess kill).
+        // --timeout, instead of leaving it running.
         let stop_slot: Arc<std::sync::Mutex<Option<vmette::StopHandle>>> =
             Arc::new(std::sync::Mutex::new(None));
         let stop_for_worker = stop_slot.clone();

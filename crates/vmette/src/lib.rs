@@ -37,8 +37,8 @@ pub use vmette_proto::ShareMount;
 /// Selects what the guest does once booted, and therefore which terminal
 /// event ends the [`Session`].
 ///
-/// - [`OneShot`](WorkloadStrategy::OneShot): the guest runs the
-///   `vmette.exec` command and powers off, writing its code to
+/// - [`OneShot`](WorkloadStrategy::OneShot): the guest runs the exec
+///   command (from the `boot.env` envelope) and powers off, writing its code to
 ///   `.vmette-exit`. The session ends on the lifecycle-delegate poweroff.
 ///   This is the headless default and the only path the CLI/FFI use.
 /// - [`Agent`](WorkloadStrategy::Agent): the guest starts a desktop
@@ -208,8 +208,8 @@ impl Config {
     /// [`Request`](vmette_proto::daemon::Request) plus its already-resolved
     /// rootfs `artifact`, for running the workload **in-process**. This is the
     /// single owner of the `Request` → `Config` mapping (shared by the daemon and
-    /// the MCP server), replacing the former `Request` → CLI-argv path
-    /// (`to_cli_args`) that fed a forked `vmette` subprocess.
+    /// the MCP server). It superseded an earlier path that rendered the request
+    /// to `vmette` CLI argv and forked a subprocess.
     ///
     /// Rootfs resolution (the provider registry / network I/O) stays with the
     /// caller — it passes the resolved `artifact` and the request's `rootfs_ro`.
@@ -239,8 +239,7 @@ impl Config {
         if let Some(g) = req.guest_vsock_port {
             c.guest_vsock_port = g;
         }
-        // Wire protocol: -1 disable, 0 auto, >0 fixed, absent → auto (the CLI's
-        // default), matching the old `to_cli_args` rendering.
+        // Wire protocol: -1 disable, 0 auto, >0 fixed, absent → auto.
         c.vsock_port = match req.vsock_port {
             Some(-1) => VsockPort::Disabled,
             Some(n) if n > 0 => VsockPort::Fixed(n as u32),

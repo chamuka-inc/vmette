@@ -1,11 +1,11 @@
 //! Async client for the desktop-session subsystem of `vmetted`.
 //!
-//! The `execute` / `workspace_*` tools boot their own one-shot microVM via the
-//! `vmette` CLI subprocess (see `sandbox.rs`). Desktop computer-use is
-//! different: a desktop session is a *persistent* VM that must outlive a single
-//! tool call, so it has to be owned by the long-lived daemon, not by a
-//! per-call subprocess. These tools therefore route through `vmetted`'s UNIX
-//! socket, where the session registry holds the live `vmette::Session`.
+//! The `execute` / `workspace_*` tools boot their own one-shot microVM
+//! in-process (see `sandbox.rs`). Desktop computer-use is different: a desktop
+//! session is a *persistent* VM that must outlive a single tool call, so it has
+//! to be owned by the long-lived daemon. These tools therefore route through
+//! `vmetted`'s UNIX socket, where the session registry holds the live
+//! `vmette::Session`.
 //!
 //! Protocol: one [`DesktopRequest`] line of JSON in, one [`DesktopReply`] line
 //! of JSON out (the daemon's stateful `desktop_*` path). Both are the shared

@@ -116,7 +116,7 @@ VMETTE_VSOCK_PORT="$(cmdline_get vmette.vsock_port)"
 export VMETTE_VSOCK_PORT
 
 # Mount the writable overlay *upper* layer at /ovl. With a `--scratch` disk
-# (vmette.scratch_dev set, e.g. "vda") we format that freshly-attached block
+# (VMETTE_SCRATCH_DEV set from boot.env, e.g. "vda") we format that block
 # device ext4 and mount it, so the writable root and /tmp are bounded by the
 # disk instead of guest RAM — lifting the tmpfs cap that otherwise ENOSPC's a
 # big build. Without it (the default), the upper is a RAM-backed tmpfs. Any
@@ -489,7 +489,7 @@ fi
 # ---- chroot path (default) ----------------------------------------------
 
 if [ -z "$B64" ]; then
-    log "no vmette.exec; dropping to interactive shell in chroot"
+    log "no exec in boot.env; dropping to interactive shell in chroot"
     chroot /newroot /bin/sh
     RC=$?
 else
