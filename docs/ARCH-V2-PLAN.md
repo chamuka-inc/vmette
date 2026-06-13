@@ -115,7 +115,7 @@ abort criterion (failures or linear fd growth) was not triggered.
 | G1 (parse approach) | ✅ Resolved → `KEY=VALUE` env file, no parser binary |
 | G2 design + boot-validation | ✅ Resolved on real boots → clean single-console (hvc0) streaming + `console=hvc1` sink + `ctl` share. Multi-console is NOT viable under VZ. |
 | G2-stability soak | ✅ Run green → 300/300, fd drift 0 |
-| G3 (snapshot delete vs gate) | ✅ Resolved → **delete** (recorded in Phase 3) |
+| G3 (snapshot delete vs keep) | ✅ **REVERSED → keep** (real Apple-Silicon Phase-5 feature; integrate into `boot.env`, recorded in Phase 3) |
 | G4 (C4 scope) | ✅ Resolved → **defer** C4 pending profiling |
 
 **No open Phase-0 gaps remain.** All boot-gated items were closed by ad-hoc
@@ -241,25 +241,34 @@ output capture single-owned in the library.
 
 ---
 
-## Phase 3 — C3: Remove snapshot surface
+## Phase 3 — C3: Preserve snapshot; integrate into the boot contract
 
-Depends on: nothing (can run in parallel with Phase 1/2; sequence after C1 only
-because C1 already removed the snapshot *cmdline tokens*).
+> **[GATE G3] REVERSED — do NOT delete.** Snapshot/restore is a real, planned
+> **Apple-Silicon** feature (Phase 5: `saveMachineStateToURL:` is arm64-gated;
+> the daemon warm pool needs it). The Phase-0 "vestigial" reading was literally
+> true (both arches stub out today) but the delete conclusion was wrong. C3 keeps
+> all snapshot scaffolding and makes it coherent with the C1 `boot.env` contract.
 
-- **[GATE G3]** Confirm delete-vs-feature-gate. Recommendation: **delete**.
-- Remove `Config::{build_snapshot,resume_snapshot,guest_vsock_port}`, the
-  `lifecycle.rs:33-41` dispatch, `vz/snapshot.rs`, and the CLI flags.
-- Remove `ListenerMode::Echo` + the `READY\n` detector (`vz/vsock.rs`); change
-  `session.rs:450-453` so `OneShot` instantiates no vsock listener unless an exec
-  needs the agent channel.
-- Remove the `snapshot_mode=server` branch and `.vmette-runner.sh` heredoc from
-  `custom-init.sh`; stop injecting `guest/vsock-runner.c` into the initramfs.
-  Rebuild the initramfs.
-- `CHANGELOG.md`: record removal of `--build-snapshot`/`--resume-snapshot`.
-- Gate: `cargo test --workspace`; clippy clean; `tests/run.sh` green.
+Depends on: C1 (the `boot.env` contract).
 
-Exit criteria: no dead snapshot surface; `OneShot` no longer instantiates an
-echo listener.
+- **KEEP** `Config::{build_snapshot,resume_snapshot,guest_vsock_port}`, the CLI
+  flags, `lifecycle::run` dispatch, `vz/snapshot.rs` (the `cfg(aarch64)` Phase-5
+  stub), `ListenerMode::Echo` + the `READY\n` detector, the `custom-init.sh`
+  snapshot branch, and `guest/vsock-runner.c`.
+- **Integrate** snapshot into the typed contract (done): `Strategy::Snapshot
+  { guest_vsock_port }` in `vmette-proto::boot`; `to_env`/`from_env` carry it
+  (`VMETTE_STRATEGY=snapshot` + `VMETTE_GUEST_VSOCK_PORT`); the guest branch keys
+  off `VMETTE_STRATEGY=snapshot` and reads the guest port from `boot.env`.
+- The **producer** (a `BootParams` with `Strategy::Snapshot`) is Phase 5's, wired
+  when `vz::snapshot::build` is implemented. Contract + guest consumer land now so
+  C1's cmdline shrink does not strand the feature.
+- No CHANGELOG entry (no observable change; flags still return
+  `SnapshotUnsupported` until Phase 5).
+- Gate: `Strategy::Snapshot` round-trips; `cargo test --workspace`; clippy clean;
+  `tests/run.sh` green (snapshot arch-guard + vsock-roundtrip gates).
+
+Exit criteria: snapshot preserved and coherent with `boot.env`; no dead
+`VMETTE_SNAPSHOT_MODE` reference; the feature is Phase-5-ready.
 
 ---
 
@@ -310,7 +319,7 @@ Phase 1  C1 boot contract ─────┬────────────
                                │
 Phase 2  C2 one substrate ─────┘ (needs G2 + ctl from C1)
                                │
-Phase 3  C3 snapshot removal ──┴───── (after C1's token removal; else parallel)
+Phase 3  C3 snapshot KEEP+wire ┴───── (integrate snapshot into boot.env; depends on C1)
                                │
 Phase 4  C5 consolidation ─────┴───── (independent items, any order)
                                │
@@ -336,9 +345,11 @@ Critical path: **0 → 1 → 2**. Everything else parallelizes against it.
   fork deleted.
 - Host→guest config is a single typed, versioned `BootParams` blob; cmdline
   reduced to kernel-critical tokens; one env channel; device name single-owned.
-- No vestigial snapshot surface.
+- Snapshot preserved (real Apple-Silicon Phase-5 feature) and integrated into the
+  `boot.env` contract (`Strategy::Snapshot`) — not deleted.
 - `run()` returns; one daemon-client; one `CaTrust` owner; `Config` rootfs enum.
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets` (zero
   warnings), `cargo test --workspace`, and `tests/run.sh` all green.
-- `CHANGELOG.md` updated for the snapshot-flag removal and the FFI `vmette_run`
-  behavior change; no internal-only entries added.
+- `CHANGELOG.md` updated for the FFI `vmette_run` behavior change (and the C1
+  `RootfsArtifact::Directory` field); no internal-only entries added. Snapshot is
+  NOT in the changelog — it is preserved with no observable change.

@@ -39,13 +39,14 @@ three structural problems have accumulated:
    sole stated reason (`main.rs:5-8`) is that the library "forwards guest stdio
    straight to the daemon process's stdio" — a fixable property, not a law.
 
-3. **Snapshot/restore is vestigial but load-bearing in the type surface.**
-   `vz/snapshot.rs` is `TODO(phase 5)` stubs returning `SnapshotUnsupported` on
-   both arches, yet the scaffolding spans `Config::{build_snapshot,resume_snapshot}`,
-   `lifecycle.rs:33-41`, `cmdline.rs:82-88`, the `custom-init.sh` `snapshot_mode=server`
-   branch, the `vsock-runner.c` helper baked into every initramfs, and the entire
-   `ListenerMode::Echo` + `READY\n` detector in `vz/vsock.rs` that **every**
-   one-shot run still instantiates (`session.rs:450-453`).
+3. ~~Snapshot/restore is vestigial.~~ **(Corrected — see C3/§5.)** Snapshot is a
+   real, planned **Apple-Silicon** feature (Phase 5): `vz/snapshot.rs` is
+   `TODO(phase 5)` *stubs* today (both arches return `SnapshotUnsupported`), but
+   VZ's `saveMachineStateToURL:` is arm64-gated and the daemon's warm pool depends
+   on it. The scaffolding (`Config::{build_snapshot,resume_snapshot}`,
+   `lifecycle.rs:33-41`, `vz/snapshot.rs`, the `custom-init.sh` snapshot branch,
+   `vsock-runner.c`, `ListenerMode::Echo`) is **kept**; C3 integrates snapshot into
+   the `boot.env` contract rather than deleting it.
 
 The root cause shared by (1) and (2) is the same: the one-shot serial port is
 hard-wired to host stdio in `vz/config.rs:63-69`
@@ -61,8 +62,9 @@ channel. Fixing that root cause unlocks both.
 - No change to the provider registry order (`vmette-providers::default_registry`).
 - No new user-facing CLI flags, MCP tools, or daemon capabilities. Behavior
   observable to a consumer is held constant except where explicitly noted in §7.
-- Snapshot/restore is **not** implemented here; it is removed from the surface
-  until a future phase delivers it.
+- Snapshot/restore is **not** implemented here (Phase 5), but it is **preserved**
+  and integrated into the boot contract — not removed. It is a real
+  Apple-Silicon feature, not vestigial.
 
 ---
 
@@ -96,7 +98,7 @@ The five concrete changes:
 |---|--------|------------------------|
 | C1 | Typed, versioned boot contract (`BootParams`) delivered via the `ctl` virtio-fs share; cmdline reduced to kernel-critical tokens | `vmette-proto`, `vmette`, `scripts/`, `guest/` |
 | C2 | `Session` captures guest stdout/stderr; collapse all one-shot boot paths onto in-process `Session`; delete subprocess dispatch + marker scraping | `vmette`, `vmette-daemon`, `vmette-mcp`, `vmette-proto` |
-| C3 | Remove the vestigial snapshot surface (feature-gate behind `snapshot`, default off) | `vmette`, `scripts/`, `guest/` |
+| C3 | **Preserve** snapshot (real Apple-Silicon Phase-5 feature); integrate it into the `boot.env` contract (`Strategy::Snapshot`) | `vmette-proto`, `vmette`, `scripts/` |
 | C4 | Add request-ids to the desktop vsock codec; recover per-request instead of invalidating the whole fd | `vmette-proto`, `vmette`, `guest/` |
 | C5 | Lower-tier consolidation: `run()` returns instead of `process::exit`; single daemon-client crate; `CaTrust` owner; `Config` rootfs enum | `vmette`, `vmette-cli`, `vmette-daemon`, `vmette-mcp` |
 
@@ -391,50 +393,55 @@ backstop only; the clean-hvc0 path above is the validated default.
 
 ---
 
-## 5. C3 — Remove vestigial snapshot surface
+## 5. C3 — Preserve snapshot; integrate it into the boot contract
 
-### 5.1 Scope of removal (feature-gated, default off)
+> **G3 REVERSED.** The Phase-0 reading was literally accurate — `vz/snapshot.rs`
+> returns `SnapshotUnsupported` on both arches today — but the conclusion ("delete
+> the vestigial surface") was wrong. **Snapshot/restore is a real, planned
+> Apple-Silicon feature** (Phase 5): VZ's `saveMachineStateToURL:` /
+> `restoreMachineStateFromURL:` are arm64-gated, the module already mirrors that
+> with `cfg(target_arch = "aarch64")`, and the daemon's warm-snapshot pool depends
+> on it. So nothing snapshot-related is deleted. Instead C3 makes snapshot
+> **coherent with the C1 `boot.env` contract** so it isn't stranded by the cmdline
+> shrink.
 
-Place all of the following behind `#[cfg(feature = "snapshot")]` (a non-default
-cargo feature), or delete outright pending the PLAN decision:
+### 5.1 What is kept (NOT removed)
 
-- `Config::{build_snapshot, resume_snapshot, guest_vsock_port}` and their CLI
-  flags (`--build-snapshot`, `--resume-snapshot`, `--guest-vsock-port`).
-- `lifecycle::run` snapshot dispatch (`lifecycle.rs:33-41`).
-- `cmdline.rs:82-88` snapshot tokens (already removed by C1, but the Config
-  fields feeding them go here).
-- `vz/snapshot.rs` (the stub module).
-- `ListenerMode::Echo` and the `READY\n` sliding-window detector in
-  `vz/vsock.rs` — with snapshot gone, `WorkloadStrategy::OneShot` no longer needs
-  a vsock listener at all unless an exec wants the agent channel. The
-  `session.rs:450-453` `OneShot => ListenerMode::Echo` arm is removed; OneShot
-  with vsock disabled instantiates no listener.
-- `scripts/custom-init.sh` `snapshot_mode=server` branch and the
-  `.vmette-runner.sh` heredoc machinery.
-- `guest/vsock-runner.c` injection into the initramfs (the source stays in-tree
-  but is no longer built into the default initramfs).
+- `Config::{build_snapshot, resume_snapshot, guest_vsock_port}` + the CLI flags.
+- `lifecycle::run` snapshot dispatch (routes to `vz::snapshot` before `Session`).
+- `vz/snapshot.rs` (the `cfg(aarch64)` module; Phase 5 fills in the real flow).
+- `ListenerMode::Echo` + the `READY\n` detector in `vz/vsock.rs` (the snapshot
+  vsock-runner handshake; also serves the general OneShot vsock roundtrip).
+- `scripts/custom-init.sh` snapshot branch and `guest/vsock-runner.c`.
 
-### 5.2 Behavior
+### 5.2 What C1 changed, and the fix
 
-- `--build-snapshot`/`--resume-snapshot` either disappear from `--help` (deletion)
-  or return a clear "built without snapshot support" error (feature-gated). The
-  current behavior is `SnapshotUnsupported` on all arches, so no working
-  capability is lost.
-- `CHANGELOG.md` records the removal of the `--build-snapshot`/`--resume-snapshot`
-  flags (observable surface, per the repo's changelog policy).
+C1's cmdline shrink removed the `vmette.snapshot_mode`/`vmette.guest_vsock_port`
+tokens. Those were already **dead at that call site** — `lifecycle::run` returns
+to `vz::snapshot` *before* `Session::start`, so `cmdline::build` was never invoked
+on a snapshot config — so no working behavior broke. But it left the guest's
+snapshot branch reading variables nothing set. The fix integrates snapshot into
+the typed contract, the same channel as every other mode:
 
-### 5.3 Trade-offs
+- `vmette_proto::boot::Strategy` gains a `Snapshot { guest_vsock_port }` variant.
+- `vmette::boot::to_env`/`from_env` carry it (`VMETTE_STRATEGY=snapshot` +
+  `VMETTE_GUEST_VSOCK_PORT`); the host vsock port stays on the cmdline.
+- The guest snapshot branch keys off `VMETTE_STRATEGY=snapshot` and reads the
+  guest port from `boot.env`.
 
-- **Decision (PLAN §Risk-G3):** delete vs feature-gate. Deletion is cleaner and
-  removes the most code; feature-gating preserves the scaffolding for the eventual
-  Phase 5 at the cost of carrying `cfg` noise. Recommendation: **delete**, and
-  reintroduce in the PR that actually implements snapshots — the git history is
-  the archive.
+The **producer** side (a `BootParams` with `Strategy::Snapshot`) is Phase 5's to
+wire when `vz::snapshot::build` is implemented; the contract + guest consumer are
+in place now so the feature is not stranded.
+
+### 5.3 Behavior
+
+- `--build-snapshot`/`--resume-snapshot` are unchanged: `SnapshotUnsupported`
+  until Phase 5. No CHANGELOG entry (no observable change).
 
 ### 5.4 Tests
 
-- Removal is validated by green `cargo test --workspace` with the snapshot tests
-  deleted, and `tests/run.sh` green (snapshot was never exercised there).
+- `Strategy::Snapshot` round-trips through `to_env`/`from_env`.
+- `tests/run.sh` stays green (the snapshot arch-guard + vsock-roundtrip gates).
 
 ---
 
@@ -549,7 +556,7 @@ Each item is independent and low-risk.
 |----|----------|---------|
 | G1 | Guest boot-param format | ✅ **`KEY=VALUE` envelope on `ctl` share**, base64 for `exec`/`env`, no parser binary (reuses guest's existing `base64 -d`). JSON+helper-binary dropped. |
 | G2 | Capture topology | ✅ **Clean single-console (hvc0) streaming + `console=hvc1` discard sink + `ctl` share** — boot-validated. VZ delivers only ONE console port to the host, so multi-console separation is NOT viable; `ctl` virtio-fs carries stdout/stderr separation + exit. Soak: 300/300, fd drift 0. |
-| G3 | Snapshot: delete vs gate | ✅ **Delete** (reintroduce when implemented). |
+| G3 | Snapshot: delete vs keep | ✅ **REVERSED → keep.** Snapshot is a real Apple-Silicon Phase-5 feature, not vestigial. C3 preserves it and integrates it into the `boot.env` contract (`Strategy::Snapshot`) instead of deleting it. |
 | G4 | C4 scope | ✅ **Defer** pending contention profiling. |
 
 All Phase-0 gates closed with empirical evidence (boots + soak ran locally via

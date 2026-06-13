@@ -373,13 +373,15 @@ fi
 
 # ---- step 6: run the workload -------------------------------------------
 
-# Snapshot build mode: chroot in, exec vsock-runner which signals READY to
-# the host then blocks on accept() for a command. The host pauses + saves
-# the VM at the accept() blocker; on resume, vsock-runner reads the new
-# command, runs it, streams output back, reboots.
-if [ "$VMETTE_SNAPSHOT_MODE" = "server" ]; then
+# Snapshot build mode (Apple-Silicon Phase-5 feature): chroot in, exec
+# vsock-runner which signals READY to the host then blocks on accept() for a
+# command. The host pauses + saves the VM at the accept() blocker; on resume,
+# vsock-runner reads the new command, runs it, streams output back, reboots.
+# Strategy + guest port come from boot.env (VMETTE_STRATEGY=snapshot); the host
+# vsock port rides the cmdline (VMETTE_VSOCK_PORT).
+if [ "$VMETTE_STRATEGY" = "snapshot" ]; then
     if [ -z "$VMETTE_VSOCK_PORT" ] || [ -z "$VMETTE_GUEST_VSOCK_PORT" ]; then
-        log "FATAL: snapshot_mode=server but vsock ports not set"
+        log "FATAL: snapshot strategy but vsock ports not set"
         sync; poweroff -f; sleep 60
     fi
     log "snapshot mode: exec vsock-runner $VMETTE_VSOCK_PORT $VMETTE_GUEST_VSOCK_PORT"

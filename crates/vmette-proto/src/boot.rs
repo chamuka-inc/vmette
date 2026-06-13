@@ -46,12 +46,21 @@ pub enum RootfsSpec {
 }
 
 /// The guest workload, replacing the cmdline's `vmette.desktop`/`vmette.display`
-/// tokens. `OneShot` runs the exec and powers off; `Agent` boots the persistent
-/// desktop (Xvfb at `width`x`height` + the computer-use agent).
+/// and `vmette.snapshot_mode`/`vmette.guest_vsock_port` tokens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Strategy {
+    /// Run the exec command and power off.
     OneShot,
+    /// Boot the persistent desktop (Xvfb at `width`x`height` + the computer-use
+    /// agent).
     Agent { width: u32, height: u32 },
+    /// Snapshot-build "server" mode — an Apple-Silicon feature (Phase 5;
+    /// `saveMachineStateToURL:` is arm64-gated). The guest execs `vsock-runner`,
+    /// which signals READY and blocks on `accept()` so the host can save the
+    /// VM's memory state, then runs the command delivered on resume.
+    /// `guest_vsock_port` is the in-guest listen port; the host-side vsock port
+    /// rides the kernel cmdline (`vmette.vsock_port`).
+    Snapshot { guest_vsock_port: u32 },
 }
 
 /// The complete host→guest boot configuration. Built host-side from the

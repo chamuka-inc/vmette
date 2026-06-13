@@ -130,6 +130,10 @@ pub(crate) fn to_env(p: &BootParams) -> String {
             line("VMETTE_STRATEGY", "agent");
             line("VMETTE_DISPLAY", &format!("{width}x{height}"));
         }
+        Strategy::Snapshot { guest_vsock_port } => {
+            line("VMETTE_STRATEGY", "snapshot");
+            line("VMETTE_GUEST_VSOCK_PORT", &guest_vsock_port.to_string());
+        }
     }
 
     s
@@ -261,6 +265,15 @@ pub(crate) fn from_env(text: &str) -> Result<BootParams, BootEnvError> {
                 height: parse(h)?,
             }
         }
+        "snapshot" => {
+            let p = get("VMETTE_GUEST_VSOCK_PORT")?;
+            Strategy::Snapshot {
+                guest_vsock_port: p.parse().map_err(|_| BootEnvError::BadValue {
+                    key: "VMETTE_GUEST_VSOCK_PORT",
+                    value: p.clone(),
+                })?,
+            }
+        }
         other => {
             return Err(BootEnvError::BadValue {
                 key: "VMETTE_STRATEGY",
@@ -374,6 +387,17 @@ mod tests {
     #[test]
     fn round_trips_minimal_oneshot_share() {
         let p = BootParams::new(RootfsSpec::Share { read_only: false });
+        assert_eq!(from_env(&to_env(&p)).unwrap(), p);
+    }
+
+    #[test]
+    fn round_trips_snapshot_strategy() {
+        let mut p = BootParams::new(RootfsSpec::Block {
+            fstype: "squashfs".into(),
+        });
+        p.strategy = Strategy::Snapshot {
+            guest_vsock_port: 1025,
+        };
         assert_eq!(from_env(&to_env(&p)).unwrap(), p);
     }
 
