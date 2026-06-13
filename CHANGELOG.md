@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The desktop `navigate` action (and `desktop_navigate`) now actually renders the
+  page instead of capturing a blank screen. The desktop image launched Chromium
+  with no window-size hint, so it opened a tiny (~10×10) window that Openbox left
+  unsized; screenshots came back blank. The image now bakes `--start-maximized`
+  into the Chromium flags so the window fills the Xvfb screen. (Desktop-image
+  change — rebuild with `scripts/build-desktop-image.sh`.)
 - A desktop `exec_capture` or `wait` no longer blocks other actions on the same
   session while it runs. The in-guest agent now drives those two actions
   asynchronously in its event loop, so a slow command (or a long wait) issued
