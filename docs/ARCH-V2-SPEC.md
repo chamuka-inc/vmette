@@ -479,6 +479,15 @@ docs cannot close is device-level save/restore compatibility itself** (esp. vsoc
 which the design depends on); that needs a real Apple-silicon boot in Phase 5.
 Nothing in the documentation contraindicates the design.
 
+**Binding gap (Phase-5 implementation cost):** `objc2-virtualization 0.3.2` does
+**not** generate `saveMachineState`/`restoreMachineState` at all (0 matches in its
+`VZVirtualMachine.rs`). Phase 5 must therefore call the selectors via raw `objc2`
+`msg_send!` (hand-rolled, behind `cfg(target_arch = "aarch64")` since the SDK
+gates them `#if defined(__arm64__)`), or upgrade to a binding that exposes them.
+This also confirms **Intel can never snapshot via VZ** — the save/restore symbols
+do not exist off arm64, so the Intel `SnapshotUnsupported` branch is permanent,
+not a stub.
+
 ---
 
 ## 6. C4 — Multiplexed desktop vsock codec
