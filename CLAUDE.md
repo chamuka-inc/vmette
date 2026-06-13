@@ -126,16 +126,25 @@ returns an MCP image content block. `--allow-network` gates outbound network.
 - **`guest/`** (C, cross-compiled for Linux x86_64): `vsock-send.c`,
   `vsock-runner.c` (snapshot-mode helpers, static musl, injected into the
   initramfs) and `vmette-desktop-agent.c` (computer-use agent: XTEST input +
-  XGetImage capture + stb PNG, links libX11/libXtst **dynamically**, so it ships
-  inside the desktop rootfs, not the initramfs).
+  XGetImage capture + stb PNG). It is built two ways: **dynamically** baked into
+  the bundled desktop image (`build-desktop-agent.sh` / the image Dockerfile),
+  and **fully static** (musl + a from-source X client stack) by
+  `build-desktop-agent-static.sh` for the host-injected path below.
 - **`scripts/`**: `fetch-assets.sh`, `fetch-alpine-rootfs.sh`,
   `build-initramfs.sh` (repacks the initramfs and injects `custom-init.sh` as
   `/init`), `custom-init.sh` (the guest PID-1: parses the cmdline, mounts shares,
-  chroots/switch_roots, runs the exec or the desktop branch, writes
+  chroots/switch_roots, runs the exec or the desktop branch — which prefers a
+  host-**injected** agent at `/mnt/agent` over an in-image entrypoint — writes
   `.vmette-exit`, powers off), `build-vsock-send.sh`, `build-desktop-agent.sh`,
-  `build-desktop-image.sh`, `run.sh`, `install.sh`.
-- **`images/vmette-desktop/`** (untracked): Dockerfile + entrypoint for the
-  Debian-slim desktop rootfs (Xvfb + openbox + the agent).
+  `build-desktop-agent-static.sh` (builds the static agent + `vmette-desktop-run.sh`
+  into `assets/<arch>/desktop-agent/`, which the daemon discovers via
+  `vmette_assets::resolve_agent_share` and injects as the `agent` virtio-fs share
+  so any GUI rootfs works), `build-desktop-image.sh`, `run.sh`, `install.sh`.
+- **`images/vmette-desktop/`**: `Dockerfile` + `entrypoint.sh` + `vmette-open`
+  for the bundled Debian-slim desktop rootfs (Xvfb + openbox + a baked-in agent),
+  and `vmette-desktop-run.sh` — the host-**injected** startup (shipped in the
+  `agent` share, run by the init's desktop branch) that brings up Xvfb + a WM and
+  execs the injected static agent, so a vmette-specific image isn't required.
 
 **Important:** after editing `scripts/custom-init.sh`, rebuild the initramfs
 (`bash scripts/build-initramfs.sh`) — the live `assets/<arch>/initramfs-vmette` embeds a

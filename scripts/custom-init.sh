@@ -403,16 +403,27 @@ if [ "$VMETTE_DESKTOP" = "1" ]; then
         sync; poweroff -f; sleep 60
     fi
     SIZE="${VMETTE_DISPLAY:-1280x800}"
+    # Prefer the HOST-INJECTED agent: when the daemon mounted the `agent` share
+    # (at /newroot/mnt/agent, step 4), run its self-contained startup. This
+    # decouples the desktop workload from a vmette-specific image — the rootfs
+    # only needs Xvfb + a WM. Fall back to an agent baked into the rootfs (the
+    # bundled vmette-desktop image) when the share isn't present.
+    INJECTED=/mnt/agent/vmette-desktop-run.sh
     ENTRY=/usr/local/bin/vmette-desktop-entrypoint.sh
-    if [ ! -x "/newroot$ENTRY" ]; then
-        log "FATAL: $ENTRY missing in rootfs (is this the vmette-desktop image?)"
+    if [ -x "/newroot$INJECTED" ]; then
+        RUN="$INJECTED"
+        log "desktop mode: injected agent $RUN (port $VMETTE_VSOCK_PORT, display $SIZE)"
+    elif [ -x "/newroot$ENTRY" ]; then
+        RUN="$ENTRY"
+        log "desktop mode: in-image entrypoint $RUN (port $VMETTE_VSOCK_PORT, display $SIZE)"
+    else
+        log "FATAL: no desktop agent — neither injected $INJECTED nor $ENTRY in rootfs"
         sync; poweroff -f; sleep 60
     fi
-    log "desktop mode: exec $ENTRY (port $VMETTE_VSOCK_PORT, display $SIZE)"
     if [ "$USE_SWITCH_ROOT" = "1" ]; then
-        exec switch_root /newroot "$ENTRY" "$VMETTE_VSOCK_PORT" "$SIZE"
+        exec switch_root /newroot "$RUN" "$VMETTE_VSOCK_PORT" "$SIZE"
     fi
-    exec chroot /newroot "$ENTRY" "$VMETTE_VSOCK_PORT" "$SIZE"
+    exec chroot /newroot "$RUN" "$VMETTE_VSOCK_PORT" "$SIZE"
 fi
 
 # The exec command: base64 in boot.env's VMETTE_EXEC_B64 (the guest already has

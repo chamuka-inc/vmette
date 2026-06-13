@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Desktop sessions can now run on **any** GUI rootfs — bring your own image
+  (`vmette desktop start --image <any-image>` / `desktop_start`), it just has to
+  provide an X server (Xvfb) and a window manager. The computer-use agent is no
+  longer baked into the rootfs: vmette ships a per-arch **fully-static**
+  `vmette-desktop-agent` (built by `scripts/build-desktop-agent-static.sh` into
+  `assets/<arch>/desktop-agent/`) and the daemon injects it — plus a
+  self-contained `vmette-desktop-run.sh` startup — as the read-only `agent`
+  virtio-fs share. Being static (musl + a from-source X client stack), one agent
+  binary runs in any rootfs regardless of its libc. When the asset isn't built,
+  the guest falls back to an agent baked into the image, so the bundled
+  `vmette-desktop` image keeps working unchanged.
+
 ### Changed
 
 - `Config`'s mutually-exclusive `rootfs_share: Option<RootfsShare>` /

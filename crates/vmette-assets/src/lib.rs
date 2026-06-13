@@ -60,6 +60,19 @@ pub const CA_CERTS_ENV: &str = "VMETTE_CA_CERTS";
 /// `scripts/custom-init.sh` and the desktop image's entrypoint.
 pub const CA_CERTS_SHARE_TAG: &str = "certs";
 
+/// Per-arch asset directory holding the host-injected desktop agent: a static
+/// `vmette-desktop-agent` plus `vmette-desktop-run.sh`. Built by
+/// `scripts/build-desktop-agent-static.sh` into `assets/<arch>/<name>`.
+pub const DESKTOP_AGENT_DIR: &str = "desktop-agent";
+
+/// virtio-fs share tag for the host-injected desktop agent (mounted at
+/// `/mnt/agent`). When present, the guest init's desktop branch runs the
+/// injected `vmette-desktop-run.sh` instead of requiring an agent baked into
+/// the rootfs — so any GUI rootfs (Xvfb + a WM) works. MUST match the tag and
+/// path handled in `scripts/custom-init.sh`. Reserved (a caller share may not
+/// reuse it).
+pub const AGENT_SHARE_TAG: &str = "agent";
+
 /// Architecture name used by Alpine's release directories and by vmette's
 /// per-guest-arch asset layout under `assets/`.
 pub fn guest_arch() -> &'static str {
@@ -252,6 +265,22 @@ pub fn resolve_ca_share(explicit: Option<PathBuf>) -> Option<ShareMount> {
     resolve_ca_certs(explicit).map(|path| ShareMount {
         tag: CA_CERTS_SHARE_TAG.to_string(),
         path,
+    })
+}
+
+/// Locate the host-injected desktop-agent directory ([`DESKTOP_AGENT_DIR`]) and
+/// wrap it as the virtio-fs [`ShareMount`] (tag [`AGENT_SHARE_TAG`]) the daemon
+/// mounts into Agent-workload guests. `None` when the asset isn't present (then
+/// the guest falls back to an agent baked into the rootfs image). Validates the
+/// dir actually carries the run script so a stray empty dir isn't injected.
+pub fn resolve_agent_share() -> Option<ShareMount> {
+    let dir = find(DESKTOP_AGENT_DIR)?;
+    if !dir.join("vmette-desktop-run.sh").is_file() {
+        return None;
+    }
+    Some(ShareMount {
+        tag: AGENT_SHARE_TAG.to_string(),
+        path: dir,
     })
 }
 

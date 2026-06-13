@@ -216,6 +216,17 @@ impl Registry {
         cfg.shares = params.shares;
         cfg.vcpus = params.vcpus;
         cfg.mem_mib = params.mem_mib;
+        // Inject the host-shipped desktop agent (static binary + run script) as
+        // the `agent` virtio-fs share when it's present in the assets. With it,
+        // the guest init runs the injected agent against any GUI rootfs (Xvfb +
+        // WM) — no agent baked into the image. Absent (e.g. not built), the init
+        // falls back to an in-image entrypoint, so the bundled vmette-desktop
+        // image keeps working. The agent is vmette's own runtime artifact (not a
+        // user-chosen asset like the image), so the daemon owns its injection —
+        // mirroring `locate_guest_helpers` below.
+        if let Some(agent) = vmette_assets::resolve_agent_share() {
+            cfg.shares.push(agent);
+        }
         // Writable share: the entrypoint writes Xvfb/openbox logs under /var.
         cfg.set_rootfs_artifact(artifact, false);
         // The detector sizes itself off the resolved framebuffer (the request's
