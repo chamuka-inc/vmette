@@ -3,11 +3,20 @@
 //! host, by booting real VMs with N capture consoles and checking which host
 //! pipes receive the guest's per-console marker.
 //!
-//! This decides C2's capture topology. Earlier single-config runs showed: with 3
-//! consoles the guest enumerates /dev/hvc0,1,2 and writes to all three succeed
-//! (rc=0), but the host received hvc0 + hvc1 only — hvc2 delivered nothing even
-//! with `sync; sleep` (so it is NOT a poweroff flush race). This spike confirms
-//! the limit parametrically.
+//! This decides C2's capture topology. The guest always enumerates /dev/hvc0..N
+//! and writes to all of them succeed (rc=0), but VZ does NOT deliver every
+//! console's bytes to the host. The all-capture probe below shows only hvc0
+//! (the first port) delivers — additional capture ports deliver nothing, even
+//! with `sync; sleep` (so it is NOT a poweroff flush race).
+//!
+//! Note on an apparent discrepancy: a config with an *inherit* port at index 0
+//! plus a capture port at index 1 was seen to deliver BOTH (the inherit std
+//! handle + the first capture). The consistent rule across all observations is
+//! "the first port delivers; a file-handle capture port at index ≥1 does not
+//! deliver unless index 0 is the std/inherit console." Either way the takeaway
+//! for C2 is the same: do not depend on a second *captured* console. The
+//! validated design captures exactly hvc0 (always delivers) and uses a second
+//! port only as a `console=hvc1` discard sink — see `probe_clean_primary`.
 //!
 //! Needs a SIGNED build + assets (booting requires the virtualization
 //! entitlement). Run:
