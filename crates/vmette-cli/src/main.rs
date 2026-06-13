@@ -26,11 +26,8 @@ pub(crate) fn ensure_ca_share(shares: &mut Vec<ShareMount>) {
     {
         return;
     }
-    if let Some(path) = vmette_assets::resolve_ca_certs(None) {
-        shares.push(ShareMount {
-            tag: vmette_assets::CA_CERTS_SHARE_TAG.into(),
-            path,
-        });
+    if let Some(share) = vmette_assets::resolve_ca_share(None) {
+        shares.push(share);
     }
 }
 

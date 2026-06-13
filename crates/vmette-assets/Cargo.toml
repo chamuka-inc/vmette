@@ -15,3 +15,6 @@ name = "vmette_assets"
 path = "src/lib.rs"
 
 [dependencies]
+# Only for the `ShareMount` returned by `resolve_ca_share`. vmette-proto is a
+# tiny serde-only leaf; this keeps the "resolve the CA share" logic in one place.
+vmette-proto = { workspace = true }

@@ -315,13 +315,10 @@ impl VmetteServer {
         allow_network: bool,
         ca_certs: Option<PathBuf>,
     ) -> Self {
-        let ca_share = vmette_assets::resolve_ca_certs(ca_certs).map(|path| {
-            tracing::info!(certs = %path.display(), "trusting host CA certs in all guests");
-            ShareMount {
-                tag: vmette_assets::CA_CERTS_SHARE_TAG.to_string(),
-                path,
-            }
-        });
+        let ca_share = vmette_assets::resolve_ca_share(ca_certs);
+        if let Some(s) = &ca_share {
+            tracing::info!(certs = %s.path.display(), "trusting host CA certs in all guests");
+        }
         Self {
             sandbox: Arc::new(sandbox),
             workspaces: Arc::new(workspaces),
@@ -576,13 +573,8 @@ impl VmetteServer {
         // CA certs: an explicit per-call `ca_certs` wins; otherwise fall back to
         // the same machine-wide source every other root uses (so the desktop
         // trusts the proxy with no per-call flag once it's configured once).
-        let shares = vmette_assets::resolve_ca_certs(args.ca_certs)
-            .map(|path| {
-                vec![ShareMount {
-                    tag: vmette_assets::CA_CERTS_SHARE_TAG.to_string(),
-                    path,
-                }]
-            })
+        let shares = vmette_assets::resolve_ca_share(args.ca_certs)
+            .map(|s| vec![s])
             .unwrap_or_default();
         let session_id = self
             .daemon

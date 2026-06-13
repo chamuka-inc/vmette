@@ -25,6 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
+use vmette_proto::ShareMount;
+
 /// Canonical filename of the locally built desktop rootfs export. Produced by
 /// `make desktop-image` (`scripts/build-desktop-image.sh --export`) from the
 /// current `images/vmette-desktop/` source, so it always embodies the source
@@ -239,4 +241,30 @@ pub fn resolve_ca_certs(explicit: Option<PathBuf>) -> Option<PathBuf> {
         }
     }
     default_ca_certs_dir()
+}
+
+/// Resolve the host CA-cert directory ([`resolve_ca_certs`]) and wrap it as the
+/// virtio-fs [`ShareMount`] the guest mounts (tag [`CA_CERTS_SHARE_TAG`]). The
+/// single owner of "the CA share to inject" — every boot path (CLI one-shot, the
+/// MCP run/desktop tools) builds it through here, so the tag and resolution
+/// order can't drift. `None` when no CA is configured (the common case).
+pub fn resolve_ca_share(explicit: Option<PathBuf>) -> Option<ShareMount> {
+    resolve_ca_certs(explicit).map(|path| ShareMount {
+        tag: CA_CERTS_SHARE_TAG.to_string(),
+        path,
+    })
+}
+
+#[cfg(test)]
+mod ca_share_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_ca_share_wraps_with_the_tag() {
+        // An explicit, non-empty path is returned as the certs share verbatim.
+        let dir = std::env::temp_dir();
+        let share = resolve_ca_share(Some(dir.clone())).expect("explicit dir resolves");
+        assert_eq!(share.tag, CA_CERTS_SHARE_TAG);
+        assert_eq!(share.path, dir);
+    }
 }

@@ -2673,6 +2673,9 @@ dependencies = [
 [[package]]
 name = "vmette-assets"
 version = "0.10.0"
+dependencies = [
+ "vmette-proto",
+]
 
 [[package]]
 name = "vmette-cli"

@@ -244,10 +244,9 @@ fn cmd_start(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
             "--initramfs" => initramfs = it.next().map(PathBuf::from),
             "--ca-certs" => {
                 let path = it.next().map(PathBuf::from).ok_or("--ca-certs needs DIR")?;
-                shares.push(ShareMount {
-                    tag: vmette_assets::CA_CERTS_SHARE_TAG.to_string(),
-                    path,
-                });
+                if let Some(share) = vmette_assets::resolve_ca_share(Some(path)) {
+                    shares.push(share);
+                }
             }
             other => return Err(format!("unknown start option '{other}'")),
         }
