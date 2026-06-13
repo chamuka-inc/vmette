@@ -578,14 +578,14 @@ impl Session {
         // "ctl" is reserved. A caller share with the same tag would produce two
         // virtio-fs devices tagged "ctl" and the guest would mount one
         // nondeterministically — silently breaking boot-env/exit-code delivery.
-        if config.shares.iter().any(|s| s.tag == "ctl") {
+        if config.shares.iter().any(|s| s.tag == crate::CTL_SHARE_TAG) {
             return Err(Error::InvalidConfig(
                 "share tag \"ctl\" is reserved for the boot/exit channel".into(),
             ));
         }
         let ctl_dir = make_control_dir()?;
         working.shares.push(ShareMount {
-            tag: "ctl".into(),
+            tag: crate::CTL_SHARE_TAG.into(),
             path: ctl_dir.clone(),
         });
         let control_dir = Some(ControlDirGuard(ctl_dir.clone()));

@@ -159,7 +159,7 @@ pub(crate) fn build(
         if let Some(crate::Rootfs::Share(rs)) = &config.rootfs {
             let fs = VZVirtioFileSystemDeviceConfiguration::initWithTag(
                 VZVirtioFileSystemDeviceConfiguration::alloc(),
-                &nsstr("rootfs"),
+                &nsstr(crate::ROOTFS_SHARE_TAG),
             );
             // The rootfs share is ALWAYS mounted read-only on the host. The
             // guest never writes through to the shared host directory: when the

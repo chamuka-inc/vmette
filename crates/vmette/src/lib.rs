@@ -34,6 +34,17 @@ pub use session::{Session, SessionClient, SessionEnd, StopHandle};
 /// single type. Re-exported here as part of the core's public surface.
 pub use vmette_proto::ShareMount;
 
+/// The virtio-fs tag the guest `/init` mounts the read-only/overlaid root share
+/// under (directory-rootfs mode). Reserved.
+pub(crate) const ROOTFS_SHARE_TAG: &str = "rootfs";
+/// The virtio-fs tag of the always-attached control share carrying `boot.env`
+/// (host→guest config) and `.vmette-exit` (the guest's exit code). Reserved.
+pub(crate) const CTL_SHARE_TAG: &str = "ctl";
+// These two, plus `vmette_assets::CA_CERTS_SHARE_TAG` ("certs"), form the small
+// reserved share-tag namespace a caller's `shares` may not reuse. The guest side
+// hard-codes the same strings in `scripts/custom-init.sh` (it's shell, so it
+// can't import these) — keep them in lockstep.
+
 /// Selects what the guest does once booted, and therefore which terminal
 /// event ends the [`Session`].
 ///
