@@ -14,7 +14,8 @@ use crate::Config;
 /// number of those preceding devices. Keep this in lockstep with the attach
 /// order in `vz::config::build`.
 pub(crate) fn scratch_device_name(config: &Config) -> String {
-    let index = config.rootfs_block.is_some() as usize + config.disks.len();
+    let has_block = matches!(config.rootfs, Some(crate::Rootfs::Block(_)));
+    let index = has_block as usize + config.disks.len();
     // 26 virtio-blk devices is far more than any real config; the simple
     // single-letter form covers every case we can actually attach.
     let letter = (b'a' + index as u8) as char;
@@ -64,10 +65,10 @@ mod tests {
         // cmdline — they all moved to boot.env.
         let mut c = base();
         c.exec_cmd = Some("echo hi".into());
-        c.rootfs_share = Some(crate::RootfsShare {
+        c.rootfs = Some(crate::Rootfs::Share(crate::RootfsShare {
             path: PathBuf::from("/r"),
             read_only: true,
-        });
+        }));
         c.shares = vec![crate::ShareMount {
             tag: "work".into(),
             path: PathBuf::from("/w"),
@@ -108,10 +109,10 @@ mod tests {
     fn scratch_device_name_follows_block_rootfs_and_disks() {
         // Block rootfs occupies vda, so scratch lands on vdb.
         let mut c = base();
-        c.rootfs_block = Some(crate::RootfsBlock {
+        c.rootfs = Some(crate::Rootfs::Block(crate::RootfsBlock {
             path: PathBuf::from("/img.sqfs"),
             fstype: crate::BlockFs::Squashfs,
-        });
+        }));
         assert_eq!(scratch_device_name(&c), "vdb");
         // Two user --disks after the block rootfs push scratch to vdd.
         c.disks = vec![PathBuf::from("/d1"), PathBuf::from("/d2")];

@@ -110,16 +110,16 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
 }
 
 fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
-    let rootfs = if let Some(rb) = &config.rootfs_block {
-        format!("{} ({} block, ro)", rb.path.display(), rb.fstype)
-    } else if let Some(r) = &config.rootfs_share {
-        format!(
+    let rootfs = match &config.rootfs {
+        Some(crate::Rootfs::Block(rb)) => {
+            format!("{} ({} block, ro)", rb.path.display(), rb.fstype)
+        }
+        Some(crate::Rootfs::Share(r)) => format!(
             "{}{}",
             r.path.display(),
             if r.read_only { " (ro)" } else { "" }
-        )
-    } else {
-        "(none)".into()
+        ),
+        None => "(none)".into(),
     };
     let vsock = match vsock_port {
         None => "(disabled)".into(),

@@ -163,7 +163,7 @@ pub unsafe extern "C" fn vmette_config_set_rootfs_share(
 ) {
     let Some(c) = cfg_mut(cfg) else { return };
     if let Some(p) = cstr_to_pathbuf(path) {
-        c.rootfs_share = Some(RootfsShare { path: p, read_only });
+        c.rootfs = Some(crate::Rootfs::Share(RootfsShare { path: p, read_only }));
     }
 }
 

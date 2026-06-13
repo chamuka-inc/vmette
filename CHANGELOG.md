@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Config`'s mutually-exclusive `rootfs_share: Option<RootfsShare>` /
+  `rootfs_block: Option<RootfsBlock>` fields are replaced by a single
+  `rootfs: Option<Rootfs>`, where `enum Rootfs { Share(RootfsShare),
+  Block(RootfsBlock) }` makes "exactly one root" true by construction. Most
+  callers use `Config::set_rootfs_artifact` (unchanged) and the C ABI
+  `vmette_config_set_rootfs_share` (unchanged); only code that read/wrote the two
+  fields directly needs updating.
 - `vmette::run` (and the C ABI `vmette_run`) now **returns** with the guest's exit
   code instead of exiting the process. Library/FFI embedders get a `RunOutput`
   (read its `exit_code`) and choose the process exit code themselves; the `vmette`

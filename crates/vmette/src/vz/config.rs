@@ -151,7 +151,7 @@ pub(crate) fn build(
 
         // virtio-fs shares (rootfs + extra)
         let mut fs_devices: Vec<Retained<VZDirectorySharingDeviceConfiguration>> = Vec::new();
-        if let Some(rs) = &config.rootfs_share {
+        if let Some(crate::Rootfs::Share(rs)) = &config.rootfs {
             let fs = VZVirtioFileSystemDeviceConfiguration::initWithTag(
                 VZVirtioFileSystemDeviceConfiguration::alloc(),
                 &nsstr("rootfs"),
@@ -197,7 +197,7 @@ pub(crate) fn build(
         // FIRST and read-only, so it deterministically enumerates as
         // slot 0 = /dev/vda; user `--disk`s follow on /dev/vdb…
         let mut storage: Vec<Retained<VZStorageDeviceConfiguration>> = Vec::new();
-        if let Some(rb) = &config.rootfs_block {
+        if let Some(crate::Rootfs::Block(rb)) = &config.rootfs {
             let url = file_url(&rb.path);
             let att = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_error(
                 VZDiskImageStorageDeviceAttachment::alloc(),

@@ -46,21 +46,20 @@ use crate::{render_env_exports, Config, WorkloadStrategy};
 ///
 /// The implicit `ctl` share is *not* listed in `shares` — the guest always knows
 /// about it — so this is built from the caller's original `Config`, before the
-/// `ctl` share is injected. A `block` rootfs wins over a `share` (matching
-/// `cmdline::build`); the no-rootfs case is unreachable via the CLI/daemon/MCP
-/// (all require `--rootfs`) and is treated as a writable share defensively.
+/// `ctl` share is injected. The no-rootfs case (`Config::rootfs == None`) is
+/// unreachable via the CLI/daemon/MCP (all require `--rootfs`) and is treated as
+/// a writable share defensively.
 pub(crate) fn from_config(config: &Config, scratch_dev: Option<&str>) -> BootParams {
-    let rootfs = if let Some(rb) = &config.rootfs_block {
-        RootfsSpec::Block {
+    let rootfs = match &config.rootfs {
+        Some(crate::Rootfs::Block(rb)) => RootfsSpec::Block {
             fstype: rb.fstype.as_str().to_string(),
-        }
-    } else {
-        let read_only = config
-            .rootfs_share
-            .as_ref()
-            .map(|r| r.read_only)
-            .unwrap_or(false);
-        RootfsSpec::Share { read_only }
+        },
+        Some(crate::Rootfs::Share(rs)) => RootfsSpec::Share {
+            read_only: rs.read_only,
+        },
+        // Unreachable via CLI/daemon/MCP (all require a rootfs); treat the
+        // no-rootfs case as a writable share defensively.
+        None => RootfsSpec::Share { read_only: false },
     };
 
     let strategy = match config.workload {
@@ -305,10 +304,10 @@ mod tests {
     #[test]
     fn from_config_maps_share_oneshot_and_round_trips() {
         let mut c = Config::new("/k", "/i");
-        c.rootfs_share = Some(crate::RootfsShare {
+        c.rootfs = Some(crate::Rootfs::Share(crate::RootfsShare {
             path: "/r".into(),
             read_only: false,
-        });
+        }));
         c.exec_cmd = Some("echo hi".into());
         c.shares = vec![crate::ShareMount {
             tag: "work".into(),
@@ -338,10 +337,10 @@ mod tests {
     #[test]
     fn from_config_maps_block_agent() {
         let mut c = Config::new("/k", "/i");
-        c.rootfs_block = Some(crate::RootfsBlock {
+        c.rootfs = Some(crate::Rootfs::Block(crate::RootfsBlock {
             path: "/img.sqfs".into(),
             fstype: crate::BlockFs::Squashfs,
-        });
+        }));
         c.workload = WorkloadStrategy::Agent;
         c.display_size = (1024, 768);
 

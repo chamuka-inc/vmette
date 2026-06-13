@@ -29,7 +29,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use vmette::{Config, RootfsShare, Session, SessionEnd};
+use vmette::{Config, Rootfs, RootfsShare, Session, SessionEnd};
 
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key).map(PathBuf::from)
@@ -76,10 +76,10 @@ fn main() {
 
     for i in 0..n {
         let mut cfg = Config::new(&kernel, &initramfs);
-        cfg.rootfs_share = Some(RootfsShare {
+        cfg.rootfs = Some(Rootfs::Share(RootfsShare {
             path: rootfs.clone(),
             read_only: false,
-        });
+        }));
         cfg.exec_cmd = Some("true".into());
         cfg.timeout_seconds = Some(30);
         cfg.quiet = true;

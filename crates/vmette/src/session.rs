@@ -452,8 +452,11 @@ impl Session {
         // writable (a block rootfs or an overlaid virtio-fs share). A truly
         // read-only directory rootfs (`--rootfs-ro`) can't and the guest won't —
         // but it still reads `boot.env` from the same share.
-        let writable_root = config.rootfs_block.is_some()
-            || config.rootfs_share.as_ref().is_some_and(|rs| !rs.read_only);
+        let writable_root = match &config.rootfs {
+            Some(crate::Rootfs::Block(_)) => true,
+            Some(crate::Rootfs::Share(rs)) => !rs.read_only,
+            None => false,
+        };
         let exit_code_file = if writable_root {
             let p = ctl_dir.join(".vmette-exit");
             let _ = std::fs::remove_file(&p);

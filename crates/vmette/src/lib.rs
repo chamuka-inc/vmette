@@ -73,11 +73,23 @@ pub struct RootfsShare {
 
 /// A filesystem image attached as virtio-blk slot 0 (`/dev/vda`) and
 /// mounted read-only as the lower layer of a tmpfs-backed overlay root.
-/// Mutually exclusive with [`RootfsShare`].
 #[derive(Debug, Clone)]
 pub struct RootfsBlock {
     pub path: PathBuf,
     pub fstype: BlockFs,
+}
+
+/// The guest root filesystem. Exactly one form — the two are mutually exclusive
+/// *by construction*, replacing a pair of `Option` fields that had to be kept in
+/// sync by setter discipline. Usually populated from a resolved
+/// [`RootfsArtifact`] via [`Config::set_rootfs_artifact`].
+#[derive(Debug, Clone)]
+pub enum Rootfs {
+    /// Host directory shared as `/` over virtio-fs.
+    Share(RootfsShare),
+    /// Block image (e.g. squashfs) attached read-only as `/dev/vda` and overlaid
+    /// with a tmpfs for writes.
+    Block(RootfsBlock),
 }
 
 /// One-shot VM configuration. Build with [`Config::new`], populate
@@ -87,11 +99,10 @@ pub struct Config {
     pub kernel: PathBuf,
     pub initramfs: PathBuf,
     pub cmdline: String,
-    pub rootfs_share: Option<RootfsShare>,
-    /// Block-image rootfs (e.g. a squashfs), mutually exclusive with
-    /// `rootfs_share`. When set, the image is attached read-only as
-    /// `/dev/vda` and the guest overlays a tmpfs for writes.
-    pub rootfs_block: Option<RootfsBlock>,
+    /// The guest root filesystem ([`Rootfs::Share`] or [`Rootfs::Block`]).
+    /// `None` runs in the initramfs only (no shared/block root). Set it from a
+    /// resolved artifact with [`Config::set_rootfs_artifact`].
+    pub rootfs: Option<Rootfs>,
     pub shares: Vec<ShareMount>,
     pub disks: Vec<PathBuf>,
     pub exec_cmd: Option<String>,
@@ -147,8 +158,7 @@ impl Config {
             kernel: kernel.into(),
             initramfs: initramfs.into(),
             cmdline: "console=hvc0 quiet".into(),
-            rootfs_share: None,
-            rootfs_block: None,
+            rootfs: None,
             shares: Vec::new(),
             disks: Vec::new(),
             exec_cmd: None,
@@ -181,11 +191,10 @@ impl Config {
                 read_only,
                 image_env,
             } => {
-                self.rootfs_block = None;
-                self.rootfs_share = Some(RootfsShare {
+                self.rootfs = Some(Rootfs::Share(RootfsShare {
                     path,
                     read_only: read_only || force_read_only,
-                });
+                }));
                 // Prepend the image's declared env so the caller's `--env`
                 // (already in `self.env`) renders *after* it and wins on key
                 // collisions — matching `docker run -e`. Both reach the guest in
@@ -198,8 +207,7 @@ impl Config {
                 }
             }
             RootfsArtifact::BlockImage { path, fstype } => {
-                self.rootfs_share = None;
-                self.rootfs_block = Some(RootfsBlock { path, fstype });
+                self.rootfs = Some(Rootfs::Block(RootfsBlock { path, fstype }));
             }
         }
     }

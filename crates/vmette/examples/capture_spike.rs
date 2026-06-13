@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use vmette::{Config, RootfsShare, Session};
+use vmette::{Config, Rootfs, RootfsShare, Session};
 
 fn env_path(k: &str) -> Option<PathBuf> {
     std::env::var_os(k).map(PathBuf::from)
@@ -35,10 +35,10 @@ fn main() {
     };
 
     let mut cfg = Config::new(&kernel, &initramfs);
-    cfg.rootfs_share = Some(RootfsShare {
+    cfg.rootfs = Some(Rootfs::Share(RootfsShare {
         path: rootfs,
         read_only: false,
-    });
+    }));
     cfg.exec_cmd =
         Some("echo OUT-LINE-aa; echo ERR-LINE-bb >&2; printf 'no-newline-tail'; exit 7".into());
     cfg.capture_output = true;
