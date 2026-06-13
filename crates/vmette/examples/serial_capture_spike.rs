@@ -162,11 +162,31 @@ fn main() {
         Err(e) => println!("[4] two capture consoles         : INVALID ({e})"),
     }
 
+    // Case 5: THREE consoles — hvc0 inherit (kernel console + /init `[init]`
+    // chatter, which logs to fd2), hvc1 capture (exec stdout), hvc2 capture
+    // (exec stderr). This is the CORRECTED C2 topology: the captured consoles
+    // are exec-dedicated, so neither kernel boot/shutdown lines (hvc0) nor init
+    // logs pollute them. Two consoles alone do NOT achieve this.
+    let mut fds3: [libc::c_int; 2] = [0; 2];
+    assert_eq!(unsafe { libc::pipe(fds3.as_mut_ptr()) }, 0);
+    match validate_with_ports(
+        &kernel,
+        &initramfs,
+        &[inherit_port(), capture_port(fds2[1]), capture_port(fds3[1])],
+    ) {
+        Ok(()) => println!(
+            "[5] three (kernel + exec out/err): VALID   → exec-dedicated clean capture feasible"
+        ),
+        Err(e) => println!("[5] three (kernel + exec out/err): INVALID ({e})"),
+    }
+
     unsafe {
         libc::close(read_fd);
         libc::close(write_fd);
         libc::close(fds2[0]);
         libc::close(fds2[1]);
+        libc::close(fds3[0]);
+        libc::close(fds3[1]);
     }
     let _ = std::fs::remove_dir_all(&dir);
 

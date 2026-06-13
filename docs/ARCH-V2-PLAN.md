@@ -63,17 +63,30 @@ with `to_env()`/`from_env()`; only the wire *format* changes from JSON to
 [2] single capture (pipe) console: VALID   (NSFileHandle-from-fd attachment OK)
 [3] two consoles (hvc0 + hvc1)   : VALID   → stream separation feasible
 [4] two capture consoles         : VALID   → headless dual-capture feasible
+[5] three (kernel + exec out/err): VALID   → exec-dedicated clean capture feasible
 ```
 
-**Decision: pursue two-console stdout/stderr separation (SPEC §4.2 Step 2,
-primary path).** VZ's validator accepts multiple `VZVirtioConsoleDeviceSerialPortConfiguration`s
-and accepts a console bound to an arbitrary pipe fd via
-`NSFileHandle::initWithFileDescriptor_closeOnDealloc`. Both required API shapes
-compile against `objc2-virtualization 0.3.2` and pass validation.
+**Decision: exec-dedicated 3-console topology — NOT the original "second
+console" sketch.** Phase 0 found that two consoles do not yield *clean* capture:
+`console=hvc0` carries kernel messages and `/init` logs to fd 2
+(`custom-init.sh:36`), so a naive stdout→hvc0/stderr→hvc1 split leaves kernel
+lines polluting stdout and `[init]` lines polluting stderr — relocating the
+marker-scraping problem rather than deleting it. The corrected design (validated
+as case [5]): **hvc0** = kernel + init logs (inherit/drained), **hvc1** = exec
+stdout (capture), **hvc2** = exec stderr (capture), with `/init` redirecting the
+user command's fds 1/2 to hvc1/hvc2. VZ's validator accepts this shape and the
+pipe-fd attachment API (`NSFileHandle::initWithFileDescriptor_closeOnDealloc`),
+both compiling against `objc2-virtualization 0.3.2`. **SPEC §4.2 rewritten.**
+
+**[GATE G2-capture] sub-decision, resolve at Phase 2 start:** exec-dedicated
+consoles (preserves streaming `Frame::Stdout`, default) vs redirecting exec
+output to files on the `ctl` share (perfectly clean, zero console multiplexing,
+but loses incremental streaming). See SPEC §4.2.
+
 **Still boot-gated (needs a signed build + assets):** whether the guest kernel
-enumerates `hvc1` and whether `/init` can route the exec's fd 2 there. If that
+enumerates hvc1/hvc2 and whether `/init`'s fd redirect routes cleanly. If that
 boot test fails, the single-stream fallback (captured stdout + structured exit
-via `ctl`) is the backstop — also already validated as shape [2].
+via `ctl`, shape [2]) is the backstop.
 
 ### [GATE G2-stability] In-process VZ fault soak — HARNESS DELIVERED; run gated on signed build
 

@@ -234,8 +234,9 @@ the only consumer of `from_env`-shaped input.
 - **Loses** the "debug the guest by reading the cmdline on the serial console"
   ergonomic — config now lives in a file on a share. Mitigation: `/init` echoes
   the parsed params to the console under the existing `[init]` log prefix.
-- **Adds** a parse step (and possibly one static binary) to the boot path. The
-  ~1s boot budget is not measurably affected (one virtio-fs read of a <4 KB file).
+- **Adds** a single `boot.env` read + `base64 -d` of two fields to the boot path
+  (no new binary — G1). The ~1s boot budget is not measurably affected (one
+  virtio-fs read of a <4 KB file).
 - **Keeps** shell as PID 1 (no full Rust-init rewrite) — deliberately, to
   preserve busybox-only robustness and the fast-boot story.
 
@@ -245,9 +246,9 @@ the only consumer of `from_env`-shaped input.
   representable.
 - `vmette`: `cmdline::build` emits exactly `console=… vmette.boot=ctl
   [vmette.vsock_port=…]` and nothing else; `Session::start` writes a
-  `boot.json` whose deserialized form matches the `Config`.
-- Guest parser unit tests (if option (a)): a table of `boot.json` inputs →
-  expected `KEY=VALUE` output, including the version-mismatch abort.
+  `boot.env` whose `from_env` round-trips to the `Config`-derived `BootParams`.
+- `BootParams::{to_env,from_env}` round-trip incl. base64'd `exec`/`env` and the
+  `proto_version` mismatch case.
 - `tests/run.sh`: existing end-to-end gates must stay green (real VM boot).
 
 ---
@@ -289,15 +290,43 @@ drained on the Session's owning thread, bounded by a cap (port the
 `OUTPUT_CAP_BYTES` logic from `sandbox.rs:243-293` into the library as the single
 owner).
 
-**Decision (see PLAN §Risk-G2):** guest stdout and stderr currently share one
-virtio console (hvc0). True stream separation requires a second serial/virtio
-console device. Target: add a second console for stderr so `RunOutput.stdout`
-and `.stderr` are genuinely separate, eliminating the marker-slicing entirely.
-If a second console proves problematic under VZ, the fallback is a single
-captured stream surfaced as `stdout` with `stderr` empty — still strictly better
-than marker-scraping, and the exec-result framing moves into `BootParams`-era
-structured exit reporting (the `.vmette-exit`/`ctl` channel already gives a clean
-exit code, so only stdout/stderr text needs the console).
+**Console topology (REVISED after Phase 0 — this corrects the original
+"add a second console" sketch).** Phase 0 found that two consoles are *not*
+sufficient for clean capture. `console=hvc0` carries **kernel** boot/shutdown
+messages, and `/init` logs its `[init] …` chatter to **fd 2**
+(`custom-init.sh:36 log() { echo "[init] $*" >&2; }`); the exec inherits that
+console for both streams. So "stdout→hvc0, stderr→hvc1" would leave kernel lines
+polluting captured stdout and `[init]` lines polluting captured stderr — i.e. it
+just relocates the marker-scraping problem instead of deleting it. To actually
+delete `slice_exec_output`, the captured consoles must be **exec-dedicated**:
+
+- **hvc0** — kernel console + `/init` logs (Inherit on the CLI path; discarded /
+  drained on the headless daemon/MCP path). The kernel and init keep this.
+- **hvc1** — exec **stdout** (Capture). `/init` redirects the user command's
+  fd 1 here (`exec >/dev/hvc1`) just before running it.
+- **hvc2** — exec **stderr** (Capture). Likewise fd 2 → `/dev/hvc2`.
+
+The host reads hvc1/hvc2 as clean, separated streams. **Phase 0 spike result:
+this 3-console shape validates** (`serial_capture_spike` case [5] VALID:
+`three (kernel + exec out/err) → exec-dedicated clean capture feasible`). The
+`SerialSink` enum in Step 1 generalizes to a per-console list rather than a
+single `Capture(RawFd, RawFd)`.
+
+> **Alternative under consideration (decide in PLAN, gate G2-capture):** instead
+> of exec-dedicated consoles, have `/init` redirect the user command's
+> stdout/stderr to two files on the **`ctl` share** (which C1 already mounts) and
+> let the host read them after exit. This gives perfectly clean separation with
+> *zero* console multiplexing and no kernel/init pollution — at the cost of
+> losing **incremental streaming** (output is available only at exit). The
+> console path preserves the daemon's current streaming `Frame::Stdout` behavior;
+> the ctl-file path does not. The daemon streams today, so the console topology
+> is the default; the ctl-file option is the fallback if hvc1/hvc2 guest-side
+> routing proves troublesome.
+
+**Fallback (single-stream).** If neither clean-separation option holds up under a
+real boot, surface one captured stream as `stdout` with `stderr` empty — still
+strictly better than marker-scraping, since the clean **exit code** already
+arrives via the `.vmette-exit`/`ctl` channel independent of the console.
 
 **Step 3 — collapse the paths.**
 
