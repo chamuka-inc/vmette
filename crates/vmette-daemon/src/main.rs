@@ -269,7 +269,15 @@ async fn dispatch(stream: UnixStream, vmette_bin: PathBuf, registry: Arc<Registr
         Ok(())
     } else {
         let req: Request = serde_json::from_str(line).context("parse run request")?;
-        run_workload(req, write_half, vmette_bin).await
+        // C2: run the one-shot workload in-process (capture-aware `Session`),
+        // the same substrate the desktop registry uses — no fork, no argv
+        // round-trip, no console marker-scraping. The legacy subprocess path is
+        // kept one release behind `VMETTE_SUBPROC_RUN=1` as an escape hatch.
+        if std::env::var_os("VMETTE_SUBPROC_RUN").is_some() {
+            run_workload(req, write_half, vmette_bin).await
+        } else {
+            run_workload_inproc(req, write_half).await
+        }
     }
 }
 
@@ -362,6 +370,97 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
             Ok(DesktopReply::Stopped)
         }
     }
+}
+
+/// Run a one-shot workload IN-PROCESS via a capture-aware `vmette::Session` —
+/// the same substrate the desktop registry uses. The rootfs is resolved through
+/// the shared provider registry, the request maps to a `Config` via
+/// `Config::from_run_request`, and the guest's output is captured on a dedicated
+/// clean console (no init/kernel noise, no marker-scraping) and streamed as
+/// `Frame::Stdout` followed by `Frame::Exit`. Replaces forking the `vmette` CLI.
+async fn run_workload_inproc(
+    req: Request,
+    mut write_half: tokio::net::unix::OwnedWriteHalf,
+) -> Result<()> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Frame>(64);
+    // Lets the async side force-stop the VM if the client disconnects mid-run
+    // (the subprocess path's `kill_on_drop` equivalent). The worker fills it
+    // once the session is live.
+    let stop_slot: Arc<std::sync::Mutex<Option<vmette::StopHandle>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let stop_for_worker = stop_slot.clone();
+
+    // The VM runs on a blocking thread (`Session` is `!Send` and does blocking
+    // VZ work); it streams frames back over the channel.
+    let worker = tokio::task::spawn_blocking(move || -> Result<()> {
+        let provider = vmette_providers::default_registry();
+        let ctx = vmette::provider::Context::new(vmette_assets::default_cache_root())
+            .offline(req.offline)
+            .guest_helpers_dir(registry::locate_guest_helpers());
+        let artifact = provider
+            .resolve(&req.rootfs, &ctx)
+            .map_err(|e| anyhow!("resolving rootfs {}: {e}", req.rootfs))?;
+        let cfg = vmette::Config::from_run_request(&req, artifact, true);
+        let session = vmette::Session::start(&cfg).map_err(|e| anyhow!("session start: {e}"))?;
+        *stop_for_worker.lock().unwrap() = Some(session.stop_handle());
+        if let Some(chunks) = session.capture_rx() {
+            for chunk in chunks {
+                let data = String::from_utf8_lossy(&chunk).into_owned();
+                if tx.blocking_send(Frame::Stdout { data }).is_err() {
+                    break; // client gone
+                }
+            }
+        }
+        let code = match session.wait() {
+            vmette::SessionEnd::Exited(c) => c,
+            vmette::SessionEnd::TimedOut => 124,
+            vmette::SessionEnd::Stopped => 0,
+            vmette::SessionEnd::Error(_) => 1,
+        };
+        let _ = tx.blocking_send(Frame::Exit { code });
+        Ok(())
+    });
+
+    // Forward frames to the socket as they stream.
+    let mut client_gone = false;
+    while let Some(frame) = rx.recv().await {
+        if write_frame(&mut write_half, &frame).await.is_err() {
+            client_gone = true;
+            break; // client disconnected
+        }
+    }
+    // If the client vanished mid-run, force-stop the VM so it doesn't keep
+    // running to its timeout (mirrors the subprocess `kill_on_drop`).
+    if client_gone {
+        if let Some(h) = stop_slot.lock().unwrap().take() {
+            h.stop();
+        }
+    }
+    // Surface a setup error (resolve/start) as a terminal Error frame; the happy
+    // path already sent Exit.
+    match worker.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            let _ = write_frame(
+                &mut write_half,
+                &Frame::Error {
+                    message: format!("{e:#}"),
+                },
+            )
+            .await;
+        }
+        Err(e) => {
+            let _ = write_frame(
+                &mut write_half,
+                &Frame::Error {
+                    message: format!("run task panicked: {e}"),
+                },
+            )
+            .await;
+        }
+    }
+    let _ = write_half.shutdown().await;
+    Ok(())
 }
 
 async fn run_workload(

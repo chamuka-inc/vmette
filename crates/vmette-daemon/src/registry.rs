@@ -617,7 +617,8 @@ fn crop_png(frame: &Frame, rect: Rect) -> Result<Vec<u8>> {
 
 /// Best-effort location of the static guest helpers (vsock-send/runner) so the
 /// OCI provider can inject them into resolved rootfs trees, mirroring the CLI.
-fn locate_guest_helpers() -> Option<PathBuf> {
+/// Shared with the stateless in-process run lane in `main`.
+pub(crate) fn locate_guest_helpers() -> Option<PathBuf> {
     let arch = vmette_assets::guest_arch();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(share) = exe

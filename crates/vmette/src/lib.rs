@@ -203,6 +203,52 @@ impl Config {
             }
         }
     }
+
+    /// Build a one-shot [`Config`] from a daemon run
+    /// [`Request`](vmette_proto::daemon::Request) plus its already-resolved
+    /// rootfs `artifact`, for running the workload **in-process**. This is the
+    /// single owner of the `Request` → `Config` mapping (shared by the daemon and
+    /// the MCP server), replacing the former `Request` → CLI-argv path
+    /// (`to_cli_args`) that fed a forked `vmette` subprocess.
+    ///
+    /// Rootfs resolution (the provider registry / network I/O) stays with the
+    /// caller — it passes the resolved `artifact` and the request's `rootfs_ro`.
+    /// `capture_output` is set so [`Session::wait_captured`]/[`Session::capture_rx`]
+    /// can return the guest output. The request carries no caller `--env`, so
+    /// `env` is just the image's declared env (via `set_rootfs_artifact`).
+    pub fn from_run_request(
+        req: &vmette_proto::daemon::Request,
+        artifact: RootfsArtifact,
+        capture_output: bool,
+    ) -> Self {
+        let mut c = Config::new(&req.kernel, &req.initramfs);
+        c.exec_cmd = Some(req.exec.clone());
+        c.shares = req.shares.clone();
+        c.disks = req.disks.clone();
+        c.net = req.net;
+        c.switch_root = req.switch_root;
+        c.capture_output = capture_output;
+        c.timeout_seconds = req.timeout_seconds;
+        c.scratch_mib = req.scratch_mib;
+        if let Some(v) = req.vcpus {
+            c.vcpus = v;
+        }
+        if let Some(m) = req.mem_mib {
+            c.mem_mib = m;
+        }
+        if let Some(g) = req.guest_vsock_port {
+            c.guest_vsock_port = g;
+        }
+        // Wire protocol: -1 disable, 0 auto, >0 fixed, absent → auto (the CLI's
+        // default), matching the old `to_cli_args` rendering.
+        c.vsock_port = match req.vsock_port {
+            Some(-1) => VsockPort::Disabled,
+            Some(n) if n > 0 => VsockPort::Fixed(n as u32),
+            _ => VsockPort::Auto,
+        };
+        c.set_rootfs_artifact(artifact, req.rootfs_ro);
+        c
+    }
 }
 
 /// Render environment `(key, value)` pairs into a shell-sourceable string of

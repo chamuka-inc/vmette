@@ -344,30 +344,36 @@ impl Drop for CapturePipe {
     }
 }
 
-/// Drain the capture pipe (`read_fd`, owned + closed here) into `buf` until the
-/// session ends and a short grace elapses with no further bytes. Non-blocking so
-/// it can observe `end` rather than block forever on a guest that never closes
-/// the console. Bounded by [`CAPTURE_CAP_BYTES`]; keeps reading past the cap so a
-/// chatty guest never blocks on a full pipe.
-fn drain_capture(read_fd: RawFd, end: Arc<EndSlot>, buf: Arc<Mutex<Vec<u8>>>) {
+/// Drain the capture pipe (`read_fd`, owned + closed here), sending output
+/// chunks on `tx` until the session ends and a short grace elapses with no
+/// further bytes. The channel lets a consumer either **stream** chunks live
+/// (the daemon, via [`Session::capture_rx`]) or **buffer** them at the end (the
+/// MCP server / [`Session::wait_captured`]). Non-blocking so it can observe `end`
+/// rather than block forever on a guest that never closes the console. Bounded
+/// by [`CAPTURE_CAP_BYTES`]; keeps reading past the cap so a chatty guest never
+/// blocks on a full pipe, but stops *sending* past it (after a one-time marker).
+fn drain_capture(read_fd: RawFd, end: Arc<EndSlot>, tx: std::sync::mpsc::Sender<Vec<u8>>) {
     unsafe {
         let fl = libc::fcntl(read_fd, libc::F_GETFL);
         libc::fcntl(read_fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
     }
     let mut tmp = [0u8; 8192];
+    let mut sent: usize = 0;
     let mut truncated = false;
     let mut grace: u32 = 0;
     loop {
         let n = unsafe { libc::read(read_fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
         if n > 0 {
             grace = 0;
-            let mut b = buf.lock().unwrap();
-            if b.len() < CAPTURE_CAP_BYTES {
-                let take = (n as usize).min(CAPTURE_CAP_BYTES - b.len());
-                b.extend_from_slice(&tmp[..take]);
+            if sent < CAPTURE_CAP_BYTES {
+                let take = (n as usize).min(CAPTURE_CAP_BYTES - sent);
+                // A send error means the receiver was dropped — keep draining the
+                // pipe (so the guest never blocks) but stop sending.
+                let _ = tx.send(tmp[..take].to_vec());
+                sent += take;
                 if take < n as usize && !truncated {
                     truncated = true;
-                    b.extend_from_slice(b"\n[output truncated at 1048576 bytes]\n");
+                    let _ = tx.send(b"\n[output truncated at 1048576 bytes]\n".to_vec());
                 }
             }
             continue;
@@ -383,6 +389,7 @@ fn drain_capture(read_fd: RawFd, end: Arc<EndSlot>, buf: Arc<Mutex<Vec<u8>>>) {
         std::thread::sleep(Duration::from_millis(20));
     }
     unsafe { libc::close(read_fd) };
+    // `tx` drops here → the channel closes, ending any consumer's iteration.
 }
 
 /// A booted VM and everything that must outlive its dispatch queue.
@@ -401,11 +408,11 @@ pub struct Session {
     _control_dir: Option<ControlDirGuard>,
     // Ephemeral `--scratch` disk image; removed when the session drops.
     _scratch_file: Option<ScratchFileGuard>,
-    // C2 capture: the host pipe write end (closed on drop) + the buffer the
-    // reader thread fills + the reader handle (joined by `wait_captured`).
+    // C2 capture: the host pipe write end (closed on drop) + the receiver of
+    // output chunks the reader thread sends. Consumed once, by either
+    // `wait_captured` (buffer) or `capture_rx` (stream).
     _capture: Option<CapturePipe>,
-    captured: Option<Arc<Mutex<Vec<u8>>>>,
-    reader: Mutex<Option<std::thread::JoinHandle<()>>>,
+    capture_rx: Mutex<Option<std::sync::mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl Session {
@@ -529,21 +536,18 @@ impl Session {
         let timed_out = Arc::new(AtomicBool::new(false));
 
         // Start draining the capture pipe now (before the VM runs) so the guest
-        // never blocks on a full pipe. The reader owns `read_fd` and stops once
-        // `end` is recorded; `Session` keeps the `write_fd` (CapturePipe) alive
-        // for the VM's lifetime.
-        let (captured, reader) = match &capture {
+        // never blocks on a full pipe. The reader owns `read_fd`, sends output
+        // chunks on a channel, and stops once `end` is recorded; `Session` keeps
+        // the `write_fd` (CapturePipe) alive for the VM's lifetime.
+        let capture_rx = match &capture {
             Some((read_fd, _)) => {
-                let buf = Arc::new(Mutex::new(Vec::new()));
-                let buf_for_reader = buf.clone();
+                let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
                 let end_for_reader = end.clone();
                 let read_fd = *read_fd;
-                let handle = std::thread::spawn(move || {
-                    drain_capture(read_fd, end_for_reader, buf_for_reader)
-                });
-                (Some(buf), Some(handle))
+                std::thread::spawn(move || drain_capture(read_fd, end_for_reader, tx));
+                Some(rx)
             }
-            None => (None, None),
+            None => None,
         };
 
         let delegate = VmetteDelegate::new(DelegateState {
@@ -654,8 +658,7 @@ impl Session {
             _control_dir: control_dir,
             _scratch_file: scratch_file,
             _capture: capture.map(|(_, p)| p),
-            captured,
-            reader: Mutex::new(reader),
+            capture_rx: Mutex::new(capture_rx),
         })
     }
 
@@ -681,25 +684,43 @@ impl Session {
     /// Block until the session ends, then return the exit code plus the captured
     /// guest output (combined stdout+stderr) as a [`RunOutput`]. Only meaningful
     /// for a session started with [`Config::capture_output`](crate::Config::capture_output);
-    /// otherwise `output` is empty. Joins the capture reader thread so all
-    /// trailing output flushed around poweroff is included.
+    /// otherwise `output` is empty. Drains the capture channel to completion
+    /// (which closes once the reader has flushed all trailing output around
+    /// poweroff), so every byte is included. Buffered — for live streaming use
+    /// [`Session::capture_rx`] instead.
     pub fn wait_captured(&self) -> crate::RunOutput {
         let end = self.end.wait_end();
-        if let Some(handle) = self.reader.lock().unwrap().take() {
-            let _ = handle.join();
+        let mut out = Vec::new();
+        if let Some(rx) = self.capture_rx.lock().unwrap().take() {
+            for chunk in rx {
+                out.extend_from_slice(&chunk);
+            }
         }
-        let output = self
-            .captured
-            .as_ref()
-            .map(|b| String::from_utf8_lossy(&b.lock().unwrap()).into_owned())
-            .unwrap_or_default();
         let exit_code = match end {
             SessionEnd::Exited(code) => code,
             SessionEnd::TimedOut => 124,
             SessionEnd::Stopped => 0,
             SessionEnd::Error(_) => 1,
         };
-        crate::RunOutput { exit_code, output }
+        // The guest console is a tty (ONLCR), so every `\n` arrives as `\r\n`.
+        // Normalize on the fully-buffered string (safe — no chunk boundaries) so
+        // the captured output is clean LF, matching the prior subprocess path's
+        // console handling. Lone `\r` (e.g. progress redraws) is left intact.
+        crate::RunOutput {
+            exit_code,
+            output: String::from_utf8_lossy(&out).replace("\r\n", "\n"),
+        }
+    }
+
+    /// Take the capture channel for **streaming** the guest's output chunks live
+    /// as the VM runs (the daemon forwards them as `Frame::Stdout`). Each item is
+    /// a chunk of combined stdout+stderr bytes; iteration ends when the session
+    /// has fully ended and all trailing output is flushed. Returns `None` if the
+    /// session was not started with `capture_output`, or if the channel was
+    /// already taken (by an earlier `capture_rx`/`wait_captured`). The caller
+    /// reads the exit code via [`Session::wait`] after the stream ends.
+    pub fn capture_rx(&self) -> Option<std::sync::mpsc::Receiver<Vec<u8>>> {
+        self.capture_rx.lock().unwrap().take()
     }
 
     /// Request a graceful force-stop of the guest. The stop completes on the
