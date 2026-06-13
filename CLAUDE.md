@@ -21,7 +21,7 @@ binary and macOS.
 
 ## Workspace layout
 
-Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MIT):
+Eleven crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MIT):
 
 | Crate | Purpose |
 |-------|---------|
@@ -31,6 +31,7 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
 | `crates/vmette-assets` | Shared boot-asset (kernel + initramfs) discovery for the binaries. |
 | `crates/vmette-cli` | `vmette` CLI binary. Hand-rolled arg parsing (no clap — keeps the binary small). |
 | `crates/vmette-daemon` | `vmetted` — UNIX-socket dispatcher (tokio). In-process stateless run lane + stateful desktop registry; owns the pixel-`settle` perception module. |
+| `crates/vmette-daemon-client` | Sync transport for the `vmetted` desktop socket (connect / lazy-auto-spawn / line framing) — the single owner, shared by the CLI (directly) and the MCP server (via `spawn_blocking`). |
 | `crates/vmette-mcp` | MCP server (`vmette-mcp`) exposing vmette to AI agents over stdio. |
 | `crates/vmette-provider-oci` | OCI/Docker image rootfs provider (catch-all for bare refs + `oci://`); per-registry `AuthResolver` for private images. |
 | `crates/vmette-provider-squashfs` | Squashfs block-image rootfs provider (`squashfs+file://`, `squashfs+https://`, `squashfs+http://`). Returns `BlockImage`. |

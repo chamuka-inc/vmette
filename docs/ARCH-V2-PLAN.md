@@ -283,9 +283,10 @@ Exit criteria: snapshot preserved and coherent with `boot.env`; no dead
 
 ## Phase 4 — C5: Lower-tier consolidation
 
-Independent items. **Outcome: 4a + 4d shipped; 4b deferred and 4c declined after
-investigation** (the substantive parts were already done or the consolidation
-would degrade the codebase). Detail below.
+Independent items. **Outcome: all four shipped.** (4b and 4c were briefly
+deferred/declined on a testability and a dep-purity argument; both were then done
+properly and e2e-validated — the desktop path *is* testable here via the public
+GHCR desktop image, and the CA consolidation is a clean small change.) Detail below.
 
 - **4a. `run()` returns. ✅ DONE.** `lifecycle::run` returns `RunOutput`
   (exit/timeout/stop/error → code) instead of `process::exit`; `vmette-cli::main`
@@ -303,28 +304,28 @@ would degrade the codebase). Detail below.
     presentation wrapper — so removing it would force a `run()` signature change
     rippling into the stable C ABI `vmette_run`, for marginal benefit. Left as-is.
 
-- **4b. `vmette-daemon-client` crate. ⏸ DEFERRED.** Both consumers
-  (`vmette-cli/src/desktop.rs`, `vmette-mcp/src/daemon_client.rs`) are
-  **desktop-only** paths, not e2e-testable without the browser-rootfs image
-  (`driver.py` exercises the *sandbox*, not the daemon client). The dup is ~60
-  lines of rarely-changed connect/setsid-spawn/poll/read, and the rewire involves
-  an async→sync MCP conversion (`spawn_blocking` + the `spawn_lock`) with subtle
-  correctness. Refactoring an untestable load-bearing path blind, for the
-  lowest-value dedup, is poor risk/reward. Do it when the desktop image is
-  available so `tests/mcp/desktop_e2e.py` can validate it.
+- **4b. `vmette-daemon-client` crate. ✅ DONE.** New crate owns the
+  connect / lazy-auto-spawn / line-framing for the vmetted desktop socket (a sync
+  `DaemonClient { socket, autostart, spawn_lock }` + `request`/`ensure`, 4 unit
+  tests against a mock `UnixListener`). The CLI's `desktop.rs` delegates directly;
+  the MCP's async `daemon_client.rs` holds an `Arc<DaemonClient>` and calls it via
+  `spawn_blocking`. Deleted ~160 lines of duplicated connect/spawn/read across the
+  two consumers. **E2E-validated** (the desktop path IS testable here — ad-hoc
+  codesign + the public GHCR `vmette-desktop` image): CLI desktop cycle
+  (start→screenshot→cursor→click→stop), MCP desktop cycle via `call.py`
+  (start→screenshot→click→stop), and `driver.py` 14/14.
 
-- **4c. `CaTrust` owner. ✅ EFFECTIVELY DONE / declined.** The CA-cert *policy* is
-  already a single owner: `vmette_assets::resolve_ca_certs` (explicit → env →
-  default dir) + the one `CA_CERTS_SHARE_TAG`. What repeats is the trivial wrap
-  `resolve_ca_certs(x).map(|p| ShareMount { tag, path })`; the binaries'
-  injection strategies (`ensure_ca_share` dedup-and-push vs `with_ca_share`
-  prepend) are genuinely *different* operations, not duplication. Consolidating
-  the 3-line wrap has no clean home — `vmette-assets` is deliberately
-  **zero-dependency** (adding `vmette-proto` for `ShareMount` breaks that) and
-  `vmette` core deps proto but not assets (adding it inverts the layering).
-  Degrading dep structure to save 3 lines is net-negative; left as-is.
+- **4c. `resolve_ca_share` owner. ✅ DONE.** The CA *policy* was already single
+  (`vmette_assets::resolve_ca_certs`); what repeated was wrapping its result in a
+  `ShareMount{tag: CA_CERTS_SHARE_TAG, path}` at 4 sites. Consolidated into
+  `vmette_assets::resolve_ca_share(explicit) -> Option<ShareMount>` (assets takes
+  the tiny serde-only `vmette-proto` for `ShareMount`), used by the MCP
+  constructor + `desktop_start` and the CLI's `ensure_ca_share` + `desktop start
+  --ca-certs`. **E2E-validated**: `VMETTE_CA_CERTS=<dir> vmette --exec 'ls
+  /mnt/certs'` installs the cert and mounts the share.
 
-Exit criteria: 4a + 4d green and validated; 4b/4c consciously deferred/declined.
+Exit criteria: all four (4a–4d) shipped, green, and e2e-validated. (`quiet` not
+dropped — the one deliberate sub-omission, for the C-ABI reason noted in 4d.)
 
 ---
 

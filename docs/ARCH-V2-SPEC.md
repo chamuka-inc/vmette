@@ -536,33 +536,27 @@ specified here for completeness and may land after C1–C3.
 
 ## 7. C5 — Lower-tier consolidation
 
-Independent items. **Outcome: items 1 and 4 shipped; 2 deferred and 3 declined
-after investigation** (see PLAN Phase 4 for the gate details).
+Independent items. **Outcome: all four shipped and e2e-validated.**
 
 1. **`run()` returns instead of `process::exit`. ✅ DONE.** `lifecycle::run`
    restores the terminal, drops the session, and **returns** `RunOutput`;
    `vmette-cli::main` forwards it to `ExitCode`. `ffi::vmette_run` returns
    normally (it already boxed `RunOutput` on `Ok`). CHANGELOG records it.
 
-2. **Single daemon-client crate. ⏸ DEFERRED.** The CLI
-   (`vmette-cli/src/desktop.rs`, sync) and MCP (`vmette-mcp/src/daemon_client.rs`,
-   async) each hand-roll connect/auto-spawn/read-reply, but both are
-   **desktop-only** paths that cannot be e2e-validated without the browser-rootfs
-   image (`driver.py` covers the sandbox, not the daemon client). The dup is ~60
-   lines of rarely-changed code and the rewire needs an async→sync MCP conversion
-   with subtle correctness; refactoring it blind for the lowest-value dedup is
-   poor risk/reward. Do it when the desktop image is available so
-   `tests/mcp/desktop_e2e.py` can validate it.
+2. **Single daemon-client crate. ✅ DONE.** New `vmette-daemon-client` crate owns
+   the connect / lazy-auto-spawn / line framing for the vmetted desktop socket (a
+   sync `DaemonClient` + `request`/`ensure`, 4 mock-socket unit tests). The CLI's
+   `desktop.rs` delegates directly; the MCP's async `daemon_client.rs` holds an
+   `Arc<DaemonClient>` and drives it via `spawn_blocking`. ~160 duplicated lines
+   deleted. E2E-validated against the public GHCR desktop image: CLI + MCP desktop
+   cycles (start/screenshot/click/stop) and `driver.py` 14/14.
 
-3. **`CaTrust` owner. ✅ EFFECTIVELY DONE / declined.** The CA-cert *policy* is
-   already a single owner: `vmette_assets::resolve_ca_certs` (explicit → env →
-   default dir) + the one `CA_CERTS_SHARE_TAG`. The "≥3 sites" was an overstatement
-   — only the trivial wrap `resolve_ca_certs(x).map(|p| ShareMount { tag, path })`
-   repeats, and the binaries' injection strategies (`ensure_ca_share` vs
-   `with_ca_share`) are genuinely *different*, not duplication. Consolidating the
-   3-line wrap has no clean home: `vmette-assets` is deliberately zero-dependency
-   (adding `vmette-proto` for `ShareMount` breaks that) and `vmette` core deps
-   proto but not assets (adding it inverts layering). Net-negative; left as-is.
+3. **`resolve_ca_share` owner. ✅ DONE.** The CA *policy* was already single
+   (`vmette_assets::resolve_ca_certs`); the repeated bit was wrapping it in a
+   `ShareMount{tag, path}` at 4 sites. Consolidated into
+   `vmette_assets::resolve_ca_share(explicit) -> Option<ShareMount>` (assets takes
+   the tiny serde-only `vmette-proto` for `ShareMount`). E2E-validated: a
+   configured `VMETTE_CA_CERTS` dir mounts at `/mnt/certs` and the cert installs.
 
 4. **`Config` rootfs enum. ✅ DONE** (rootfs half). Collapsed the
    mutually-exclusive `Config::{rootfs_share, rootfs_block}` into one
@@ -573,15 +567,17 @@ after investigation** (see PLAN Phase 4 for the gate details).
    — the presentation wrapper — so removing it forces a `run()` signature change
    rippling into the stable C ABI `vmette_run`, for marginal benefit.
 
-### 7.1 Tests (for the shipped items)
+### 7.1 Tests
 
-- `run()` returning (item 1): validated by the `tests/run.sh` exit-code gates
-  (0/42/1, timeout 124) and a direct CLI exit-code check.
-- `Config` rootfs enum (item 4): the `enum` makes the mutual exclusion a
-  compile-time guarantee (no more runtime "block branch wins"); the existing
-  rootfs gates in `tests/run.sh` (ro, scratch, OCI, switch-root) cover the paths.
-- Items 2 (daemon-client crate) and 3 (`CaTrust`) were not implemented — see
-  above for why; their tests are moot.
+- Item 1 (`run()` returns): `tests/run.sh` exit-code gates (0/42/1, timeout 124)
+  + a direct CLI exit-code check.
+- Item 2 (daemon-client): 4 mock-socket unit tests in the new crate; CLI + MCP
+  desktop cycles + `driver.py` 14/14 e2e.
+- Item 3 (`resolve_ca_share`): a unit test in `vmette-assets` + a `VMETTE_CA_CERTS`
+  boot confirming `/mnt/certs` mounts and the cert installs.
+- Item 4 (`Config` rootfs enum): the `enum` makes the mutual exclusion a
+  compile-time guarantee; the `tests/run.sh` rootfs gates (ro, scratch, OCI,
+  switch-root) cover the paths.
 
 ---
 
