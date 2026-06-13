@@ -739,16 +739,28 @@ static void launch_argv(const char *prog, const char *arg) {
 // ordered. Only these two non-X actions defer.
 #define EXEC_CAPTURE_MAX_OUTPUT (256 * 1024)
 #define MAX_JOBS 16
+// After an exec job's pipe hits EOF the child has usually exited — but the
+// kernel closes the pipe write end a hair before the task becomes reapable, so
+// `waitpid(WNOHANG)` often returns 0 right at EOF for a perfectly clean exit. We
+// therefore *poll* for the exit (every EXEC_EOF_POLL_MS) instead of assuming the
+// child is detached, and only force-kill it as genuinely-detached (e.g. `exec
+// foo >/dev/null`) once EXEC_EOF_GRACE_MS has passed with it still alive. The
+// grace is generous precisely because the poll is non-blocking — it costs no
+// interactivity, so a clean-but-slow-to-reap exit is never mis-killed.
+#define EXEC_EOF_GRACE_MS 2000
+#define EXEC_EOF_POLL_MS 5
 
 struct job {
     int active;
     int is_wait;             // wait timer (no child/pipe) vs exec_capture
+    int eof;                 // exec: pipe drained, now awaiting the child's exit
     uint32_t req_id;         // captured at submit; echoed in the deferred reply
     pid_t pid;               // exec only
-    int outfd;               // exec only: read end of the child's stdout pipe
+    int outfd;               // exec only: read end of the child's stdout pipe (-1 once EOF'd)
     unsigned char *buf;      // exec only: captured output (capped), malloc'd
     size_t len;
-    struct timeval deadline; // exec: SIGKILL at; wait: reply ok at
+    struct timeval deadline; // exec: run-timeout SIGKILL at (or, once eof, the
+                             // detached force-kill grace); wait: reply ok at
 };
 static struct job g_jobs[MAX_JOBS];
 
@@ -814,7 +826,7 @@ static void start_exec_capture(int fd, uint32_t req_id, const char *cmd,
         _exit(127);
     }
     close(pipefd[1]);
-    j->active = 1; j->is_wait = 0; j->req_id = req_id; j->pid = pid;
+    j->active = 1; j->is_wait = 0; j->eof = 0; j->req_id = req_id; j->pid = pid;
     j->outfd = pipefd[0]; j->buf = buf; j->len = 0;
     j->deadline = deadline_in(timeout_ms);
 }
@@ -823,26 +835,47 @@ static void start_exec_capture(int fd, uint32_t req_id, const char *cmd,
 static void start_wait(uint32_t req_id, long ms) {
     struct job *j = job_alloc();
     if (!j) return; // table full: drop (wait is best-effort; host will time out)
-    j->active = 1; j->is_wait = 1; j->req_id = req_id;
+    j->active = 1; j->is_wait = 1; j->eof = 0; j->req_id = req_id;
     j->pid = -1; j->outfd = -1; j->buf = NULL; j->len = 0;
     j->deadline = deadline_in(ms);
 }
 
-// Reap a finished exec job and send its result. `killed` => timed out, so the
-// exit code is reported as `null` (no clean exit).
-static void finish_exec(int fd, struct job *j, int killed) {
-    int wstatus = 0;
-    waitpid(j->pid, &wstatus, 0);
-    int code;
-    if (killed || !WIFEXITED(wstatus)) code = -1;
-    else code = WEXITSTATUS(wstatus);
-    send_exec_result(fd, j->req_id, code, j->buf, j->len);
-    close(j->outfd);
-    free(j->buf);
-    j->active = 0;
+// EINTR-safe blocking reap of a specific child. Bounded: every caller SIGKILLs
+// the child first, so the reap returns promptly.
+static pid_t reap_pid(pid_t pid, int *wstatus) {
+    pid_t w;
+    do { w = waitpid(pid, wstatus, 0); } while (w < 0 && errno == EINTR);
+    return w;
 }
 
-// An exec job's pipe is readable: accumulate output (capped), and on EOF reply.
+// Non-blocking reap: 1 if the child has been reaped (exited, or already gone),
+// 0 if it is still running. `*wstatus` carries the exit status on a real exit;
+// it is zeroed for the already-gone (ECHILD) case so the caller reads exit 0.
+static int try_reap(pid_t pid, int *wstatus) {
+    pid_t w;
+    do { w = waitpid(pid, wstatus, WNOHANG); } while (w < 0 && errno == EINTR);
+    if (w < 0) *wstatus = 0; // ECHILD: no child to wait on; treat as clean exit
+    return w != 0;
+}
+
+// Reply exit code: the child's status, or -1 (=> JSON null) when it did not
+// exit cleanly (killed/signalled).
+static int exit_code_of(int wstatus) {
+    return WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
+}
+
+// Send an exec job's captured result and tear the job down.
+static void deliver_exec(int fd, struct job *j, int code) {
+    send_exec_result(fd, j->req_id, code, j->buf, j->len);
+    if (j->outfd >= 0) close(j->outfd);
+    free(j->buf);
+    j->active = 0;
+    j->eof = 0;
+}
+
+// An exec job's pipe is readable: accumulate output (capped). On EOF the output
+// is complete; reap the child if it is already done, else mark the job
+// `eof`-awaiting so expire_jobs polls for its exit without blocking the loop.
 static void drain_job(int fd, struct job *j) {
     if (j->len < EXEC_CAPTURE_MAX_OUTPUT) {
         ssize_t got = read(j->outfd, j->buf + j->len,
@@ -857,21 +890,55 @@ static void drain_job(int fd, struct job *j) {
         if (got > 0) return;
         if (got < 0 && errno == EINTR) return;
     }
-    finish_exec(fd, j, 0); // EOF or hard error → child done
+    // EOF or hard error.
+    int wstatus = 0;
+    if (try_reap(j->pid, &wstatus)) {
+        deliver_exec(fd, j, exit_code_of(wstatus)); // common case: already exited
+    } else {
+        // Not reapable yet: either the exit just hasn't landed (the usual race —
+        // resolved within a poll or two) or the child detached its stdio and
+        // will run on. Stop reading the pipe and await the exit via expire_jobs;
+        // the deadline becomes the detached force-kill grace.
+        close(j->outfd);
+        j->outfd = -1;
+        j->eof = 1;
+        j->deadline = deadline_in(EXEC_EOF_GRACE_MS);
+    }
 }
 
-// Fire any jobs whose deadline has passed: exec → SIGKILL + null reply;
-// wait → ok. Called once after every select() wake.
+// Service job timers/reaps after each select() wake. Non-blocking: every check
+// is a single WNOHANG (the only blocking reap is the bounded one after we have
+// already SIGKILLed). Handles: an EOF'd exec awaiting its exit (reap when done,
+// or force-kill a detached child once its grace elapses); a wait timer; and an
+// exec past its run timeout.
 static void expire_jobs(int fd) {
     for (int i = 0; i < MAX_JOBS; i++) {
         struct job *j = &g_jobs[i];
-        if (!j->active || ms_until(&j->deadline) > 0) continue;
+        if (!j->active) continue;
+        if (j->eof) {
+            int wstatus = 0;
+            if (try_reap(j->pid, &wstatus)) {
+                deliver_exec(fd, j, exit_code_of(wstatus));
+            } else if (ms_until(&j->deadline) <= 0) {
+                // Grace elapsed, still alive → detached. Kill the whole session
+                // group (the child setsid()'d, so -pid reaches backgrounded
+                // grandchildren too), reap, report null exit.
+                kill(-j->pid, SIGKILL);
+                reap_pid(j->pid, &wstatus);
+                deliver_exec(fd, j, -1);
+            }
+            continue;
+        }
+        if (ms_until(&j->deadline) > 0) continue;
         if (j->is_wait) {
             send_ok(fd, j->req_id);
             j->active = 0;
         } else {
-            kill(j->pid, SIGKILL);
-            finish_exec(fd, j, 1);
+            // exec run-timeout: kill the whole session group, reap, null exit.
+            int wstatus = 0;
+            kill(-j->pid, SIGKILL);
+            reap_pid(j->pid, &wstatus);
+            deliver_exec(fd, j, -1);
         }
     }
 }
@@ -882,7 +949,9 @@ static struct timeval *jobs_timeout(struct timeval *tv) {
     long min_ms = -1;
     for (int i = 0; i < MAX_JOBS; i++) {
         if (!g_jobs[i].active) continue;
-        long ms = ms_until(&g_jobs[i].deadline);
+        // An EOF'd exec is polled for its exit on a short fixed interval; every
+        // other job wakes at its deadline.
+        long ms = g_jobs[i].eof ? EXEC_EOF_POLL_MS : ms_until(&g_jobs[i].deadline);
         if (ms < 0) ms = 0;
         if (min_ms < 0 || ms < min_ms) min_ms = ms;
     }
@@ -897,9 +966,9 @@ static void reap_all_jobs(void) {
     for (int i = 0; i < MAX_JOBS; i++) {
         struct job *j = &g_jobs[i];
         if (!j->active || j->is_wait) continue;
-        kill(j->pid, SIGKILL);
-        waitpid(j->pid, NULL, 0);
-        close(j->outfd);
+        kill(-j->pid, SIGKILL); // whole session group, not just sh
+        reap_pid(j->pid, NULL);
+        if (j->outfd >= 0) close(j->outfd); // -1 once the job is eof-awaiting
         free(j->buf);
         j->active = 0;
     }
@@ -1100,7 +1169,9 @@ int main(int argc, char **argv) {
         FD_SET(xfd, &rfds);
         int maxfd = (fd > xfd ? fd : xfd);
         for (int i = 0; i < MAX_JOBS; i++) {
-            if (g_jobs[i].active && !g_jobs[i].is_wait) {
+            // Only exec jobs with a live pipe (not yet EOF'd → outfd >= 0) are
+            // selectable; an eof-awaiting job has no fd, it polls via jobs_timeout.
+            if (g_jobs[i].active && !g_jobs[i].is_wait && g_jobs[i].outfd >= 0) {
                 FD_SET(g_jobs[i].outfd, &rfds);
                 if (g_jobs[i].outfd > maxfd) maxfd = g_jobs[i].outfd;
             }
@@ -1112,11 +1183,11 @@ int main(int argc, char **argv) {
             break;
         }
 
-        // Deadlines first (a wait fires; an exec past its timeout is killed),
-        // then drain any exec pipes with output / EOF.
+        // Deadlines/reaps first (a wait fires; an EOF'd exec is reaped; an exec
+        // past its timeout is killed), then drain any exec pipes with output/EOF.
         expire_jobs(fd);
         for (int i = 0; i < MAX_JOBS; i++) {
-            if (g_jobs[i].active && !g_jobs[i].is_wait &&
+            if (g_jobs[i].active && !g_jobs[i].is_wait && g_jobs[i].outfd >= 0 &&
                 FD_ISSET(g_jobs[i].outfd, &rfds))
                 drain_job(fd, &g_jobs[i]);
         }
