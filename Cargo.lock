@@ -2723,8 +2723,10 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "vmette",
  "vmette-assets",
  "vmette-proto",
+ "vmette-providers",
 ]
 
 [[package]]

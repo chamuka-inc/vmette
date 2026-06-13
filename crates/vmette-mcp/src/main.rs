@@ -44,7 +44,6 @@ struct Args {
     workspace_cap: usize,
     kernel: Option<PathBuf>,
     initramfs: Option<PathBuf>,
-    vmette_bin: Option<PathBuf>,
     daemon_socket: Option<PathBuf>,
     ca_certs: Option<PathBuf>,
 }
@@ -59,7 +58,6 @@ fn usage() -> ! {
            --workspace-cap N     max concurrent workspaces per session (default: {DEFAULT_WORKSPACE_CAP})\n  \
            --kernel PATH         override autodiscovered vmlinuz path\n  \
            --initramfs PATH      override autodiscovered initramfs path\n  \
-           --vmette PATH         override autodiscovered `vmette` binary path\n  \
            --socket PATH         vmetted socket for desktop_* tools (default ~/Library/Caches/vmette/vmette.sock)\n  \
            --ca-certs DIR        host CA certs to trust in every guest (default: $VMETTE_CA_CERTS or ~/.config/vmette/certs)\n  \
            -h, --help            this message\n  \
@@ -77,7 +75,6 @@ fn parse_args() -> Args {
         workspace_cap: DEFAULT_WORKSPACE_CAP,
         kernel: None,
         initramfs: None,
-        vmette_bin: None,
         daemon_socket: None,
         ca_certs: None,
     };
@@ -113,10 +110,6 @@ fn parse_args() -> Args {
             }
             "--initramfs" => {
                 a.initramfs = Some(take(i, "--initramfs").into());
-                i += 2;
-            }
-            "--vmette" => {
-                a.vmette_bin = Some(take(i, "--vmette").into());
                 i += 2;
             }
             "--socket" => {
@@ -158,8 +151,8 @@ async fn main() -> ExitCode {
     let args = parse_args();
 
     let result: Result<()> = async {
-        let sandbox = Sandbox::new(args.vmette_bin, args.kernel, args.initramfs)
-            .context("initialising vmette sandbox")?;
+        let sandbox =
+            Sandbox::new(args.kernel, args.initramfs).context("initialising vmette sandbox")?;
         let workspaces =
             WorkspaceState::new(args.workspace_cap).context("initialising workspace state")?;
         // Desktop tools route through vmetted; reuse the sandbox's already
