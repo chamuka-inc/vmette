@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the previous in-rootfs `/.vmette-image-env` guest file is gone — image env now
   reaches the guest through the same channel as `--env`.
 
+### Fixed
+
+- A desktop `exec_capture` or `wait` no longer blocks other actions on the same
+  session while it runs. The in-guest agent now drives those two actions
+  asynchronously in its event loop, so a slow command (or a long wait) issued
+  concurrently with input/screenshots/clipboard no longer stalls them — e.g. a
+  settle-screenshot poll alongside an `exec_capture` returns promptly instead of
+  waiting for the command. A long `exec_capture` also no longer freezes
+  clipboard-paste (X selection) serving. Per-action semantics (output, exit code,
+  the `timeout_ms` SIGKILL) are unchanged; replies may now arrive out of order
+  (the host already routes them by request id).
+
 ## [0.10.0] — 2026-06-13
 
 ### Added

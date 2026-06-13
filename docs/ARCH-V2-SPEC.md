@@ -542,9 +542,27 @@ one-shot channel. Consequences:
   framing-fatal error (read failure, EOF, or an unparseable header — we then
   can't know the payload length) poisons the stream and wakes every waiter.
 
-The guest agent (`guest/vmette-desktop-agent.c`) reads the `req_id` prefix into a
-file-scope `g_req_id` (safe — strictly single-threaded) and echoes it from
-`send_frame`. The desktop image + agent were rebuilt to ship the matching guest.
+The guest agent (`guest/vmette-desktop-agent.c`) reads the `req_id` prefix and
+echoes it from `send_frame`. The desktop image + agent were rebuilt to ship the
+matching guest.
+
+#### 6.2.1 Guest-side async (the demux's payoff)
+
+The demux only matters once the guest can produce out-of-order replies. A
+follow-on made the two blocking actions — `exec_capture` and `wait` — **async**
+in the agent's single `select()` loop: each registers a *job* (a child pipe +
+deadline, or a bare timer) that the loop drives to completion while still serving
+input/screenshots/X-selection events, replying later with the job's captured
+`req_id`. The agent stays strictly single-threaded (jobs are just fds/deadlines
+in the one loop — nothing touches the X display off-thread, so input stays
+ordered); only these two non-X actions defer. This required **killing the
+`g_req_id` global** and threading `req_id` explicitly through every `send_*`
+helper — a global is clobbered by the next request the moment a reply is
+deferred. The `timeout_ms` SIGKILL is now a deadline the loop's `select()`
+timeout tracks; `wait` is a timer on the same wheel. Validated on a real boot: a
+`cursor` issued during a `sleep 3` `exec_capture` returned in 0.07s (was ~3s),
+the exec still delivered its output, and a `--timeout-ms 2000` `sleep 30` was
+killed at 2.1s with the loop healthy afterward.
 
 ### 6.3 Trade-offs (as resolved)
 

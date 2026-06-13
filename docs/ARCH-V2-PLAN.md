@@ -359,9 +359,22 @@ Shipped:
   race-guarded `OnceLock`. Per-request timeout moved off the socket
   (`SO_RCVTIMEO` removed) onto the caller's channel, so the shared reader does
   pure blocking reads.
-- **Guest (`vmette-desktop-agent.c`).** Reads the `req_id` prefix into a
-  file-scope `g_req_id` (safe — strictly single-threaded) and echoes it from
-  `send_frame`. Desktop image + agent rebuilt (`build-desktop-image.sh --export`).
+- **Guest (`vmette-desktop-agent.c`).** Reads the `req_id` prefix and echoes it
+  from `send_frame`. Desktop image + agent rebuilt (`build-desktop-image.sh
+  --export`).
+
+**Follow-on — guest-side async (cashes in the demux).** The demux only pays off
+once the guest emits out-of-order replies, so `exec_capture` and `wait` were made
+**async** in the agent's single `select()` loop (job = child pipe + deadline, or
+a bare timer; reply later with the job's captured `req_id`). The agent stays
+single-threaded — only these two non-X actions defer, so the X display is never
+touched off-thread and input stays ordered. This **removed the `g_req_id`
+global** (a deferred reply would echo the wrong id) in favor of threading
+`req_id` through every `send_*`; `timeout_ms`/`wait` became deadlines the loop's
+`select()` tracks. E2E-validated on a real boot: a `cursor` during a `sleep 3`
+`exec_capture` returned in 0.07s (was ~3s); a `--timeout-ms 2000` `sleep 30` was
+SIGKILLed at 2.1s; the loop stayed healthy. CHANGELOG "Fixed" entry added (the
+non-blocking behavior is consumer-observable).
 
 Validated: codec round-trip + out-of-order demux unit tests (152 workspace tests
 green); a full CLI desktop cycle on a real boot through the rebuilt local image —
