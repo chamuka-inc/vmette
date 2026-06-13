@@ -52,7 +52,15 @@ for m in virtio virtio_ring virtio_pci virtio_console virtio_blk virtio_net \
     modprobe "$m" 2>/dev/null
 done
 
-# ---- step 2: cmdline parsing in pure shell ------------------------------
+# ---- step 2: read the typed boot envelope from the ctl share ------------
+#
+# Per-invocation config no longer rides the kernel cmdline as vmette.* tokens.
+# It lives in /ctl/boot.env — a KEY='VALUE' envelope on the always-attached
+# "ctl" virtio-fs share — pointed to by the single cmdline token
+# `vmette.boot=ctl`. We mount ctl early, source the envelope (every value is
+# single-quoted, so a plain `.` is safe), and assert the contract version so a
+# stale initramfs fails *closed* and loud rather than silently misbehaving.
+# Only the vsock port stays on the cmdline (a transport-bootstrap value).
 
 read CMDLINE < /proc/cmdline
 
@@ -65,27 +73,47 @@ cmdline_get() {
     done
 }
 
-cmdline_all() {
-    _key="$1"
-    for _tok in $CMDLINE; do
-        case "$_tok" in
-            "$_key="*) echo "${_tok#${_key}=}" ;;
-        esac
-    done
-}
+# This build's boot-contract version; must equal boot.env's VMETTE_PROTO_VERSION
+# (kept in lockstep with vmette_proto::boot::BOOT_PROTO_VERSION on the host).
+BOOT_PROTO_VERSION=1
 
-# Pull out the flags we care about up front.
-ROOTFS_BLOCK="$(cmdline_get vmette.rootfs_block)"
-ROOTFS_RO="$(cmdline_get vmette.rootfs_ro)"
-USE_SWITCH_ROOT="$(cmdline_get vmette.switch_root)"
-VMETTE_NET="$(cmdline_get vmette.net)"
+if [ "$(cmdline_get vmette.boot)" != "ctl" ]; then
+    log "FATAL: no vmette.boot=ctl on cmdline (incompatible host?)"
+    sync; poweroff -f; sleep 60
+fi
+mkdir -p /ctl
+if ! mount -t virtiofs ctl /ctl 2>/dev/null; then
+    log "FATAL: could not mount 'ctl' share for boot.env"
+    sync; poweroff -f; sleep 60
+fi
+if [ ! -r /ctl/boot.env ]; then
+    log "FATAL: vmette.boot=ctl but /ctl/boot.env missing"
+    sync; poweroff -f; sleep 60
+fi
+. /ctl/boot.env
+if [ "$VMETTE_PROTO_VERSION" != "$BOOT_PROTO_VERSION" ]; then
+    log "FATAL: boot proto mismatch (envelope '$VMETTE_PROTO_VERSION' != init '$BOOT_PROTO_VERSION'); rebuild the initramfs"
+    sync; poweroff -f; sleep 60
+fi
+
+# Map the typed envelope to the variable names the rest of /init uses.
+# ROOTFS_BLOCK holds the block fstype (non-empty selects the block branch);
+# ROOTFS_SHARE=1 selects the virtio-fs directory branch.
+ROOTFS_BLOCK=""
+ROOTFS_SHARE=""
+case "$VMETTE_ROOTFS_MODE" in
+    block) ROOTFS_BLOCK="$VMETTE_ROOTFS_FSTYPE" ;;
+    share) ROOTFS_SHARE=1 ;;
+esac
+ROOTFS_RO="${VMETTE_ROOTFS_RO:-0}"
+USE_SWITCH_ROOT="${VMETTE_SWITCH_ROOT:-0}"
+# Desktop (Agent) mode is derived from the workload strategy. VMETTE_NET,
+# VMETTE_SCRATCH_DEV, VMETTE_SHARES, VMETTE_DISPLAY come straight from boot.env.
+VMETTE_DESKTOP=""
+[ "$VMETTE_STRATEGY" = "agent" ] && VMETTE_DESKTOP=1
+# vsock port stays on the cmdline (transport bootstrap, needed independent of ctl).
 VMETTE_VSOCK_PORT="$(cmdline_get vmette.vsock_port)"
-VMETTE_SNAPSHOT_MODE="$(cmdline_get vmette.snapshot_mode)"
-VMETTE_GUEST_VSOCK_PORT="$(cmdline_get vmette.guest_vsock_port)"
-VMETTE_DESKTOP="$(cmdline_get vmette.desktop)"
-VMETTE_DISPLAY="$(cmdline_get vmette.display)"
-VMETTE_SCRATCH_DEV="$(cmdline_get vmette.scratch_dev)"
-export VMETTE_VSOCK_PORT VMETTE_GUEST_VSOCK_PORT
+export VMETTE_VSOCK_PORT
 
 # Mount the writable overlay *upper* layer at /ovl. With a `--scratch` disk
 # (vmette.scratch_dev set, e.g. "vda") we format that freshly-attached block
@@ -154,7 +182,7 @@ if [ -n "$ROOTFS_BLOCK" ]; then
         log "FATAL: overlay mount failed; dropping to shell"
         exec /bin/sh
     fi
-elif [ "$(cmdline_get vmette.rootfs)" = "1" ]; then
+elif [ "$ROOTFS_SHARE" = "1" ]; then
     # Directory rootfs over virtio-fs. The host always shares it READ-ONLY.
     if [ "$ROOTFS_RO" = "1" ]; then
         # `--rootfs-ro`: mount it read-only directly, no writable layer.
@@ -247,7 +275,7 @@ fi
 # ---- step 4: mount additional virtio-fs shares --------------------------
 
 mkdir -p /newroot/mnt
-for tag in $(cmdline_all vmette.share); do
+for tag in $VMETTE_SHARES; do
     mkdir -p "/newroot/mnt/$tag"
     if mount -t virtiofs "$tag" "/newroot/mnt/$tag" 2>/dev/null; then
         log "mounted virtio-fs '$tag' at /mnt/$tag"
@@ -255,6 +283,16 @@ for tag in $(cmdline_all vmette.share); do
         log "warning: failed to mount virtio-fs '$tag'"
     fi
 done
+
+# Expose the ctl share under the new root too, so the exit-code write and the
+# switch_root runner reach it at /mnt/ctl after the pivot (it was mounted early
+# at /ctl for boot.env; a bind keeps the single backing mount). Only when the
+# root is writable — a read-only rootfs can't host the mountpoint and writes no
+# exit code anyway. EXIT_VIA_CTL is set by the writable overlay branches above.
+if [ "$EXIT_VIA_CTL" = "1" ]; then
+    mkdir -p /newroot/mnt/ctl
+    mount --bind /ctl /newroot/mnt/ctl 2>/dev/null
+fi
 
 # ---- step 4b: install host CA certificates (the 'certs' share) -----------
 #
@@ -375,21 +413,24 @@ if [ "$VMETTE_DESKTOP" = "1" ]; then
     exec chroot /newroot "$ENTRY" "$VMETTE_VSOCK_PORT" "$SIZE"
 fi
 
-B64="$(cmdline_get vmette.exec)"
+# The exec command: base64 in boot.env's VMETTE_EXEC_B64 (the guest already has
+# busybox base64). Empty ⇒ drop to an interactive shell.
+B64="$VMETTE_EXEC_B64"
 
 if [ -n "$B64" ]; then
     USER_CMD="$(printf '%s' "$B64" | base64 -d 2>/dev/null)"
     if [ -z "$USER_CMD" ]; then
-        log "FATAL: vmette.exec base64 decode failed"
+        log "FATAL: VMETTE_EXEC_B64 base64 decode failed"
         sync; poweroff -f; sleep 60
     fi
 fi
 
 # Caller-supplied env (`--env`): base64 of shell `export` lines, emitted by the
-# host (cmdline.rs via vmette::render_env_exports). Held in VMETTE_CALLER_ENV and
-# eval'd *after* any image env in the exec paths below — so --env overrides the
-# image's values. Exporting it lets it survive chroot/switch_root into the runner.
-ENV_B64="$(cmdline_get vmette.env)"
+# host (vmette::render_env_exports) in boot.env's VMETTE_ENV_B64. Held in
+# VMETTE_CALLER_ENV and eval'd *after* any image env in the exec paths below — so
+# --env overrides the image's values. Exporting it lets it survive
+# chroot/switch_root into the runner.
+ENV_B64="$VMETTE_ENV_B64"
 if [ -n "$ENV_B64" ]; then
     VMETTE_CALLER_ENV="$(printf '%s' "$ENV_B64" | base64 -d 2>/dev/null)"
     export VMETTE_CALLER_ENV

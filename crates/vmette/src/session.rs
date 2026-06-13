@@ -356,71 +356,63 @@ impl Session {
     pub fn start(config: &Config) -> Result<Session, Error> {
         let vsock_port = resolve_vsock_port(config.vsock_port);
 
-        // The guest root is never host-writable: a block rootfs is overlaid
-        // with a tmpfs, and a directory rootfs is now mounted read-only on the
-        // host + overlaid with a tmpfs in the guest (per-session isolation). So
-        // whenever there's a writable workload, the guest has no host-visible
-        // surface to drop `.vmette-exit` into. Auto-attach a writable "ctl"
-        // virtio-fs share backed by a per-session host temp dir; the guest
-        // writes its exit code there and the host reads it back. Clone the
-        // config so this injected share never leaks into the caller's `Config`.
-        //
-        // A truly read-only directory rootfs (`--rootfs-ro`) gets no exit
-        // channel — it can't write one and the guest can't either.
+        // The `ctl` virtio-fs share is ALWAYS attached: it carries the typed
+        // boot envelope (`boot.env`, the host→guest config the guest's `/init`
+        // sources) and, when the root is writable, the guest's exit code
+        // (`.vmette-exit`). It is backed by a per-session host temp dir. Clone
+        // the config so this injected share never leaks into the caller's
+        // `Config`.
         let mut working = config.clone();
-        let mut control_dir: Option<ControlDirGuard> = None;
-        let needs_ctl = config.rootfs_block.is_some()
+        // "ctl" is reserved. A caller share with the same tag would produce two
+        // virtio-fs devices tagged "ctl" and the guest would mount one
+        // nondeterministically — silently breaking boot-env/exit-code delivery.
+        if config.shares.iter().any(|s| s.tag == "ctl") {
+            return Err(Error::InvalidConfig(
+                "share tag \"ctl\" is reserved for the boot/exit channel".into(),
+            ));
+        }
+        let ctl_dir = make_control_dir()?;
+        working.shares.push(ShareMount {
+            tag: "ctl".into(),
+            path: ctl_dir.clone(),
+        });
+        let control_dir = Some(ControlDirGuard(ctl_dir.clone()));
+        // The guest writes its exit code into `ctl` only when the root is
+        // writable (a block rootfs or an overlaid virtio-fs share). A truly
+        // read-only directory rootfs (`--rootfs-ro`) can't and the guest won't —
+        // but it still reads `boot.env` from the same share.
+        let writable_root = config.rootfs_block.is_some()
             || config.rootfs_share.as_ref().is_some_and(|rs| !rs.read_only);
-        let exit_code_file = if needs_ctl {
-            // "ctl" is reserved for the exit channel injected below. A caller
-            // share with the same tag would produce two virtio-fs devices
-            // tagged "ctl" and the guest would mount one of them at /mnt/ctl
-            // nondeterministically — silently breaking exit-code read-back.
-            // Reject loudly instead.
-            if config.shares.iter().any(|s| s.tag == "ctl") {
-                return Err(Error::InvalidConfig(
-                    "share tag \"ctl\" is reserved for the rootfs exit channel".into(),
-                ));
-            }
-            let dir = make_control_dir()?;
-            let p = dir.join(".vmette-exit");
+        let exit_code_file = if writable_root {
+            let p = ctl_dir.join(".vmette-exit");
             let _ = std::fs::remove_file(&p);
-            working.shares.push(ShareMount {
-                tag: "ctl".into(),
-                path: dir.clone(),
-            });
-            control_dir = Some(ControlDirGuard(dir));
             Some(p)
         } else {
             None
         };
 
         // Ephemeral scratch disk (`--scratch`): only meaningful when the guest
-        // builds a writable overlay (`needs_ctl` is exactly that condition — a
-        // block rootfs or a writable directory rootfs). A read-only rootfs has
-        // no overlay upper to back, so the disk would go unused; skip it. The
-        // guard deletes the image when the session drops, keeping the sandbox
-        // ephemeral.
-        let scratch_file = match (needs_ctl, config.scratch_mib) {
+        // builds a writable overlay (exactly the `writable_root` condition). A
+        // read-only rootfs has no overlay upper to back, so the disk would go
+        // unused; skip it. The guard deletes the image when the session drops,
+        // keeping the sandbox ephemeral.
+        let scratch_file = match (writable_root, config.scratch_mib) {
             (true, Some(mib)) => Some(ScratchFileGuard(make_scratch_image(mib)?)),
             _ => None,
         };
         let scratch_path = scratch_file.as_ref().map(|g| g.0.clone());
         // Name the device the same way the guest will see it (attach order in
-        // build_vz_config below); the cmdline carries it so /init knows which
+        // build_vz_config below); `boot.env` carries it so /init knows which
         // block device to format ext4.
         let scratch_dev = scratch_path
             .as_ref()
             .map(|_| cmdline::scratch_device_name(&working));
 
-        let cmdline = cmdline::build(&working, vsock_port, scratch_dev.as_deref());
+        let cmdline = cmdline::build(&working, vsock_port);
 
-        // C1 (phase 1b, additive): write the typed boot envelope to the `ctl`
-        // share alongside the legacy `vmette.*` cmdline tokens. The guest still
-        // boots from the cmdline for now; `boot.env` is laid down so the
-        // guest-side switch (and the cmdline shrink) can follow without changing
-        // the host write path again. Built from the caller's original `config`
-        // (not `working`), so the implicit `ctl` share is excluded from `shares`.
+        // C1: write the typed boot envelope the guest's `/init` sources from the
+        // `ctl` share. Built from the caller's original `config` (not `working`),
+        // so the implicit `ctl` share is excluded from `shares`.
         if let Some(guard) = &control_dir {
             let params = crate::boot::from_config(config, scratch_dev.as_deref());
             std::fs::write(guard.0.join("boot.env"), crate::boot::to_env(&params))
