@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `RootfsArtifact::Directory` gained an `image_env: Vec<(String, String)>` field
+  (the OCI image's declared `Env`, empty for dir/tar rootfses). External
+  `RootfsProvider` implementors constructing or exhaustively matching this
+  variant must account for the new field. `Config::set_rootfs_artifact` now
+  prepends a directory artifact's `image_env` to `Config::env`, so an OCI image's
+  declared environment (`PATH`, …) is applied with the caller's `--env`
+  overriding on key collisions. Behaviorally equivalent to before for consumers;
+  the previous in-rootfs `/.vmette-image-env` guest file is gone — image env now
+  reaches the guest through the same channel as `--env`.
+
 ## [0.10.0] — 2026-06-13
 
 ### Added

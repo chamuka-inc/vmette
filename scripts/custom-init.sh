@@ -460,7 +460,6 @@ if [ "$USE_SWITCH_ROOT" = "1" ]; then
         cat > "$RUNNER" 2>/dev/null <<RUNNER_EOF
 #!/bin/sh
 export VMETTE_VSOCK_PORT='$VMETTE_VSOCK_PORT'
-[ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null
 [ -n "\$VMETTE_CALLER_ENV" ] && eval "\$VMETTE_CALLER_ENV"
 unset VMETTE_CALLER_ENV
 /bin/sh -c '$(printf '%s' "$USER_CMD" | sed "s/'/'\\\\''/g")'
@@ -486,11 +485,11 @@ if [ -z "$B64" ]; then
     RC=$?
 else
     log "exec: $USER_CMD"
-    # Source the image's env (PATH etc.) if present, then run the user command.
-    # `/.vmette-image-env` is written by vmette-provider-oci's write_image_env()
-    # — keep the filename in sync with that crate. $USER_CMD is passed as a
-    # positional arg so it needs no re-escaping here.
-    chroot /newroot /bin/sh -c '[ -r /.vmette-image-env ] && . /.vmette-image-env 2>/dev/null; [ -n "$VMETTE_CALLER_ENV" ] && eval "$VMETTE_CALLER_ENV"; unset VMETTE_CALLER_ENV; exec /bin/sh -c "$1"' vmette "$USER_CMD"
+    # Apply the env (image env + caller --env, already merged host-side into the
+    # single VMETTE_CALLER_ENV block, image first so --env wins), then run the
+    # user command. $USER_CMD is passed as a positional arg so it needs no
+    # re-escaping here.
+    chroot /newroot /bin/sh -c '[ -n "$VMETTE_CALLER_ENV" ] && eval "$VMETTE_CALLER_ENV"; unset VMETTE_CALLER_ENV; exec /bin/sh -c "$1"' vmette "$USER_CMD"
     RC=$?
     log "exit=$RC"
 fi

@@ -39,7 +39,7 @@
 //!         let rel = spec.strip_prefix("echo://").unwrap_or(spec);
 //!         let dest = ctx.provider_cache("echo")?.join(rel);
 //!         std::fs::create_dir_all(&dest)?;
-//!         Ok(RootfsArtifact::Directory { path: dest, read_only: false })
+//!         Ok(RootfsArtifact::Directory { path: dest, read_only: false, image_env: Vec::new() })
 //!     }
 //! }
 //! ```
@@ -49,8 +49,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Filesystem type of a block-image rootfs. Determines the `-t <fstype>`
-/// the guest init passes to `mount` and the `vmette.rootfs_block=<fstype>`
-/// cmdline token.
+/// the guest init passes to `mount` and the `VMETTE_ROOTFS_FSTYPE` value in the
+/// `boot.env` envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockFs {
     /// A read-only `squashfs` image, mounted as the overlay lower layer.
@@ -87,6 +87,14 @@ pub enum RootfsArtifact {
         path: PathBuf,
         /// Mount the share read-only inside the guest.
         read_only: bool,
+        /// Environment the image declares (OCI config `Env`: `PATH`, …), as
+        /// `(key, value)` pairs. Empty for plain directory/tar rootfses, which
+        /// carry no declared env. [`Config::set_rootfs_artifact`](crate::Config::set_rootfs_artifact)
+        /// prepends these to the caller's `--env` so a `docker`-style image's
+        /// `PATH` is in scope, with caller env overriding on key collisions.
+        /// Delivered to the guest in the single `boot.env` env block — there is
+        /// no separate guest-side image-env file.
+        image_env: Vec<(String, String)>,
     },
     /// A filesystem image file, attached as a virtio-blk device and
     /// mounted read-only as the lower layer of a tmpfs-backed overlay.
@@ -390,6 +398,7 @@ impl RootfsProvider for DirProvider {
         Ok(RootfsArtifact::Directory {
             path,
             read_only: false,
+            image_env: Vec::new(),
         })
     }
 }
@@ -460,7 +469,9 @@ mod tests {
         // deploy strategies keep working.
         let resolved = p.provide("/tmp", &ctx).expect("resolve /tmp");
         match resolved {
-            RootfsArtifact::Directory { path, read_only } => {
+            RootfsArtifact::Directory {
+                path, read_only, ..
+            } => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp"));
                 assert!(path.is_dir());
                 assert!(!read_only);
@@ -489,6 +500,7 @@ mod tests {
                 Ok(RootfsArtifact::Directory {
                     path: PathBuf::from("/a"),
                     read_only: false,
+                    image_env: Vec::new(),
                 })
             }
         }
@@ -504,6 +516,7 @@ mod tests {
                 Ok(RootfsArtifact::Directory {
                     path: PathBuf::from("/b"),
                     read_only: false,
+                    image_env: Vec::new(),
                 })
             }
         }

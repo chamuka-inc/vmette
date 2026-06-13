@@ -167,12 +167,26 @@ impl Config {
     /// on a block image, which is always attached read-only.
     pub fn set_rootfs_artifact(&mut self, artifact: RootfsArtifact, force_read_only: bool) {
         match artifact {
-            RootfsArtifact::Directory { path, read_only } => {
+            RootfsArtifact::Directory {
+                path,
+                read_only,
+                image_env,
+            } => {
                 self.rootfs_block = None;
                 self.rootfs_share = Some(RootfsShare {
                     path,
                     read_only: read_only || force_read_only,
                 });
+                // Prepend the image's declared env so the caller's `--env`
+                // (already in `self.env`) renders *after* it and wins on key
+                // collisions — matching `docker run -e`. Both reach the guest in
+                // the single `boot.env` env block; there is no separate
+                // image-env file. Order within each group is preserved.
+                if !image_env.is_empty() {
+                    let caller = std::mem::take(&mut self.env);
+                    self.env = image_env;
+                    self.env.extend(caller);
+                }
             }
             RootfsArtifact::BlockImage { path, fstype } => {
                 self.rootfs_share = None;
@@ -257,5 +271,58 @@ mod env_tests {
         // All-invalid renders to None.
         assert!(render_env_exports(&[("1BAD".into(), "x".into())]).is_none());
         assert!(render_env_exports(&[]).is_none());
+    }
+
+    #[test]
+    fn set_rootfs_artifact_prepends_image_env_caller_overrides() {
+        use crate::{Config, RootfsArtifact};
+        let mut c = Config::new("/k", "/i");
+        // Caller --env already loaded.
+        c.env = vec![
+            ("PATH".into(), "/caller".into()),
+            ("CALLER_ONLY".into(), "1".into()),
+        ];
+        c.set_rootfs_artifact(
+            RootfsArtifact::Directory {
+                path: "/r".into(),
+                read_only: false,
+                image_env: vec![
+                    ("PATH".into(), "/image".into()),
+                    ("IMAGE_ONLY".into(), "1".into()),
+                ],
+            },
+            false,
+        );
+        // Image env first, caller env after — one merged list, no second channel.
+        assert_eq!(
+            c.env,
+            vec![
+                ("PATH".into(), "/image".into()),
+                ("IMAGE_ONLY".into(), "1".into()),
+                ("PATH".into(), "/caller".into()),
+                ("CALLER_ONLY".into(), "1".into()),
+            ]
+        );
+        // When rendered, the caller's PATH export comes last → wins at eval time.
+        let rendered = render_env_exports(&c.env).unwrap();
+        let img = rendered.find("export PATH='/image'").unwrap();
+        let cal = rendered.find("export PATH='/caller'").unwrap();
+        assert!(cal > img, "caller PATH must render after image PATH");
+    }
+
+    #[test]
+    fn set_rootfs_artifact_no_image_env_leaves_caller_env() {
+        use crate::{Config, RootfsArtifact};
+        let mut c = Config::new("/k", "/i");
+        c.env = vec![("FOO".into(), "bar".into())];
+        c.set_rootfs_artifact(
+            RootfsArtifact::Directory {
+                path: "/r".into(),
+                read_only: false,
+                image_env: Vec::new(),
+            },
+            false,
+        );
+        assert_eq!(c.env, vec![("FOO".into(), "bar".into())]);
     }
 }
