@@ -220,6 +220,18 @@ impl Demux {
         let (tx, rx) = sync_channel::<Reply>(1);
         self.waiters.lock().unwrap().insert(id, tx);
 
+        // The reader thread poisons (one lock) then drains the waiter map
+        // (another lock) on stream death. If it poisoned-and-drained in the
+        // window between our entry-check above and the insert just now, our `tx`
+        // would sit unrouted until the full read timeout. Re-check after the
+        // insert so this teardown race fails fast instead of hanging 30s: if
+        // poison is now set, the reader has already drained (or will, finding
+        // and erroring our entry) — either way we drop out cleanly.
+        if let Some(msg) = self.poisoned() {
+            self.waiters.lock().unwrap().remove(&id);
+            return Err(Error::Vsock(msg));
+        }
+
         {
             // Hold `write` only for the frame write so concurrent callers can't
             // interleave bytes on the fd; release before the (slow) wait.
