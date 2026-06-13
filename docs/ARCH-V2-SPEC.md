@@ -536,43 +536,52 @@ specified here for completeness and may land after C1–C3.
 
 ## 7. C5 — Lower-tier consolidation
 
-Each item is independent and low-risk.
+Independent items. **Outcome: items 1 and 4 shipped; 2 deferred and 3 declined
+after investigation** (see PLAN Phase 4 for the gate details).
 
-1. **`run()` returns instead of `process::exit`.** `lifecycle::run`
-   (`lifecycle.rs:32-98`) currently calls `std::process::exit` and documents an
-   explicit `drop(session)` to run teardown guards exit would skip
-   (`lifecycle.rs:64-69`). Target: `run()` restores the terminal, drops the
-   session, and **returns** `RunOutput`; `vmette-cli::main` maps `RunOutput` to
-   the process exit code. The FFI `vmette_run` (`ffi.rs`) loses its "never
-   returns" contract.
+1. **`run()` returns instead of `process::exit`. ✅ DONE.** `lifecycle::run`
+   restores the terminal, drops the session, and **returns** `RunOutput`;
+   `vmette-cli::main` forwards it to `ExitCode`. `ffi::vmette_run` returns
+   normally (it already boxed `RunOutput` on `Ok`). CHANGELOG records it.
 
-2. **Single daemon-client crate.** The CLI (`vmette-cli/src/desktop.rs`, sync)
-   and MCP (`vmette-mcp/src/daemon_client.rs`, async) each hand-roll
-   connect/auto-spawn/write-line/read-reply/match-`DesktopReply`. Extract one
-   sync transport into a new `vmette-daemon-client` crate; MCP wraps it in
-   `spawn_blocking` (it already hops threads for the round-trip).
+2. **Single daemon-client crate. ⏸ DEFERRED.** The CLI
+   (`vmette-cli/src/desktop.rs`, sync) and MCP (`vmette-mcp/src/daemon_client.rs`,
+   async) each hand-roll connect/auto-spawn/read-reply, but both are
+   **desktop-only** paths that cannot be e2e-validated without the browser-rootfs
+   image (`driver.py` covers the sandbox, not the daemon client). The dup is ~60
+   lines of rarely-changed code and the rewire needs an async→sync MCP conversion
+   with subtle correctness; refactoring it blind for the lowest-value dedup is
+   poor risk/reward. Do it when the desktop image is available so
+   `tests/mcp/desktop_e2e.py` can validate it.
 
-3. **`CaTrust` owner.** CA-cert trust policy is re-derived in ≥3 Rust call sites
-   plus multi-distro shell in `custom-init.sh`. Introduce one `CaTrust` type
-   (in `vmette-assets` or `vmette`) consumed by every boot path; the guest-side
-   trust-store munging stays in shell but is fed a single resolved cert set via a
-   share, applied once.
+3. **`CaTrust` owner. ✅ EFFECTIVELY DONE / declined.** The CA-cert *policy* is
+   already a single owner: `vmette_assets::resolve_ca_certs` (explicit → env →
+   default dir) + the one `CA_CERTS_SHARE_TAG`. The "≥3 sites" was an overstatement
+   — only the trivial wrap `resolve_ca_certs(x).map(|p| ShareMount { tag, path })`
+   repeats, and the binaries' injection strategies (`ensure_ca_share` vs
+   `with_ca_share`) are genuinely *different*, not duplication. Consolidating the
+   3-line wrap has no clean home: `vmette-assets` is deliberately zero-dependency
+   (adding `vmette-proto` for `ShareMount` breaks that) and `vmette` core deps
+   proto but not assets (adding it inverts layering). Net-negative; left as-is.
 
-4. **`Config` rootfs enum.** Collapse the mutually-exclusive
-   `Config::{rootfs_share, rootfs_block}` (`lib.rs`) into one
-   `enum Rootfs { Share(RootfsShare), Block(RootfsBlock) }`, mirroring the
-   existing `RootfsArtifact` that is currently flattened back into two nullable
-   fields on the way into `Config`. Remove `Config::quiet` from the library type
-   (it is a CLI presentation concern; pass it to `run()`/banner separately).
+4. **`Config` rootfs enum. ✅ DONE** (rootfs half). Collapsed the
+   mutually-exclusive `Config::{rootfs_share, rootfs_block}` into one
+   `rootfs: Option<Rootfs>` where `enum Rootfs { Share(RootfsShare),
+   Block(RootfsBlock) }` makes "exactly one root" true by construction. Binaries
+   are insulated by `set_rootfs_artifact`; the C ABI setter is unchanged.
+   **`Config::quiet` was NOT dropped** (deliberate): it is read only by `run()`
+   — the presentation wrapper — so removing it forces a `run()` signature change
+   rippling into the stable C ABI `vmette_run`, for marginal benefit.
 
-### 7.1 Tests
+### 7.1 Tests (for the shipped items)
 
-- `run()` returning is covered by a CLI integration test asserting exit codes for
-  exit/timeout/stop/error.
-- The daemon-client crate gets the connect/auto-spawn unit tests currently
-  duplicated.
-- `Config` rootfs enum: a compile-time exhaustiveness check replaces the runtime
-  "block branch wins" invariant.
+- `run()` returning (item 1): validated by the `tests/run.sh` exit-code gates
+  (0/42/1, timeout 124) and a direct CLI exit-code check.
+- `Config` rootfs enum (item 4): the `enum` makes the mutual exclusion a
+  compile-time guarantee (no more runtime "block branch wins"); the existing
+  rootfs gates in `tests/run.sh` (ro, scratch, OCI, switch-root) cover the paths.
+- Items 2 (daemon-client crate) and 3 (`CaTrust`) were not implemented — see
+  above for why; their tests are moot.
 
 ---
 

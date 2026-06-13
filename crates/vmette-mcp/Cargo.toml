@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 vmette           = { workspace = true }
+vmette-daemon-client = { workspace = true }
 vmette-assets    = { workspace = true }
 vmette-proto     = { workspace = true }
 vmette-providers = { workspace = true }

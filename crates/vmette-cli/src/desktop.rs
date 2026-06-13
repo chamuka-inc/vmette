@@ -4,17 +4,13 @@
 //! apps, then stop it.
 //!
 //! Each subcommand is one request/one reply over the daemon's UNIX socket
-//! (line-delimited JSON), so this is plain blocking `std::os::unix::net`
-//! rather than tokio — no async runtime in the CLI. Requests and replies are
-//! the shared [`vmette_proto`] wire types, so a field renamed in the protocol
-//! is a compile error here, not a silent runtime break.
+//! (line-delimited JSON) via the shared synchronous [`vmette_daemon_client`]
+//! transport — no async runtime in the CLI. Requests and replies are the shared
+//! [`vmette_proto`] wire types, so a field renamed in the protocol is a compile
+//! error here, not a silent runtime break.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use base64::Engine as _;
 use vmette_proto::agent::{Action, ScrollDirection};
@@ -24,59 +20,12 @@ use vmette_proto::daemon::{
 };
 use vmette_proto::ShareMount;
 
-/// Make sure a `vmetted` is listening on `socket` before we send a request.
-/// If `autostart` (the default socket, not a caller-managed `--socket`) and
-/// nothing is up, spawn a detached `vmetted` and wait for it to bind — the same
-/// lazy-start the MCP server does, so `vmette desktop` works without a manual
-/// `vmetted &`. A `NotFound`/`ConnectionRefused` both mean "no daemon"; any
-/// other connect error is surfaced as-is.
-fn ensure_daemon(socket: &PathBuf, autostart: bool) -> Result<(), String> {
-    use std::io::ErrorKind::{ConnectionRefused, NotFound};
-    match UnixStream::connect(socket) {
-        Ok(_) => return Ok(()),
-        Err(e) if matches!(e.kind(), NotFound | ConnectionRefused) => {}
-        Err(e) => return Err(format!("connect {} failed: {e}", socket.display())),
-    }
-    if !autostart {
-        // Caller pointed --socket at their own daemon; if it's down, that's
-        // theirs to fix. Let the request connect surface the error.
-        return Ok(());
-    }
-    let bin = vmette_assets::locate_vmetted().ok_or_else(|| {
-        "vmetted not found next to vmette or on $PATH (needed for desktop sessions) — \
-         reinstall vmette, or start it manually with `vmetted &`"
-            .to_string()
-    })?;
-    let mut cmd = Command::new(&bin);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // SAFETY: setsid() is async-signal-safe and is the only call made in the
-    // forked child before exec. Detaching into a new session lets the daemon
-    // outlive this short-lived CLI and survive terminal signals, matching the
-    // MCP server's auto-spawn and vmetted's shared-daemon model.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    cmd.spawn()
-        .map_err(|e| format!("spawning {}: {e}", bin.display()))?;
-    // vmetted clears any stale socket and binds during startup; poll until it
-    // accepts a connection, or give up after ~5s.
-    for _ in 0..50 {
-        std::thread::sleep(Duration::from_millis(100));
-        if UnixStream::connect(socket).is_ok() {
-            return Ok(());
-        }
-    }
-    Err(format!(
-        "vmetted did not start listening on {} within 5s",
-        socket.display()
-    ))
+/// Ensure `vmetted` is up before a desktop command. `autostart` (the default
+/// socket, not a caller-managed `--socket`) lazily spawns a detached daemon so
+/// `vmette desktop` works without a manual `vmetted &`. Delegates to the shared
+/// [`vmette_daemon_client`] transport — the single owner of connect/auto-spawn.
+fn ensure_daemon(socket: &Path, autostart: bool) -> Result<(), String> {
+    vmette_daemon_client::DaemonClient::new(socket, autostart).ensure()
 }
 
 fn desktop_usage() -> ! {
@@ -111,44 +60,14 @@ fn desktop_usage() -> ! {
     std::process::exit(2);
 }
 
-/// Send one request and read the single reply back, mapping a daemon
-/// [`DesktopReply::Error`] to an `Err`.
-fn call(socket: &PathBuf, req: &DesktopRequest) -> Result<DesktopReply, String> {
-    let stream = UnixStream::connect(socket).map_err(|e| {
-        format!(
-            "connect {} failed: {e} (is vmetted running?)",
-            socket.display()
-        )
-    })?;
-    let mut w = stream.try_clone().map_err(|e| e.to_string())?;
-    let mut line = serde_json::to_vec(req).map_err(|e| e.to_string())?;
-    line.push(b'\n');
-    w.write_all(&line).map_err(|e| e.to_string())?;
-    let _ = w.flush();
-
-    let mut reply = String::new();
-    BufReader::new(stream)
-        .read_line(&mut reply)
-        .map_err(|e| e.to_string())?;
-    let reply = reply.trim();
-    if reply.is_empty() {
-        return Err(
-            "daemon closed the connection without replying — vmetted likely crashed or is \
-             running a stale build. Check it's alive (`pgrep vmetted`) and restart it; if you \
-             just reinstalled, kill the old PID first. See docs/DAEMON.md."
-                .into(),
-        );
-    }
-    let reply: DesktopReply =
-        serde_json::from_str(reply).map_err(|e| format!("bad reply: {e}: {reply}"))?;
-    match reply {
-        DesktopReply::Error(e) => Err(e.message),
-        other => Ok(other),
-    }
+/// Send one request and read the single reply (via the shared transport).
+/// `autostart` is off here — `ensure_daemon` already brought the daemon up.
+fn call(socket: &Path, req: &DesktopRequest) -> Result<DesktopReply, String> {
+    vmette_daemon_client::DaemonClient::new(socket, false).request(req)
 }
 
 /// Send a `desktop_action` carrying `action` and return its action reply.
-fn action(socket: &PathBuf, session: &str, action: Action) -> Result<ActionReply, String> {
+fn action(socket: &Path, session: &str, action: Action) -> Result<ActionReply, String> {
     let reply = call(
         socket,
         &DesktopRequest::DesktopAction(DesktopAction {
@@ -305,7 +224,7 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
     }
 }
 
-fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+fn cmd_start(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let mut image: Option<String> = None;
     let mut size: Option<String> = None;
     let mut net = false;
@@ -368,7 +287,7 @@ fn cmd_start(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String
     }
 }
 
-fn cmd_screenshot(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+fn cmd_screenshot(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let mut out: Option<PathBuf> = None;
     let mut settle = false;
@@ -443,7 +362,7 @@ fn cmd_screenshot(socket: &PathBuf, args: &[String]) -> Result<Option<String>, S
 /// stdout/stderr. Exits non-zero if the command did not exit cleanly (exit
 /// status != 0, or no clean exit — e.g. it timed out), so it composes in
 /// shell pipelines.
-fn cmd_exec_capture(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+fn cmd_exec_capture(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let command = pos(args, 1, "COMMAND");
     let mut timeout_ms: Option<u64> = None;
@@ -478,7 +397,7 @@ fn cmd_exec_capture(socket: &PathBuf, args: &[String]) -> Result<Option<String>,
 
 /// Open (or look up) the session's live VNC view and print the `vnc://` URL a
 /// viewer connects to. Idempotent — a second call returns the same address.
-fn cmd_view(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+fn cmd_view(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let reply = call(
         socket,
@@ -492,7 +411,7 @@ fn cmd_view(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String>
     }
 }
 
-fn cmd_cursor(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+fn cmd_cursor(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let reply = action(socket, &session, Action::CursorPosition)?;
     let x = reply.x.unwrap_or(0);
@@ -502,7 +421,7 @@ fn cmd_cursor(socket: &PathBuf, args: &[String]) -> Result<Option<String>, Strin
 
 /// Move to X Y then click. Click actions fire at the current pointer position,
 /// so we position first for ergonomic `click X Y`.
-fn cmd_click(socket: &PathBuf, args: &[String], click: Action) -> Result<Option<String>, String> {
+fn cmd_click(socket: &Path, args: &[String], click: Action) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let x = parse_i32(&pos(args, 1, "X"), "X");
     let y = parse_i32(&pos(args, 2, "Y"), "Y");
@@ -511,7 +430,7 @@ fn cmd_click(socket: &PathBuf, args: &[String], click: Action) -> Result<Option<
     Ok(None)
 }
 
-fn cmd_scroll(socket: &PathBuf, args: &[String]) -> Result<Option<String>, String> {
+fn cmd_scroll(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let x = parse_i32(&pos(args, 1, "X"), "X");
     let y = parse_i32(&pos(args, 2, "Y"), "Y");

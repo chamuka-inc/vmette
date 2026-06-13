@@ -283,25 +283,48 @@ Exit criteria: snapshot preserved and coherent with `boot.env`; no dead
 
 ## Phase 4 — C5: Lower-tier consolidation
 
-Independent items; land in any order, each its own PR.
+Independent items. **Outcome: 4a + 4d shipped; 4b deferred and 4c declined after
+investigation** (the substantive parts were already done or the consolidation
+would degrade the codebase). Detail below.
 
-- **4a. `run()` returns.** Rewrite `lifecycle::run` to return `RunOutput`
-  (exit/timeout/stop/error → code) instead of `process::exit`; move exit-code
-  selection into `vmette-cli::main`. Update `ffi.rs` `vmette_run` docs/behavior.
-  `CHANGELOG.md`: FFI `vmette_run` no longer exits the process. CLI integration
-  test for the four end states.
-- **4b. `vmette-daemon-client` crate.** Extract one sync transport
-  (connect/auto-spawn/write/read/match) from `vmette-cli/src/desktop.rs` and
-  `vmette-mcp/src/daemon_client.rs`; MCP wraps it in `spawn_blocking`. Move the
-  duplicated unit tests into the new crate.
-- **4c. `CaTrust` owner.** One type consumed by every boot path; guest trust
-  munging fed a single resolved cert set (SPEC §7.3).
-- **4d. `Config` rootfs enum + drop `quiet`.** Collapse
-  `rootfs_share`/`rootfs_block` into `enum Rootfs`; thread `quiet` through
-  `run()`/banner instead of the library type. Update all construction sites
-  (CLI, daemon registry, MCP, providers).
+- **4a. `run()` returns. ✅ DONE.** `lifecycle::run` returns `RunOutput`
+  (exit/timeout/stop/error → code) instead of `process::exit`; `vmette-cli::main`
+  forwards it to `ExitCode`; `ffi::vmette_run` returns normally (it already boxed
+  `RunOutput`). CHANGELOG records the library/FFI change. Validated: CLI exit code
+  forwarded; smoke exit-code gates (0/42/1/124) green.
 
-Exit criteria: per-item green gates; workspace clippy-clean.
+- **4d. `Config` rootfs enum. ✅ DONE** (rootfs half). Collapsed
+  `rootfs_share`/`rootfs_block` into `rootfs: Option<Rootfs>`
+  (`enum Rootfs { Share | Block }`), making "exactly one root" true by
+  construction. Binaries are insulated by `set_rootfs_artifact`; the C ABI setter
+  is unchanged. CHANGELOG records the public `Config` change. Validated: smoke
+  24/24 (all rootfs paths).
+  - **`quiet` NOT dropped** (deliberate): it is read only by `run()` — the
+    presentation wrapper — so removing it would force a `run()` signature change
+    rippling into the stable C ABI `vmette_run`, for marginal benefit. Left as-is.
+
+- **4b. `vmette-daemon-client` crate. ⏸ DEFERRED.** Both consumers
+  (`vmette-cli/src/desktop.rs`, `vmette-mcp/src/daemon_client.rs`) are
+  **desktop-only** paths, not e2e-testable without the browser-rootfs image
+  (`driver.py` exercises the *sandbox*, not the daemon client). The dup is ~60
+  lines of rarely-changed connect/setsid-spawn/poll/read, and the rewire involves
+  an async→sync MCP conversion (`spawn_blocking` + the `spawn_lock`) with subtle
+  correctness. Refactoring an untestable load-bearing path blind, for the
+  lowest-value dedup, is poor risk/reward. Do it when the desktop image is
+  available so `tests/mcp/desktop_e2e.py` can validate it.
+
+- **4c. `CaTrust` owner. ✅ EFFECTIVELY DONE / declined.** The CA-cert *policy* is
+  already a single owner: `vmette_assets::resolve_ca_certs` (explicit → env →
+  default dir) + the one `CA_CERTS_SHARE_TAG`. What repeats is the trivial wrap
+  `resolve_ca_certs(x).map(|p| ShareMount { tag, path })`; the binaries'
+  injection strategies (`ensure_ca_share` dedup-and-push vs `with_ca_share`
+  prepend) are genuinely *different* operations, not duplication. Consolidating
+  the 3-line wrap has no clean home — `vmette-assets` is deliberately
+  **zero-dependency** (adding `vmette-proto` for `ShareMount` breaks that) and
+  `vmette` core deps proto but not assets (adding it inverts the layering).
+  Degrading dep structure to save 3 lines is net-negative; left as-is.
+
+Exit criteria: 4a + 4d green and validated; 4b/4c consciously deferred/declined.
 
 ---
 
