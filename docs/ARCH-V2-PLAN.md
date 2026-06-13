@@ -116,7 +116,7 @@ abort criterion (failures or linear fd growth) was not triggered.
 | G2 design + boot-validation | ✅ Resolved on real boots → clean single-console (hvc0) streaming + `console=hvc1` sink + `ctl` share. Multi-console is NOT viable under VZ. |
 | G2-stability soak | ✅ Run green → 300/300, fd drift 0 |
 | G3 (snapshot delete vs keep) | ✅ **REVERSED → keep** (real Apple-Silicon Phase-5 feature; integrate into `boot.env`, recorded in Phase 3) |
-| G4 (C4 scope) | ✅ Resolved → **defer** C4 pending profiling |
+| G4 (C4 scope) | ✅ Resolved → **shipped** (Phase 5). Profiling note below; built anyway for the per-request fault-isolation win, e2e-validated. |
 
 **No open Phase-0 gaps remain.** All boot-gated items were closed by ad-hoc
 codesigning + fetched assets on this box. Phase 1 (C1), Phase 2 (C2, including
@@ -329,17 +329,46 @@ dropped — the one deliberate sub-omission, for the C-ABI reason noted in 4d.)
 
 ---
 
-## Phase 5 — C4: Multiplexed desktop codec (optional)
+## Phase 5 — C4: Multiplexed desktop codec. ✅ DONE + e2e-validated.
 
-Depends on: **[GATE G4]** contention profiling. Recommendation: **defer** unless
-the registry's shared-`SessionClient` contention (VNC view + settle-poll +
-actions on one mutex, `session.rs:149-182`) is shown to matter.
+Was gated on **[G4]** contention profiling (recommendation: defer). Built anyway
+— not for a throughput win (the in-guest agent is **single-threaded**, one
+`select()` loop, so it executes one request at a time regardless), but for the
+genuine *structural* gains that don't depend on guest parallelism:
 
-- Add `req_id` to the framed codec (`desktop.rs` + `vmette-proto::agent`); host
-  demultiplexer; per-request error recovery replacing whole-fd `invalidate_fd`.
-- Update `guest/vmette-desktop-agent.c` to echo `req_id`; rebuild the desktop
-  image/agent.
-- Gate: codec round-trip + out-of-order demux tests; `tests/run.sh` desktop gates.
+1. **Per-request fault isolation.** The old `AgentConn::request` invalidated the
+   whole fd on any I/O hiccup (`invalidate_fd`), killing the session's GUI
+   channel. Now a single timed-out/orphaned response is drained and dropped by
+   `req_id`; only a true framing/EOF error tears the stream down.
+2. **Decoupled submission + per-request timeouts.** The shared `io` mutex used to
+   be held across the entire slow round-trip, so a software-rendered screenshot
+   blocked even the *submission* of an input action. Now a dedicated reader
+   thread owns reads; callers hold the write lock only for the brief frame write
+   and then wait on their own `req_id` channel.
+
+Shipped:
+
+- **Codec (`desktop.rs`).** Frame prefix is now `[u32 req_id][u32 header_len]
+  [header][payload]`. `write_frame`/`send_action` take a `req_id`;
+  `read_header`/`read_response` return it. `req_id` is a framing concern, so it
+  lives in the codec — **no `vmette-proto::agent` type changed** (the PLAN's
+  earlier "+ vmette-proto::agent" was speculative).
+- **Host demux (`session.rs`).** New `Demux` (reader thread + `req_id`→one-shot
+  `waiters` map + write mutex + set-once `poison`) replaces the synchronous
+  `io`-mutex round-trip and `invalidate_fd`. Built lazily on first request via a
+  race-guarded `OnceLock`. Per-request timeout moved off the socket
+  (`SO_RCVTIMEO` removed) onto the caller's channel, so the shared reader does
+  pure blocking reads.
+- **Guest (`vmette-desktop-agent.c`).** Reads the `req_id` prefix into a
+  file-scope `g_req_id` (safe — strictly single-threaded) and echoes it from
+  `send_frame`. Desktop image + agent rebuilt (`build-desktop-image.sh --export`).
+
+Validated: codec round-trip + out-of-order demux unit tests (152 workspace tests
+green); a full CLI desktop cycle on a real boot through the rebuilt local image —
+`start → cursor (640 400) → screenshot --settle (concurrent settle-polling, the
+exact contention C4 targets) → click 100 100 → cursor (100 100) → stop`, all
+clean. `req_id` is host↔guest-internal (shipped lockstep), so **no CHANGELOG
+entry** per repo policy.
 
 ---
 
@@ -356,7 +385,7 @@ Phase 3  C3 snapshot KEEP+wire ┴───── (integrate snapshot into boot.
                                │
 Phase 4  C5 consolidation ─────┴───── (independent items, any order)
                                │
-Phase 5  C4 mux codec ─────────┴───── (optional; gated on profiling)
+Phase 5  C4 mux codec ─────────┴───── (was optional; shipped + e2e-validated)
 ```
 
 Critical path: **0 → 1 → 2**. Everything else parallelizes against it.
@@ -381,6 +410,8 @@ Critical path: **0 → 1 → 2**. Everything else parallelizes against it.
 - Snapshot preserved (real Apple-Silicon Phase-5 feature) and integrated into the
   `boot.env` contract (`Strategy::Snapshot`) — not deleted.
 - `run()` returns; one daemon-client; one `CaTrust` owner; `Config` rootfs enum.
+- Desktop vsock codec multiplexed by `req_id`; whole-fd `invalidate_fd` replaced
+  by per-request demux fault isolation (C4).
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets` (zero
   warnings), `cargo test --workspace`, and `tests/run.sh` all green.
 - `CHANGELOG.md` updated for the FFI `vmette_run` behavior change (and the C1

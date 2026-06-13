@@ -21,11 +21,12 @@
 //! (issues a graceful stop) before handing the `Session` off to the thread
 //! that owns its lifetime via [`Session::wait`].
 
+use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use block2::RcBlock;
@@ -50,11 +51,12 @@ use crate::{cmdline, Config, ShareMount, WorkloadStrategy};
 /// Xvfb + WM + agent, which can take several seconds on first run.
 const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Per-read timeout on the agent vsock fd. Bounds how long a single framed
-/// round-trip can stall on a wedged guest before the read errors out, so the
-/// blocking thread issuing the request can't hang forever. Generous: a
-/// software-rendered screenshot frame can be slow, but data flowing resets the
-/// timer per read syscall, so this only trips when the guest stops responding.
+/// Per-request response timeout. Bounds how long a single [`Demux::request`]
+/// blocks on its reply channel before giving up, so a caller can't hang forever
+/// on a wedged guest. Enforced at the channel (not as a socket `SO_RCVTIMEO`),
+/// so the shared reader thread keeps doing pure blocking reads and only this one
+/// caller fails; its late response is later drained and dropped by `req_id`.
+/// Generous: a software-rendered screenshot frame can be slow.
 const AGENT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Send-wrapper for an objc2 `Retained`. The wrapped VM is only ever touched
@@ -132,6 +134,167 @@ impl EndSlot {
     }
 }
 
+/// One framed reply delivered from the demux reader thread to a waiting
+/// caller: either the parsed response, or a message describing why the stream
+/// died (read error, EOF, framing corruption).
+type Reply = Result<(ResponseHeader, Vec<u8>), String>;
+
+/// Host-side response demultiplexer over the single agent vsock fd (C4).
+///
+/// A dedicated reader thread owns all reads on the fd; callers register a
+/// one-shot channel keyed by a monotonic `req_id`, write their request frame
+/// under the short [`Demux::write`] lock, then block on their own channel. The
+/// reader routes each response to the matching `req_id`. This means:
+///
+/// - a slow screenshot no longer serializes another caller's *submission* —
+///   only the brief frame write is mutually excluded, not the read;
+/// - a per-request timeout is enforced at the caller's channel, so a wedged
+///   request fails alone (its late response is later drained and dropped by
+///   `req_id`) without desyncing the stream;
+/// - a stream-fatal error (read failure, EOF, or a header that won't parse —
+///   we then can't know the payload length) poisons the whole demux once and
+///   wakes every waiter, since the framing can no longer be trusted.
+///
+/// The guest agent is single-threaded and still executes one request at a
+/// time; the demux decouples the host side, it does not parallelize the guest.
+struct Demux {
+    /// Serializes request-frame writes onto the fd. Held only for the write,
+    /// never across the (slow) read — that is the whole point.
+    write: Mutex<()>,
+    /// Monotonic request id; wraps after `u32::MAX` requests (harmless — an id
+    /// is only live between submit and reply).
+    next_id: AtomicU32,
+    /// In-flight callers, keyed by `req_id`. The reader removes-and-sends on
+    /// arrival; a timed-out caller removes its own entry so the reader drops
+    /// the orphaned late response.
+    waiters: Arc<Mutex<HashMap<u32, SyncSender<Reply>>>>,
+    /// Set once when the stream becomes unusable; subsequent requests fail
+    /// fast with this message instead of registering a doomed waiter.
+    poison: Arc<Mutex<Option<String>>>,
+    /// The accepted agent vsock fd. Borrowed (not owned) — [`AgentConn`] caches
+    /// and closes it; closing it is what unblocks the reader's `read` at
+    /// teardown.
+    fd: RawFd,
+}
+
+impl Demux {
+    /// Spawn the reader thread and return the demux. `fd` must already be
+    /// connected (the reader does pure blocking reads with no socket timeout —
+    /// the per-request timeout lives at the caller's channel).
+    fn start(fd: RawFd) -> Demux {
+        let waiters: Arc<Mutex<HashMap<u32, SyncSender<Reply>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let poison: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let waiters_r = waiters.clone();
+        let poison_r = poison.clone();
+        std::thread::spawn(move || demux_reader(fd, waiters_r, poison_r));
+        Demux {
+            write: Mutex::new(()),
+            next_id: AtomicU32::new(0),
+            waiters,
+            poison,
+            fd,
+        }
+    }
+
+    /// First poison message, if the stream has died.
+    fn poisoned(&self) -> Option<String> {
+        self.poison.lock().unwrap().clone()
+    }
+
+    /// Record the first poison message (later writers don't clobber it).
+    fn poison_with(&self, msg: String) {
+        let mut p = self.poison.lock().unwrap();
+        if p.is_none() {
+            *p = Some(msg);
+        }
+    }
+
+    /// Submit one [`Action`] and block (up to [`AGENT_READ_TIMEOUT`]) for the
+    /// reader to route back its response.
+    fn request(&self, action: &Action) -> Result<(ResponseHeader, Vec<u8>), Error> {
+        if let Some(msg) = self.poisoned() {
+            return Err(Error::Vsock(msg));
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = sync_channel::<Reply>(1);
+        self.waiters.lock().unwrap().insert(id, tx);
+
+        {
+            // Hold `write` only for the frame write so concurrent callers can't
+            // interleave bytes on the fd; release before the (slow) wait.
+            let _w = self.write.lock().unwrap();
+            let mut stream = FdStream(self.fd);
+            if let Err(e) = desktop::send_action(&mut stream, id, action) {
+                // A partial frame may have hit the wire — the stream can no
+                // longer be framed. Poison so every caller fails cleanly.
+                self.waiters.lock().unwrap().remove(&id);
+                let msg = format!("agent request write failed: {e}");
+                self.poison_with(msg.clone());
+                return Err(Error::Vsock(msg));
+            }
+        }
+
+        match rx.recv_timeout(AGENT_READ_TIMEOUT) {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(msg)) => Err(Error::Vsock(msg)),
+            Err(RecvTimeoutError::Timeout) => {
+                // Give up on this id; the reader will drain and drop the late
+                // response by req_id, leaving the stream synced for others.
+                self.waiters.lock().unwrap().remove(&id);
+                Err(Error::Vsock(
+                    "timed out waiting for the guest agent response".into(),
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                // The reader dropped our sender → the stream poisoned.
+                Err(Error::Vsock(self.poisoned().unwrap_or_else(|| {
+                    "agent connection closed unexpectedly".into()
+                })))
+            }
+        }
+    }
+}
+
+/// Reader thread: own all reads on the agent fd, routing each framed response
+/// to the waiter registered under its `req_id`. Exits (poisoning all waiters)
+/// on the first unrecoverable framing error — including EOF when the guest
+/// powers off, which is the normal teardown path.
+fn demux_reader(
+    fd: RawFd,
+    waiters: Arc<Mutex<HashMap<u32, SyncSender<Reply>>>>,
+    poison: Arc<Mutex<Option<String>>>,
+) {
+    let mut stream = FdStream(fd);
+    loop {
+        match desktop::read_response(&mut stream) {
+            Ok((id, header, payload)) => {
+                // Remove-and-send: a present waiter gets its reply; an absent
+                // one (caller timed out) means we just drain+drop this frame,
+                // which keeps the stream synced for every other id.
+                if let Some(tx) = waiters.lock().unwrap().remove(&id) {
+                    let _ = tx.send(Ok((header, payload)));
+                }
+            }
+            Err(e) => {
+                let msg = format!("agent stream closed: {e}");
+                {
+                    let mut p = poison.lock().unwrap();
+                    if p.is_none() {
+                        *p = Some(msg.clone());
+                    }
+                }
+                // Wake everyone still blocked so they fail now, not at timeout.
+                let mut w = waiters.lock().unwrap();
+                for (_, tx) in w.drain() {
+                    let _ = tx.send(Err(msg.clone()));
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// The accepted agent vsock connection plus the channel the listener uses to
 /// deliver it. Shared (behind `Arc`) by the [`Session`] and any
 /// [`SessionClient`]; whichever drops last closes the fd. `None` rx for
@@ -142,11 +305,11 @@ pub(crate) struct AgentConn {
     // `fd()` drains it on first use and caches the fd in `fd`.
     rx: Mutex<Option<Receiver<RawFd>>>,
     fd: Mutex<Option<RawFd>>,
-    // Serializes the request round-trip. The framed protocol is a single
-    // request/response stream with no multiplexing, so concurrent callers
-    // (the `SessionClient` handle is `Clone` and shared via `Arc`) must not
-    // interleave their `[len][header][payload]` frames on the one fd.
-    io: Mutex<()>,
+    // The response demultiplexer (C4), built lazily on the first request once
+    // the fd has been resolved. `init` guards the one-time fallible build so a
+    // burst of first requests doesn't race two reader threads onto one fd.
+    demux: OnceLock<Demux>,
+    init: Mutex<()>,
 }
 
 impl AgentConn {
@@ -158,35 +321,23 @@ impl AgentConn {
                 "request() is only valid for Agent-workload sessions".into(),
             ));
         }
-        // Resolve the fd outside the `io` lock: the first call blocks up to
-        // AGENT_CONNECT_TIMEOUT for the guest to connect, and that wait must
-        // not serialize unrelated callers. `fd()` has its own lock.
-        let fd = self.fd()?;
-        // Hold `io` across the round-trip so concurrent requests on cloned
-        // `SessionClient`s cannot interleave frames on the shared fd.
-        let _io = self.io.lock().unwrap();
-        let mut stream = FdStream(fd);
-        let outcome = desktop::send_action(&mut stream, action)
-            .and_then(|()| desktop::read_response(&mut stream));
-        match outcome {
-            Ok((header, payload)) => Ok((header, payload)),
-            Err(e) => {
-                // A failed or timed-out round-trip can leave a partial frame
-                // buffered on the socket; reusing the fd would desync every
-                // later request (stale bytes parsed as the next header).
-                // Invalidate it so the session fails cleanly instead.
-                self.invalidate_fd();
-                Err(e.into())
-            }
-        }
+        self.demux()?.request(action)
     }
 
-    /// Close and forget the cached agent fd after an I/O failure, so the next
-    /// request doesn't read a stale half-frame off a desynced socket.
-    fn invalidate_fd(&self) {
-        if let Some(fd) = self.fd.lock().unwrap().take() {
-            unsafe { libc::close(fd) };
+    /// Return the response demux, building it (and spawning its reader thread)
+    /// on first use once the agent fd is resolved. The fd resolution blocks up
+    /// to [`AGENT_CONNECT_TIMEOUT`] for the guest's outbound connection.
+    fn demux(&self) -> Result<&Demux, Error> {
+        if let Some(d) = self.demux.get() {
+            return Ok(d);
         }
+        let _g = self.init.lock().unwrap();
+        if let Some(d) = self.demux.get() {
+            return Ok(d); // lost the init race
+        }
+        let fd = self.fd()?;
+        let _ = self.demux.set(Demux::start(fd));
+        Ok(self.demux.get().unwrap())
     }
 
     /// Return the cached agent connection fd, blocking on first use until the
@@ -203,30 +354,8 @@ impl AgentConn {
         let fd = rx
             .recv_timeout(AGENT_CONNECT_TIMEOUT)
             .map_err(|_| Error::Vsock("timed out waiting for the guest agent to connect".into()))?;
-        // Bound subsequent reads so a wedged guest can't hang the blocking
-        // thread issuing a request indefinitely (`FdStream::read` has no
-        // timeout of its own).
-        set_recv_timeout(fd, AGENT_READ_TIMEOUT);
         *cached = Some(fd);
         Ok(fd)
-    }
-}
-
-/// Best-effort `SO_RCVTIMEO` on a socket fd. A failure here only costs us the
-/// read-timeout safety net, so we don't surface it as an error.
-fn set_recv_timeout(fd: RawFd, dur: Duration) {
-    let tv = libc::timeval {
-        tv_sec: dur.as_secs() as libc::time_t,
-        tv_usec: dur.subsec_micros() as libc::suseconds_t,
-    };
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_RCVTIMEO,
-            &tv as *const _ as *const libc::c_void,
-            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-        );
     }
 }
 
@@ -591,7 +720,8 @@ impl Session {
             workload: config.workload,
             rx: Mutex::new(agent_rx),
             fd: Mutex::new(None),
-            io: Mutex::new(()),
+            demux: OnceLock::new(),
+            init: Mutex::new(()),
         });
 
         // All VM mutation (setDelegate, setSocketListener, start, the timeout

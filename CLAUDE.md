@@ -56,11 +56,13 @@ Eleven crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`,
   read-only block device) + `Registry` dispatcher + `Context` (cache root,
   offline flag, optional guest-helpers dir). Built-in `DirProvider`;
   OCI/tar/squashfs live in sibling crates.
-- **`desktop.rs`** — the framed vsock **codec** `[u32 LE header_len][JSON header][optional binary payload]`
-  (pure, no VZ/objc2). The `Action`/`ResponseHeader`/`ScrollDirection` *types*
-  it carries live in `vmette-proto` and are re-exported here (and as
-  `vmette::Action` etc.). The pixel-settle perception module is **not** here —
-  it moved to the daemon, its only consumer.
+- **`desktop.rs`** — the framed vsock **codec** `[u32 LE req_id][u32 LE header_len][JSON header][optional binary payload]`
+  (pure, no VZ/objc2). The `req_id` prefix (C4) lets the host demultiplexer
+  (`session.rs::Demux`) route responses to the right caller; the guest agent
+  echoes it. The `Action`/`ResponseHeader`/`ScrollDirection` *types* it carries
+  live in `vmette-proto` and are re-exported here (and as `vmette::Action` etc.);
+  `req_id` is framing, not a proto type. The pixel-settle perception module is
+  **not** here — it moved to the daemon, its only consumer.
 - **`cmdline.rs`** — assembles the kernel cmdline. After the typed-boot-contract
   refactor it emits only `vmette.boot=ctl` (telling `/init` to source the
   `boot.env` envelope) plus `vmette.vsock_port` when vsock is on; everything else

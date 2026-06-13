@@ -490,9 +490,20 @@ not a stub.
 
 ---
 
-## 6. C4 — Multiplexed desktop vsock codec
+## 6. C4 — Multiplexed desktop vsock codec — ✅ DONE + e2e-validated
 
-### 6.1 Current state
+> **Outcome.** Shipped despite the G4 "defer pending profiling" recommendation.
+> The premise behind deferral — that the win is throughput — does not hold: the
+> in-guest agent is **single-threaded** (one `select()` loop) and executes one
+> request at a time no matter what the host does. But two *structural* wins are
+> real and independent of guest parallelism, and motivated building it:
+> **(a) per-request fault isolation** (a single bad/timed-out response no longer
+> invalidates the whole GUI fd — it is drained and dropped by `req_id`), and
+> **(b) decoupled submission/timeouts** (the write lock is held only for the
+> brief frame write, not across a slow screenshot read; the per-request timeout
+> lives on the caller's channel). See §6.2 for what shipped.
+
+### 6.1 Current state (before C4)
 
 `AgentConn::request` (`session.rs:155-182`) holds `io: Mutex<()>` across a full
 send-action/read-response round-trip on **one** vsock fd with no request-id. Any
@@ -501,36 +512,58 @@ killing the session's GUI channel. The registry shares one `SessionClient` acros
 the VNC view, `screenshot_when_settled` polling (`registry.rs`), and direct
 actions — all serialized on that mutex.
 
-### 6.2 Target design
+### 6.2 What shipped
 
-Extend the framed codec (`desktop.rs`, types in `vmette-proto::agent`) with a
-4-byte request-id prefix:
+The framed codec (`desktop.rs`) gained a 4-byte request-id prefix:
 
 ```
 [u32 req_id][u32 header_len][JSON header][optional binary payload]
 ```
 
-The host assigns monotonically increasing `req_id`s; the guest echoes the
-`req_id` in its response header. A small host-side demultiplexer maps responses
-to waiting callers, so capture/settle-polling and input no longer serialize, and
-a malformed/timed-out single response is dropped per-request instead of
-desyncing the stream. The guest agent (`guest/vmette-desktop-agent.c`) is updated
-to read and echo `req_id`.
+`req_id` is purely a **framing** concern, so it lives in the codec — no
+`vmette-proto::agent` type changed (the earlier "types in `vmette-proto::agent`"
+was speculative). `write_frame`/`send_action` take a `req_id`;
+`read_header`/`read_response` return it.
 
-This is **lower priority** and explicitly optional for the first delivery; it is
-specified here for completeness and may land after C1–C3.
+The host assigns monotonically increasing `req_id`s; the guest echoes each in its
+response frame. A host-side demultiplexer (`session.rs::Demux`) replaces the old
+synchronous `io`-mutex round-trip: a dedicated reader thread owns all reads and
+routes each response to the waiter registered under its `req_id`, while callers
+hold a short write lock only for the frame write and then block on their own
+one-shot channel. Consequences:
 
-### 6.3 Trade-offs
+- **Submission no longer serializes behind a slow read** — only the brief write
+  is mutually excluded.
+- **Per-request timeout** is enforced at the caller's channel (the socket
+  `SO_RCVTIMEO` is gone), so the shared reader does pure blocking reads and a
+  single wedged request fails alone; its late response is later drained and
+  dropped by `req_id`.
+- **Per-request fault isolation** replaces whole-fd `invalidate_fd`: only a
+  framing-fatal error (read failure, EOF, or an unparseable header — we then
+  can't know the payload length) poisons the stream and wakes every waiter.
 
-- Adds complexity to a wire format whose current simplicity is a feature.
-  Justified only by the concurrent-access contention the registry already
-  exhibits. If profiling shows the contention is not material, C4 may be
-  deferred indefinitely.
+The guest agent (`guest/vmette-desktop-agent.c`) reads the `req_id` prefix into a
+file-scope `g_req_id` (safe — strictly single-threaded) and echoes it from
+`send_frame`. The desktop image + agent were rebuilt to ship the matching guest.
 
-### 6.4 Tests
+### 6.3 Trade-offs (as resolved)
 
-- `vmette-proto`/`desktop.rs`: codec round-trip with `req_id`; out-of-order
-  responses demultiplex correctly; a dropped response does not block other ids.
+- Adds a small amount of wire/concurrency complexity to a format whose simplicity
+  was a feature. Accepted because the fault-isolation + submission-decoupling
+  wins are structural and hold even though the single-threaded guest caps any
+  throughput benefit. `req_id` is host↔guest-internal and shipped lockstep, so
+  there is **no external compatibility surface** and no CHANGELOG entry.
+
+### 6.4 Tests (shipped)
+
+- `desktop.rs` unit tests: frame round-trip carries/returns `req_id`; out-of-order
+  responses demultiplex by `req_id` (header-only and with payload); oversized
+  header rejected with the `req_id` prefix present. 152 workspace tests green.
+- E2E on a real boot (ad-hoc codesign + the locally rebuilt desktop image): a
+  full CLI desktop cycle `start → cursor (640 400) → screenshot --settle
+  (concurrent settle-polling) → click 100 100 → cursor (100 100) → stop`, all
+  clean — the post-click `cursor` returning exactly `100 100` (not a stale or
+  cross-routed reply) is the demux-correctness signal.
 
 ---
 
@@ -607,7 +640,7 @@ Independent items. **Outcome: all four shipped and e2e-validated.**
 | G1 | Guest boot-param format | ✅ **`KEY=VALUE` envelope on `ctl` share**, base64 for `exec`/`env`, no parser binary (reuses guest's existing `base64 -d`). JSON+helper-binary dropped. |
 | G2 | Capture topology | ✅ **Clean single-console (hvc0) streaming + `console=hvc1` discard sink + `ctl` share** — boot-validated. VZ delivers only ONE console port to the host, so multi-console separation is NOT viable; `ctl` virtio-fs carries stdout/stderr separation + exit. Soak: 300/300, fd drift 0. |
 | G3 | Snapshot: delete vs keep | ✅ **REVERSED → keep.** Snapshot is a real Apple-Silicon Phase-5 feature, not vestigial. C3 preserves it and integrates it into the `boot.env` contract (`Strategy::Snapshot`) instead of deleting it. |
-| G4 | C4 scope | ✅ **Defer** pending contention profiling. |
+| G4 | C4 scope | ✅ **Shipped** (§6). Deferral premise (throughput) didn't hold — guest is single-threaded — but the per-request fault-isolation + submission-decoupling wins are structural, so built + e2e-validated anyway. |
 
 All Phase-0 gates closed with empirical evidence (boots + soak ran locally via
 ad-hoc codesigning + fetched assets); no outstanding evidence remains.

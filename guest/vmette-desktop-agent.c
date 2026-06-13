@@ -15,10 +15,12 @@
 // change ever races a synthetic key. See do_type for the full rationale.
 //
 // Wire protocol (must match crates/vmette/src/desktop.rs):
-//   request  (host → guest): [u32 LE header_len][header JSON]          (no payload)
-//   response (guest → host): [u32 LE header_len][header JSON][payload]  (payload optional)
-// The response header carries "payload_len" = number of trailing bytes
-// (a PNG for screenshots; 0 otherwise).
+//   request  (host → guest): [u32 LE req_id][u32 LE header_len][header JSON]            (no payload)
+//   response (guest → host): [u32 LE req_id][u32 LE header_len][header JSON][payload]   (payload optional)
+// The host tags each request with a monotonic req_id and demultiplexes
+// responses by it; the agent echoes the same req_id back. The response header
+// carries "payload_len" = number of trailing bytes (a PNG for screenshots; 0
+// otherwise).
 //
 // Flow:
 //   1. Open the X display (default ":99").
@@ -94,16 +96,30 @@ static int write_all(int fd, const void *buf, size_t n) {
     return 0;
 }
 
-// Send one framed response: [u32 LE header_len][header][payload].
+// The req_id of the request currently being served. The host tags each
+// request frame with a u32 req_id and demultiplexes responses by it; the agent
+// echoes that same id back in the response frame. Safe as a file-scope global
+// because the agent is strictly single-threaded (one select() loop): main()
+// sets it immediately before dispatching each request, and every send_*()
+// reply for that request runs before the next request is read.
+static uint32_t g_req_id;
+
+// Write a little-endian u32 into a 4-byte buffer.
+static void put_u32_le(unsigned char *b, uint32_t v) {
+    b[0] = (unsigned char)(v & 0xff);
+    b[1] = (unsigned char)((v >> 8) & 0xff);
+    b[2] = (unsigned char)((v >> 16) & 0xff);
+    b[3] = (unsigned char)((v >> 24) & 0xff);
+}
+
+// Send one framed response: [u32 LE req_id][u32 LE header_len][header][payload].
+// req_id echoes g_req_id so the host can route this reply to its caller.
 static int send_frame(int fd, const char *header, size_t hlen,
                       const unsigned char *payload, size_t plen) {
-    uint32_t le = (uint32_t)hlen; // host is little-endian (arm64/x86_64)
-    unsigned char lenbuf[4];
-    lenbuf[0] = (unsigned char)(le & 0xff);
-    lenbuf[1] = (unsigned char)((le >> 8) & 0xff);
-    lenbuf[2] = (unsigned char)((le >> 16) & 0xff);
-    lenbuf[3] = (unsigned char)((le >> 24) & 0xff);
-    if (write_all(fd, lenbuf, 4) < 0) return -1;
+    unsigned char prefix[8]; // host is little-endian (arm64/x86_64)
+    put_u32_le(prefix, g_req_id);
+    put_u32_le(prefix + 4, (uint32_t)hlen);
+    if (write_all(fd, prefix, 8) < 0) return -1;
     if (write_all(fd, header, hlen) < 0) return -1;
     if (plen > 0 && write_all(fd, payload, plen) < 0) return -1;
     return 0;
@@ -1007,11 +1023,15 @@ int main(int argc, char **argv) {
         }
 
         if (FD_ISSET(fd, &rfds)) {
-            unsigned char lenbuf[4];
-            if (read_exact(fd, lenbuf, 4) < 0) break; // host closed
-            uint32_t hlen = (uint32_t)lenbuf[0] | ((uint32_t)lenbuf[1] << 8) |
-                            ((uint32_t)lenbuf[2] << 16) |
-                            ((uint32_t)lenbuf[3] << 24);
+            // Frame prefix: [u32 LE req_id][u32 LE header_len]. Stash the
+            // req_id so every reply send_*() for this request echoes it.
+            unsigned char prefix[8];
+            if (read_exact(fd, prefix, 8) < 0) break; // host closed
+            g_req_id = (uint32_t)prefix[0] | ((uint32_t)prefix[1] << 8) |
+                       ((uint32_t)prefix[2] << 16) | ((uint32_t)prefix[3] << 24);
+            uint32_t hlen = (uint32_t)prefix[4] | ((uint32_t)prefix[5] << 8) |
+                            ((uint32_t)prefix[6] << 16) |
+                            ((uint32_t)prefix[7] << 24);
             if (hlen == 0 || hlen > (1u << 20)) break;
             char *hdr = (char *)malloc(hlen + 1);
             if (!hdr) break;
