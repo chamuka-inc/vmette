@@ -403,6 +403,96 @@ mod tests {
         }
     }
 
+    /// Source a `to_env` envelope with a real POSIX shell exactly as the guest
+    /// `/init` does (`. /ctl/boot.env`), then echo back the requested variables
+    /// so we can assert what the shell *actually* parsed. This closes the gap
+    /// the `from_env` oracle can't: `from_env` is a Rust↔Rust round-trip, but
+    /// the production decoder is the guest shell — a `to_env` change that breaks
+    /// shell sourcing (or mangles a value) would otherwise only surface in the
+    /// slow e2e VM smoke. `sh -e` fails the test if the envelope isn't valid
+    /// shell; missing optional vars read empty (no `set -u`).
+    #[cfg(unix)]
+    fn shell_source(env: &str, vars: &[&str]) -> std::collections::HashMap<String, String> {
+        let mut script = String::from("set -e\n");
+        script.push_str(env);
+        for v in vars {
+            // Tab-delimited NAME\tVALUE per line; the values we read back are
+            // base64 or single-token (no tabs/newlines), so this stays 1:1.
+            script.push_str(&format!("printf '%s\\t%s\\n' '{v}' \"${{{v}:-}}\"\n"));
+        }
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("run /bin/sh");
+        assert!(
+            out.status.success(),
+            "the guest shell could not source boot.env:\n{env}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn boot_env_is_sourceable_by_the_guest_shell() {
+        let got = shell_source(
+            &to_env(&sample()),
+            &[
+                "VMETTE_PROTO_VERSION",
+                "VMETTE_ROOTFS_MODE",
+                "VMETTE_ROOTFS_FSTYPE",
+                "VMETTE_SCRATCH_DEV",
+                "VMETTE_SHARES",
+                "VMETTE_SWITCH_ROOT",
+                "VMETTE_NET",
+                "VMETTE_CAPTURE",
+                "VMETTE_STRATEGY",
+                "VMETTE_DISPLAY",
+                "VMETTE_EXEC_B64",
+                "VMETTE_ENV_B64",
+            ],
+        );
+        assert_eq!(got["VMETTE_PROTO_VERSION"], BOOT_PROTO_VERSION.to_string());
+        assert_eq!(got["VMETTE_ROOTFS_MODE"], "block");
+        assert_eq!(got["VMETTE_ROOTFS_FSTYPE"], "squashfs");
+        assert_eq!(got["VMETTE_SCRATCH_DEV"], "vdb");
+        assert_eq!(got["VMETTE_SHARES"], "work data");
+        assert_eq!(got["VMETTE_SWITCH_ROOT"], "1");
+        assert_eq!(got["VMETTE_NET"], "1");
+        assert_eq!(got["VMETTE_CAPTURE"], "1");
+        assert_eq!(got["VMETTE_STRATEGY"], "agent");
+        assert_eq!(got["VMETTE_DISPLAY"], "1280x800");
+        // The base64'd exec/env survive shell sourcing byte-for-byte (this is
+        // what the guest then pipes through `base64 -d`), and decode back to the
+        // originals — multi-line exec and a value containing a single quote.
+        assert_eq!(got["VMETTE_EXEC_B64"], B64.encode("echo hi\nuname -a"));
+        assert_eq!(got["VMETTE_ENV_B64"], B64.encode("export FOO='bar baz'\n"));
+        assert_eq!(
+            String::from_utf8(B64.decode(&got["VMETTE_EXEC_B64"]).unwrap()).unwrap(),
+            "echo hi\nuname -a"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn boot_env_snapshot_strategy_is_sourceable() {
+        // `Strategy::Snapshot` is forward-wiring `from_config` can't yet produce;
+        // still prove its envelope sources cleanly in the guest shell so the dead
+        // branch can't silently rot into something `/init` can't parse.
+        let mut p = sample();
+        p.strategy = Strategy::Snapshot {
+            guest_vsock_port: 5000,
+        };
+        let got = shell_source(&to_env(&p), &["VMETTE_STRATEGY", "VMETTE_GUEST_VSOCK_PORT"]);
+        assert_eq!(got["VMETTE_STRATEGY"], "snapshot");
+        assert_eq!(got["VMETTE_GUEST_VSOCK_PORT"], "5000");
+    }
+
     #[test]
     fn round_trips_full() {
         let p = sample();
