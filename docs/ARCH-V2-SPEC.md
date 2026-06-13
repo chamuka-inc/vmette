@@ -77,7 +77,7 @@ channel. Fixing that root cause unlocks both.
                                       │ serialize once  │ deserialize once
    host (Rust)                        │                 │     guest (PID 1)
    ───────────                        │                 │     ───────────
-   Config ──► Session::start ─────────┘                 └──── reads ctl/boot.json
+   Config ──► Session::start ─────────┘                 └──── reads ctl/boot.env
         owns serial pipe (capture)                            then mounts/execs
         writes BootParams blob to ctl share
         reads RunOutput{stdout,stderr,code} back over the same ctl share
@@ -215,7 +215,7 @@ the only consumer of `from_env`-shaped input.
 
 ### 3.4 Behavior & invariants
 
-- The host writes `boot.json` and creates the `ctl` share for **every** workload
+- The host writes `boot.env` and creates the `ctl` share for **every** workload
   that previously needed cmdline config — i.e. always, except a truly read-only
   directory rootfs with no exec, which today gets no `ctl` channel
   (`session.rs:372-396`). For C1 the `ctl` share becomes **unconditional**
@@ -269,64 +269,69 @@ Three fork paths, one in-process path:
 
 ### 4.2 Target design
 
-**Step 1 — capture-aware serial.** `vz/config::build` gains a serial-attachment
-mode. Today (`config.rs:63-69`) it always binds `VZFileHandleSerialPortAttachment`
-to `fileHandleWithStandardInput/Output`. Target: a `SerialSink` parameter:
+**Console topology — FINAL, empirically validated on real boots (Phase 0).**
+This section went through three drafts; only the last is correct, and it is
+backed by booting VMs (`three_console_boot_spike`), not just config validation.
+
+Phase 0 discovered a hard Virtualization.framework constraint: **VZ delivers
+host data for only ONE virtio console serial port reliably.** Booting with N
+all-capture consoles and writing a distinct marker to each `/dev/hvc{k}`, only
+`hvc0` ever reached the host (`n=1/2/3/4` → delivered `1/N` every time), even
+though the guest enumerates `/dev/hvc1…` and writes to them succeed (`rc=0`).
+So **multi-console stdout/stderr separation is NOT viable** — this rules out both
+the original "second console for stderr" sketch and the interim "3 exec-dedicated
+consoles" design (the latter passed *config validation* but failed at *boot*,
+which is exactly why boot-validation was a required gate).
+
+The validated design instead uses **one clean streaming console plus the `ctl`
+share**:
+
+- **hvc0 — the single captured, streaming console**, carrying *only* the exec's
+  output. Validated clean: `three_console_boot_spike` clean-primary case returned
+  `got=true clean=true` (the exec markers, with no `[init]`/kernel/overlay noise).
+- **`console=hvc1` — a discard sink.** A second console port the host does not
+  read; the kernel cmdline sets `console=hvc1` so kernel printk and `/init`'s
+  `[init]` chatter (`custom-init.sh:36 log(){ echo … >&2; }`, fd 2 = `/dev/console`)
+  land there, off hvc0. This is what makes hvc0 clean — and it works *because*
+  the discard port doesn't need host delivery (which VZ wouldn't provide anyway).
+- **`ctl` virtio-fs share — stdout/stderr separation + exit code.** virtio-fs is
+  rock-solid (300/300 boots in the soak, every boot mounts `ctl`). The clean exit
+  code already arrives via `.vmette-exit` here. If a consumer needs stdout and
+  stderr *separated* (the daemon `Frame::Stdout`/`Stderr` distinction), `/init`
+  tees the exec's fd 2 to a `ctl` file while fd 1+2 stream combined on hvc0; the
+  host merges the post-exit stderr file with the stream. Most agent use cases
+  want combined terminal-style output, so separated streams are the exception.
+
+**Guest change (C2):** the host adds the 2nd (ignored) console and sets
+`console=hvc1`; `/init` runs the user command with stdout+stderr redirected to
+`/dev/hvc0` (`sh -c "$CMD" >/dev/hvc0 2>&1`), keeping its own logs and the kernel
+on hvc1. This **deletes `slice_exec_output`/marker-scraping AND preserves
+incremental streaming** — both C2 goals met.
+
+**Step 1 — capture-aware serial.** `vz/config::build` gains a `SerialSink`:
 
 ```rust
 pub(crate) enum SerialSink {
-    Inherit,                 // current behavior: host stdin/stdout (interactive CLI)
-    Capture(RawFd, RawFd),   // write end of a host pipe for stdout; /dev/null stdin
+    Inherit,         // current behavior: host stdin/stdout (interactive CLI, hvc0)
+    Capture(RawFd),  // hvc0 write end → host pipe; plus a discard 2nd console
 }
 ```
 
-`Session::start` chooses the sink from a new `Config` field (default `Inherit`).
-In `Capture` mode the `Session` owns the read ends and exposes them.
+In `Capture` mode `Session` adds the hvc0 capture port + the discard port, sets
+`console=hvc1` on the cmdline, owns the hvc0 read end, and exposes it.
 
-**Step 2 — `RunOutput` carries captured streams.** Extend the existing
-`RunOutput` (`lifecycle.rs:18-23`, today only `exit_code`) and add a blocking
-`Session::wait_captured() -> RunOutput { exit_code, stdout, stderr }`. Output is
-drained on the Session's owning thread, bounded by a cap (port the
-`OUTPUT_CAP_BYTES` logic from `sandbox.rs:243-293` into the library as the single
-owner).
+**Step 2 — `RunOutput` carries captured streams.** Extend `RunOutput`
+(`lifecycle.rs:18-23`, today only `exit_code`) and add
+`Session::wait_captured() -> RunOutput { exit_code, stdout, stderr }`, draining
+hvc0 on the Session's owning thread, bounded by a cap (port `OUTPUT_CAP_BYTES`
+from `sandbox.rs:243-293` into the library as the single owner). `stderr` is the
+post-exit `ctl` file when separation is requested, else empty (combined on
+`stdout`).
 
-**Console topology (REVISED after Phase 0 — this corrects the original
-"add a second console" sketch).** Phase 0 found that two consoles are *not*
-sufficient for clean capture. `console=hvc0` carries **kernel** boot/shutdown
-messages, and `/init` logs its `[init] …` chatter to **fd 2**
-(`custom-init.sh:36 log() { echo "[init] $*" >&2; }`); the exec inherits that
-console for both streams. So "stdout→hvc0, stderr→hvc1" would leave kernel lines
-polluting captured stdout and `[init]` lines polluting captured stderr — i.e. it
-just relocates the marker-scraping problem instead of deleting it. To actually
-delete `slice_exec_output`, the captured consoles must be **exec-dedicated**:
-
-- **hvc0** — kernel console + `/init` logs (Inherit on the CLI path; discarded /
-  drained on the headless daemon/MCP path). The kernel and init keep this.
-- **hvc1** — exec **stdout** (Capture). `/init` redirects the user command's
-  fd 1 here (`exec >/dev/hvc1`) just before running it.
-- **hvc2** — exec **stderr** (Capture). Likewise fd 2 → `/dev/hvc2`.
-
-The host reads hvc1/hvc2 as clean, separated streams. **Phase 0 spike result:
-this 3-console shape validates** (`serial_capture_spike` case [5] VALID:
-`three (kernel + exec out/err) → exec-dedicated clean capture feasible`). The
-`SerialSink` enum in Step 1 generalizes to a per-console list rather than a
-single `Capture(RawFd, RawFd)`.
-
-> **Alternative under consideration (decide in PLAN, gate G2-capture):** instead
-> of exec-dedicated consoles, have `/init` redirect the user command's
-> stdout/stderr to two files on the **`ctl` share** (which C1 already mounts) and
-> let the host read them after exit. This gives perfectly clean separation with
-> *zero* console multiplexing and no kernel/init pollution — at the cost of
-> losing **incremental streaming** (output is available only at exit). The
-> console path preserves the daemon's current streaming `Frame::Stdout` behavior;
-> the ctl-file path does not. The daemon streams today, so the console topology
-> is the default; the ctl-file option is the fallback if hvc1/hvc2 guest-side
-> routing proves troublesome.
-
-**Fallback (single-stream).** If neither clean-separation option holds up under a
-real boot, surface one captured stream as `stdout` with `stderr` empty — still
-strictly better than marker-scraping, since the clean **exit code** already
-arrives via the `.vmette-exit`/`ctl` channel independent of the console.
+**Fallback (no consoles at all).** If the clean-primary console proves
+problematic in some guest, redirect the exec's stdout/stderr to two `ctl` files
+and read them after exit — perfectly clean, but **non-streaming**. Kept as a
+backstop only; the clean-hvc0 path above is the validated default.
 
 **Step 3 — collapse the paths.**
 
@@ -543,9 +548,9 @@ Each item is independent and low-risk.
 | ID | Decision | Outcome |
 |----|----------|---------|
 | G1 | Guest boot-param format | ✅ **`KEY=VALUE` envelope on `ctl` share**, base64 for `exec`/`env`, no parser binary (reuses guest's existing `base64 -d`). JSON+helper-binary dropped. |
-| G2 | Stream separation | ✅ **Two-console (hvc0/hvc1)** — VZ validator accepts multiple consoles + pipe-fd attachments (spike). Single-stream+structured-exit is the backstop. Guest-side `hvc1` routing still boot-gated. |
+| G2 | Capture topology | ✅ **Clean single-console (hvc0) streaming + `console=hvc1` discard sink + `ctl` share** — boot-validated. VZ delivers only ONE console port to the host, so multi-console separation is NOT viable; `ctl` virtio-fs carries stdout/stderr separation + exit. Soak: 300/300, fd drift 0. |
 | G3 | Snapshot: delete vs gate | ✅ **Delete** (reintroduce when implemented). |
 | G4 | C4 scope | ✅ **Defer** pending contention profiling. |
 
-Outstanding evidence (not a decision): the G2-stability in-process soak must run
-green on a signed build before C2's subprocess deletion (PLAN Phase 2e).
+All Phase-0 gates closed with empirical evidence (boots + soak ran locally via
+ad-hoc codesigning + fetched assets); no outstanding evidence remains.

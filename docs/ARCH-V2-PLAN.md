@@ -22,9 +22,11 @@ zero warnings, `cargo test --workspace`), and where it touches the guest, leaves
 ## Phase 0 — Decision spikes (no production code)
 
 Resolve the decisions that shape everything downstream. **Status: executed on
-branch `arch-v2-phase0` (2026-06-13).** Spike code lives in
-`crates/vmette/examples/{serial_capture_spike,inproc_soak_spike}.rs` (examples,
-not shipped lib). Findings below.
+branch `arch-v2-phase0` (2026-06-13), driven all the way to real VM boots.**
+Spike code lives in `crates/vmette/examples/` (examples, not shipped lib):
+`serial_capture_spike` (config validation), `three_console_boot_spike` (real
+multi-console boot + delivery + clean-primary probe), `inproc_soak_spike`
+(in-process boot/teardown soak). Findings below.
 
 ### Environment constraint discovered
 
@@ -53,67 +55,88 @@ The typed single-owner contract still lives in `vmette_proto::boot::BootParams`
 with `to_env()`/`from_env()`; only the wire *format* changes from JSON to
 `KEY=VALUE`. **SPEC §3.2/§3.3 updated accordingly.**
 
-### [GATE G2] Serial capture + stream separation — RESOLVED (design); boot-validation deferred
+### [GATE G2] Serial capture topology — RESOLVED on real boots (not just validation)
 
-`crates/vmette/examples/serial_capture_spike.rs` builds four VZ configs and runs
-`validateWithError` (ad-hoc signed). Result:
+Phase 0 was driven all the way to **booting real VMs** (ad-hoc codesigning grants
+the entitlement; assets fetched via the normal scripts). This overturned the
+config-validation-only conclusion and produced the final design.
+
+`serial_capture_spike` (config validation) showed multiple consoles + pipe-fd
+attachments all *validate*. But `three_console_boot_spike` (real boots) found
+they don't *deliver*:
 
 ```
-[1] single inherit console      : VALID   (baseline)
-[2] single capture (pipe) console: VALID   (NSFileHandle-from-fd attachment OK)
-[3] two consoles (hvc0 + hvc1)   : VALID   → stream separation feasible
-[4] two capture consoles         : VALID   → headless dual-capture feasible
-[5] three (kernel + exec out/err): VALID   → exec-dedicated clean capture feasible
+n=1: delivered 1/1   [hvc0=✓]
+n=2: delivered 1/2   [hvc0=✓ hvc1=·]
+n=3: delivered 1/3   [hvc0=✓ hvc1=· hvc2=·]
+n=4: delivered 1/4   [hvc0=✓ hvc1=· hvc2=· hvc3=·]
+clean-primary (console=hvc1 sink): got=true clean=true
 ```
 
-**Decision: exec-dedicated 3-console topology — NOT the original "second
-console" sketch.** Phase 0 found that two consoles do not yield *clean* capture:
-`console=hvc0` carries kernel messages and `/init` logs to fd 2
-(`custom-init.sh:36`), so a naive stdout→hvc0/stderr→hvc1 split leaves kernel
-lines polluting stdout and `[init]` lines polluting stderr — relocating the
-marker-scraping problem rather than deleting it. The corrected design (validated
-as case [5]): **hvc0** = kernel + init logs (inherit/drained), **hvc1** = exec
-stdout (capture), **hvc2** = exec stderr (capture), with `/init` redirecting the
-user command's fds 1/2 to hvc1/hvc2. VZ's validator accepts this shape and the
-pipe-fd attachment API (`NSFileHandle::initWithFileDescriptor_closeOnDealloc`),
-both compiling against `objc2-virtualization 0.3.2`. **SPEC §4.2 rewritten.**
+**Finding: VZ delivers host data for only ONE virtio console port reliably.** The
+guest enumerates `/dev/hvc1…` and writes to them succeed (`rc=0`), but the bytes
+never reach the host. So the interim "3 exec-dedicated consoles" design (which
+*passed config validation* as case [5]) **fails at boot** — exactly why
+boot-validation was a required gate, and a caution against trusting
+`validateWithError` as a proxy for behavior.
 
-**[GATE G2-capture] sub-decision, resolve at Phase 2 start:** exec-dedicated
-consoles (preserves streaming `Frame::Stdout`, default) vs redirecting exec
-output to files on the `ctl` share (perfectly clean, zero console multiplexing,
-but loses incremental streaming). See SPEC §4.2.
+**Final decision (validated): clean single-console streaming + `ctl` share.**
+- **hvc0** = the one captured, streaming console, carrying *only* exec output.
+- **`console=hvc1`** = a discard sink: kernel printk + `/init` `[init]` chatter
+  (fd 2 = `/dev/console`) go there, off hvc0. Proven clean: clean-primary case
+  returned `got=true clean=true` (exec markers only, no init/kernel/overlay noise).
+- **`ctl` virtio-fs share** = stdout/stderr separation (when needed) + exit code;
+  virtio-fs is rock-solid (300/300 soak boots mount it).
 
-**Still boot-gated (needs a signed build + assets):** whether the guest kernel
-enumerates hvc1/hvc2 and whether `/init`'s fd redirect routes cleanly. If that
-boot test fails, the single-stream fallback (captured stdout + structured exit
-via `ctl`, shape [2]) is the backstop.
+This **deletes marker-scraping AND preserves incremental streaming** — both C2
+goals. The fallback (exec stdout/stderr → `ctl` files, non-streaming) is kept as
+a backstop only. **SPEC §4.2 rewritten to this design.** The earlier
+`[GATE G2-capture]` sub-decision is now moot (multi-console isn't an option).
 
-### [GATE G2-stability] In-process VZ fault soak — HARNESS DELIVERED; run gated on signed build
+### [GATE G2-stability] In-process VZ fault soak — RUN, GREEN
 
-`crates/vmette/examples/inproc_soak_spike.rs` boots N (default 500) one-shot
-`Session`s back-to-back in one process (no fork), exec-ing `true`, and reports
-ok/bad counts, per-boot timing, and host fd drift. It **compiles against the
-public `vmette` API** (itself confirming C2's in-process path has the surface it
-needs) and skips cleanly when assets are absent. **Cannot run here** (needs a
-booted VM = signed build + fetched assets). Run instructions and the abort
-criterion are in the example's module docs. **This is the one Phase-0 item whose
-evidence is still outstanding** — it must be run on a signed macOS build before
-C2's subprocess deletion (Phase 2e).
+`inproc_soak_spike` ran on the signed build against real assets:
 
-### Exit status
+```
+ok=300  bad=0  of 300
+avg=1110ms  worst=1647ms
+fd drift: start=4 end=4 (delta=0)
+VERDICT: healthy → supports C2 (in-process one-shot).
+```
+
+300 consecutive in-process boot/teardown cycles, **zero failures, zero fd leak**.
+This is the evidence base for C2 giving up subprocess fault isolation — the
+abort criterion (failures or linear fd growth) was not triggered.
+
+### Exit status — all gates closed
 
 | Gate | Status |
 |------|--------|
 | G1 (parse approach) | ✅ Resolved → `KEY=VALUE` env file, no parser binary |
-| G2 design (API feasibility) | ✅ Resolved → two-console + pipe-fd capture validate |
-| G2 boot-validation (guest hvc1 routing) | ⏳ Deferred — needs signed build |
-| G2-stability soak | ⏳ Harness ready — needs signed build + assets |
+| G2 design + boot-validation | ✅ Resolved on real boots → clean single-console (hvc0) streaming + `console=hvc1` sink + `ctl` share. Multi-console is NOT viable under VZ. |
+| G2-stability soak | ✅ Run green → 300/300, fd drift 0 |
 | G3 (snapshot delete vs gate) | ✅ Resolved → **delete** (recorded in Phase 3) |
 | G4 (C4 scope) | ✅ Resolved → **defer** C4 pending profiling |
 
-Phases 1 and 3 are unblocked and can start now. Phase 2's subprocess *deletion*
-(2e) is blocked until the soak runs green on a signed build; Phase 2's additive
-work (2a–2c) can proceed in parallel since two-console capture is design-validated.
+**No open Phase-0 gaps remain.** All boot-gated items were closed by ad-hoc
+codesigning + fetched assets on this box. Phase 1 (C1), Phase 2 (C2, including
+the now-validated capture design and the subprocess-deletion evidence), and
+Phase 3 (C3) are all unblocked.
+
+#### Environment recipe to reproduce the boot spikes
+
+```
+bash scripts/fetch-assets.sh && bash scripts/fetch-alpine-rootfs.sh && \
+  bash scripts/build-initramfs.sh
+cargo build -p vmette --example three_console_boot_spike
+codesign -s - --entitlements entitlements.plist --force \
+  target/debug/examples/three_console_boot_spike
+VMETTE_KERNEL=assets/x86_64/vmlinuz-virt \
+VMETTE_INITRAMFS=assets/x86_64/initramfs-vmette \
+VMETTE_ROOTFS=assets/x86_64/alpine-rootfs \
+  ./target/debug/examples/three_console_boot_spike
+# soak: same build+sign for inproc_soak_spike, with VMETTE_SOAK_* env vars.
+```
 
 ---
 
@@ -132,7 +155,7 @@ Depends on: G1 resolved. Does **not** depend on C2.
 - In `vz/config::build`, make the storage builder return the assigned scratch
   device name alongside the attachment (SPEC §3.2 "Device-name ownership").
 - `Session::start`: build a `BootParams` from the (cloned) `Config`, serialize to
-  `<ctl>/boot.json`. Make the `ctl` share **unconditional** for config-bearing
+  `<ctl>/boot.env`. Make the `ctl` share **unconditional** for config-bearing
   workloads; keep the `"ctl"` tag reservation check (`session.rs:380-384`),
   generalize its message.
 - Rewrite `cmdline::build` to emit only `console=… quiet vmette.boot=ctl` plus
@@ -149,7 +172,7 @@ Depends on: G1 resolved. Does **not** depend on C2.
   `scripts/build-*.sh`, injected by `build-initramfs.sh`) **or** the vendored
   shell parser.
 - Rewrite the cmdline-parsing head of `scripts/custom-init.sh` to: mount `ctl`,
-  run the parser on `boot.json`, `eval` its `KEY=VALUE` output, assert
+  run the parser on `boot.env`, `eval` its `KEY=VALUE` output, assert
   `proto_version`, abort loudly on mismatch. The existing mount/overlay/exec body
   now consumes typed variables. Echo parsed params under `[init]`.
 - **Rebuild the initramfs** (`bash scripts/build-initramfs.sh`).
