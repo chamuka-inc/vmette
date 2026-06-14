@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-agent desktop-agent-all run shell test test-desktop test-view clean
+.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-agent desktop-agent-all desktop-image run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -84,6 +84,9 @@ desktop-agent-all: ## Cross-compile the static desktop agent for both x86_64 and
 	for arch in x86_64 aarch64; do \
 	    ARCH=$$arch bash scripts/build-desktop-agent-static.sh || exit 1; \
 	done
+
+desktop-image: ## OPTIONAL: build a custom desktop rootfs → assets/<arch>/vmette-desktop-rootfs.tar (needs Docker; default start uses the published image)
+	bash scripts/build-desktop-image.sh --export
 
 run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
 	bash scripts/run.sh

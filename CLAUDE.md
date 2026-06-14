@@ -143,10 +143,13 @@ returns an MCP image content block. `--allow-network` gates outbound network.
 - **`images/vmette-desktop/`**: the **reference recipe** for the published default
   desktop image (`vmette_assets::DEFAULT_DESKTOP_IMAGE`,
   `ghcr.io/chamuka-inc/vmette-desktop:latest`) — `Dockerfile` + `entrypoint.sh` +
-  `vmette-open` for a Debian-slim rootfs (Xvfb + openbox + a baked-in agent). This
-  repo no longer auto-builds it (the published image is frozen and pulled on first
-  use); the recipe doubles as a bring-your-own template, since the agent is
-  host-injected and any GUI rootfs works. `vmette-desktop-run.sh` is the
+  `vmette-open` for a Debian-slim rootfs (Xvfb + openbox + a baked-in agent). The
+  published image is pulled on first use; building it is **optional** (Docker) via
+  `scripts/build-desktop-image.sh` (`make desktop-image` wraps `--export`; a bare
+  `--push` republishes the full amd64+arm64 manifest) — only to customize the
+  rootfs or republish the default. The recipe doubles as a bring-your-own
+  template, since the agent is host-injected and any GUI rootfs works.
+  `vmette-desktop-run.sh` is the
   host-**injected** startup (shipped in the `agent` share, run by the init's
   desktop branch) that brings up Xvfb + a WM and execs the injected static agent,
   so a vmette-specific image isn't required.

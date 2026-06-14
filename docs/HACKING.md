@@ -23,12 +23,24 @@ make test                   # cargo tests + end-to-end VM smoke
 
 `make run 'echo hi'` runs a one-shot guest with sensible defaults.
 
-This repo doesn't build the desktop rootfs. `desktop start` defaults to the
-published image `ghcr.io/chamuka-inc/vmette-desktop:latest`
-(`vmette_assets::DEFAULT_DESKTOP_IMAGE`), pulled automatically on first use. The
-agent is host-injected, so any GUI rootfs (Xvfb + a window manager) works — bring
-your own via `--image <ref>` / `$VMETTE_DESKTOP_IMAGE`; `images/vmette-desktop/`
-is the reference recipe.
+`desktop start` defaults to the published image
+`ghcr.io/chamuka-inc/vmette-desktop:latest`
+(`vmette_assets::DEFAULT_DESKTOP_IMAGE`), pulled automatically on first use — no
+build required. The agent is host-injected, so any GUI rootfs (Xvfb + a window
+manager) works — bring your own via `--image <ref>` / `$VMETTE_DESKTOP_IMAGE`;
+`images/vmette-desktop/` is the reference recipe.
+
+Building the desktop image is **optional** (needs Docker) — only to customize the
+rootfs or republish the default:
+
+```sh
+make desktop-image                      # local tar+file:// rootfs (host arch) at assets/<arch>/
+scripts/build-desktop-image.sh --push   # republish the default — full amd64+arm64 manifest
+```
+
+A bare `--push` rebuilds both architectures into one manifest (arm64 under qemu),
+so a publish can't leave one arch stale. See
+[DESKTOP.md](DESKTOP.md#bring-your-own-desktop-rootfs) for the full recipe.
 
 ## Cutting a release
 

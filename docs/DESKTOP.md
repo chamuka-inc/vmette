@@ -92,9 +92,22 @@ sessions left untouched for longer than the idle TTL (30 min).
    (`Dockerfile` + `entrypoint.sh` + `vmette-open`): `xvfb`, `openbox`,
    `x11-utils`, fonts, `chromium` with an `/etc/chromium.d/` flags file (so a
    bare `chromium <url>` renders under the headless software-GL guest:
-   `--no-sandbox`, `--use-gl=swiftshader`, `--start-maximized`, …). It is no
-   longer auto-built — `docker build images/vmette-desktop/` if you want to fork
-   it.
+   `--no-sandbox`, `--use-gl=swiftshader`, `--start-maximized`, …).
+
+   **Building the image is optional** (Docker required) — only to customize the
+   rootfs or republish the default. `scripts/build-desktop-image.sh` wraps it:
+
+   ```sh
+   make desktop-image                          # → assets/<arch>/vmette-desktop-rootfs.tar (local, host arch)
+   scripts/build-desktop-image.sh --export     # same, explicit
+   scripts/build-desktop-image.sh --tag my-registry/my-desktop:latest --push   # publish your own
+   scripts/build-desktop-image.sh --push       # republish the default — full amd64+arm64 manifest
+   ```
+
+   A bare `--push` always rebuilds **both** architectures into one manifest
+   (arm64 builds under qemu, bundled with Docker Desktop), so a publish can never
+   leave one arch stale. `--export` (the `make` target) writes the local
+   `tar+file://` rootfs the CLI/MCP auto-discover ahead of the registry default.
 
 ## Bring your own desktop rootfs
 
