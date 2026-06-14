@@ -225,6 +225,11 @@ impl Registry {
         // user-chosen asset like the image), so the daemon owns its injection —
         // mirroring `locate_guest_helpers` below.
         if let Some(agent) = vmette_assets::resolve_agent_share() {
+            // Drop any caller-supplied share with the reserved `agent` tag first,
+            // so a socket client can't shadow vmette's agent with its own dir
+            // (the guest would then run an attacker-controlled run script). The
+            // host-injected agent always wins.
+            cfg.shares.retain(|s| s.tag != agent.tag);
             cfg.shares.push(agent);
         }
         // Writable share: the entrypoint writes Xvfb/openbox logs under /var.

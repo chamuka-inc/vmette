@@ -275,7 +275,9 @@ pub fn resolve_ca_share(explicit: Option<PathBuf>) -> Option<ShareMount> {
 /// dir actually carries the run script so a stray empty dir isn't injected.
 pub fn resolve_agent_share() -> Option<ShareMount> {
     let dir = find(DESKTOP_AGENT_DIR)?;
-    if !dir.join("vmette-desktop-run.sh").is_file() {
+    // Require both halves so a half-populated dir isn't injected (it would mount
+    // fine but the run script would FATAL at boot for a missing agent binary).
+    if !dir.join("vmette-desktop-run.sh").is_file() || !dir.join("vmette-desktop-agent").is_file() {
         return None;
     }
     Some(ShareMount {

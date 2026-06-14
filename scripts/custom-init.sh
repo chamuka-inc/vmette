@@ -277,8 +277,18 @@ fi
 mkdir -p /newroot/mnt
 for tag in $VMETTE_SHARES; do
     mkdir -p "/newroot/mnt/$tag"
-    if mount -t virtiofs "$tag" "/newroot/mnt/$tag" 2>/dev/null; then
-        log "mounted virtio-fs '$tag' at /mnt/$tag"
+    # vmette-injected shares carry the host's own files — the desktop agent
+    # binary ('agent') and CA certificates ('certs') — and the guest only ever
+    # reads them. Mount those read-only so a compromised guest can't write back
+    # into (and corrupt) vmette's host-side asset/cert directories. User
+    # `--share` mounts stay read-write for data exchange. ($_ropt is left
+    # unquoted on purpose so it splits into `-o ro` or expands to nothing.)
+    case "$tag" in
+        agent|certs) _ropt="-o ro" ;;
+        *) _ropt="" ;;
+    esac
+    if mount -t virtiofs $_ropt "$tag" "/newroot/mnt/$tag" 2>/dev/null; then
+        log "mounted virtio-fs '$tag' at /mnt/$tag${_ropt:+ (ro)}"
     else
         log "warning: failed to mount virtio-fs '$tag'"
     fi
