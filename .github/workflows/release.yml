@@ -14,58 +14,25 @@ permissions:
   contents: write
 
 jobs:
-  # The host-injected desktop agent is a fully-static Linux binary built in
-  # Docker (musl + a from-source X client stack) — the macOS dist runner has no
-  # Docker, so it's built here on Linux and passed to `build` as an artifact for
-  # the tarball. linux/amd64 is native; linux/arm64 runs under qemu emulation.
-  agent:
-    name: build static desktop agents (linux, multi-arch)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3   # binfmt for the linux/arm64 build
-      - name: build per-arch static agents
-        run: make desktop-agent-all
-      - name: upload desktop agents
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-agents
-          # LCA of these paths is assets/, so the artifact carries
-          # x86_64/desktop-agent/… and aarch64/desktop-agent/…; downloading into
-          # `assets` restores the per-arch layout. (Artifacts lose the +x bit;
-          # `make dist` re-chmods the staged copies.)
-          path: |
-            assets/x86_64/desktop-agent/vmette-desktop-agent
-            assets/x86_64/desktop-agent/vmette-desktop-run.sh
-            assets/aarch64/desktop-agent/vmette-desktop-agent
-            assets/aarch64/desktop-agent/vmette-desktop-run.sh
-          if-no-files-found: error
-
   build:
     name: build universal + dist
     runs-on: macos-14
-    needs: agent
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      - name: download static desktop agents
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-agents
-          path: assets
 
       - name: install Rust + cross targets
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
-      # Prebuilt macOS-hosted Linux musl toolchains for the guest helpers.
-      # FiloSottile/musl-cross compiles GCC from source (~30 min, blows the job
-      # timeout); messense ships a prebuilt tarball that installs in seconds.
-      # The release tarball is universal and includes both x86_64 and aarch64
-      # guest assets, so both helper toolchains must be available.
+      # Prebuilt macOS-hosted Linux musl toolchains. Used to cross-compile the
+      # static guest helpers AND the static desktop agent (its X client stack is
+      # built from source against these) — no Docker. FiloSottile/musl-cross
+      # compiles GCC from source (~30 min, blows the timeout); messense ships a
+      # prebuilt tarball that installs in seconds. The release tarball is
+      # universal and ships both x86_64 and aarch64 guest assets, so both
+      # toolchains must be available.
       - name: install Linux musl cross toolchains (prebuilt)
         run: |
           brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl

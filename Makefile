@@ -83,7 +83,7 @@ desktop-image: ## Build the desktop rootfs from source → assets/<arch>/vmette-
 desktop-agent: ## Build the host-injected static desktop agent (host guest arch) → assets/<arch>/desktop-agent/
 	bash scripts/build-desktop-agent-static.sh
 
-desktop-agent-all: ## Build the static desktop agent for both x86_64 and aarch64 guests (needs Docker)
+desktop-agent-all: ## Cross-compile the static desktop agent for both x86_64 and aarch64 guests (no Docker)
 	for arch in x86_64 aarch64; do \
 	    ARCH=$$arch bash scripts/build-desktop-agent-static.sh; \
 	done
@@ -107,7 +107,7 @@ test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and dri
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
 
-dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers (+ desktop agents if pre-built) + LICENSE
+dist: universal guest-assets-all desktop-agent-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers + desktop agents + LICENSE
 	rm -rf dist
 	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,assets,share/vmette/guest}
 	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/
