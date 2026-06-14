@@ -63,7 +63,7 @@ crates/vmette-provider-oci/      OCI/Docker image rootfs provider
 crates/vmette-provider-squashfs/ squashfs block-image rootfs provider
 crates/vmette-provider-tar/      tarball rootfs provider
 guest/                           C sources cross-compiled with musl for the alpine guest
-images/vmette-desktop/           Dockerfile + entrypoint for the desktop rootfs (untracked build inputs)
+images/vmette-desktop/           reference recipe for the published desktop image (+ the injected agent's run script)
 scripts/                         asset pipeline + dev wrappers + installer
 tests/                           cargo unit tests live in-crate; smoke runner here
 ```
