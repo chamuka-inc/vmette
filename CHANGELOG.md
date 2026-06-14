@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Desktop drag-and-drop now works on gesture-gated targets (pivot-table layout,
+  list reordering, sliders, file managers). The guest agent's `left_click_drag`
+  previously did a single press → jump → release, which DnD targets read as a
+  click that ended elsewhere; it now emits **interpolated motion** (press, a
+  stream of small steps, a dwell over the drop zone, release) so the drag crosses
+  the target's recognition threshold. New `vmette desktop drag SESSION FX FY TX TY`
+  CLI command exposes it (the MCP `desktop_drag` tool already did).
+
+- Desktop click-targeting reliability: every desktop screenshot now returns a
+  **framebuffer note** (`framebuffer WxH; pointer/click coordinates are in this
+  pixel space, origin top-left`) alongside the PNG (`desktop_screenshot`,
+  `desktop_screenshot_when_settled`, `desktop_what_changed`), so an agent
+  reasoning over a downscaled rendering can map its target back to true
+  coordinates. Pointer actions (`desktop_move`/click/scroll/drag, and the
+  `vmette desktop move`/`click` CLI) now **echo where the pointer actually
+  landed** — the agent response header carries the resulting `x`/`y`, and the
+  MCP/CLI status reports a `(constrained)` landing when a window manager clamped
+  the move. The guest `ResponseHeader` `x`/`y` fields, previously set only by
+  `cursor_position`, are now also set by the pointer actions.
+
+- Desktop sessions can now run on **any** GUI rootfs — bring your own image
+  (`vmette desktop start --image <any-image>` / `desktop_start`), it just has to
+  provide an X server (Xvfb) and a window manager. The computer-use agent is no
+  longer baked into the rootfs: vmette ships a per-arch **fully-static**
+  `vmette-desktop-agent` (built by `scripts/build-desktop-agent-static.sh` into
+  `assets/<arch>/desktop-agent/`) and the daemon injects it — plus a
+  self-contained `vmette-desktop-run.sh` startup — as the read-only `agent`
+  virtio-fs share. Being static (musl + a from-source X client stack), one agent
+  binary runs in any rootfs regardless of its libc. The release tarball ships
+  the agent per guest arch (`assets/<arch>/desktop-agent/`, built on Linux CI),
+  so installed users get the injected path by default; `make desktop-agent`
+  builds it locally for dev. When the asset isn't present, the guest falls back
+  to an agent baked into the image, so the bundled `vmette-desktop` image keeps
+  working unchanged.
+
+### Changed
+
+- `Config`'s mutually-exclusive `rootfs_share: Option<RootfsShare>` /
+  `rootfs_block: Option<RootfsBlock>` fields are replaced by a single
+  `rootfs: Option<Rootfs>`, where `enum Rootfs { Share(RootfsShare),
+  Block(RootfsBlock) }` makes "exactly one root" true by construction. Most
+  callers use `Config::set_rootfs_artifact` (unchanged) and the C ABI
+  `vmette_config_set_rootfs_share` (unchanged); only code that read/wrote the two
+  fields directly needs updating.
+- `vmette::run` (and the C ABI `vmette_run`) now **returns** with the guest's exit
+  code instead of exiting the process. Library/FFI embedders get a `RunOutput`
+  (read its `exit_code`) and choose the process exit code themselves; the `vmette`
+  CLI forwards it. Previously the happy path called `std::process::exit` and never
+  returned, which was hostile to embedders. `RunOutput` gained an `output` field
+  (captured guest output; empty for the interactive `run` path) and is no longer
+  `Copy`.
+- `RootfsArtifact::Directory` gained an `image_env: Vec<(String, String)>` field
+  (the OCI image's declared `Env`, empty for dir/tar rootfses). External
+  `RootfsProvider` implementors constructing or exhaustively matching this
+  variant must account for the new field. `Config::set_rootfs_artifact` now
+  prepends a directory artifact's `image_env` to `Config::env`, so an OCI image's
+  declared environment (`PATH`, …) is applied with the caller's `--env`
+  overriding on key collisions. Behaviorally equivalent to before for consumers;
+  the previous in-rootfs `/.vmette-image-env` guest file is gone — image env now
+  reaches the guest through the same channel as `--env`.
+
+### Removed
+
+- The repo no longer builds or publishes the desktop rootfs image. The
+  `make desktop-image` target, `scripts/build-desktop-image.sh`, and the
+  `desktop-image.yml` CI workflow are gone. Because the computer-use agent is now
+  host-injected, a vmette-specific image isn't required — `desktop start` defaults
+  to the (frozen) published `ghcr.io/chamuka-inc/vmette-desktop:latest` and you
+  customize by bringing your own GUI rootfs (`--image` / `$VMETTE_DESKTOP_IMAGE`).
+  The reference recipe stays in `images/vmette-desktop/` for forking. No runtime
+  behavior change: the default desktop still works with no setup.
+
+### Fixed
+
+- The desktop `navigate` action (and `desktop_navigate`) now actually renders the
+  page instead of capturing a blank screen. The desktop image launched Chromium
+  with no window-size hint, so it opened a tiny (~10×10) window that Openbox left
+  unsized; screenshots came back blank. The image now bakes `--start-maximized`
+  into the Chromium flags so the window fills the Xvfb screen. (Desktop-image
+  change — rebuild with `scripts/build-desktop-image.sh`.)
+- A desktop `exec_capture` or `wait` no longer blocks other actions on the same
+  session while it runs. The in-guest agent now drives those two actions
+  asynchronously in its event loop, so a slow command (or a long wait) issued
+  concurrently with input/screenshots/clipboard no longer stalls them — e.g. a
+  settle-screenshot poll alongside an `exec_capture` returns promptly instead of
+  waiting for the command. A long `exec_capture` also no longer freezes
+  clipboard-paste (X selection) serving. Per-action semantics (output, exit code,
+  the `timeout_ms` SIGKILL) are unchanged; replies may now arrive out of order
+  (the host already routes them by request id).
+
 ## [0.10.0] — 2026-06-13
 
 ### Added

@@ -203,6 +203,7 @@ impl RootfsProvider for TarProvider {
                 return Ok(RootfsArtifact::Directory {
                     path: dest,
                     read_only: false,
+                    image_env: Vec::new(),
                 });
             }
             debug!(
@@ -368,6 +369,7 @@ impl RootfsProvider for TarProvider {
         Ok(RootfsArtifact::Directory {
             path: dest,
             read_only: false,
+            image_env: Vec::new(),
         })
     }
 }

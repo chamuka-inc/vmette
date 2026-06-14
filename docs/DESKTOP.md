@@ -21,11 +21,16 @@ daemon restart. (Explicit `--share`/share mounts are the deliberate exception:
 those are writable and shared with the host because you asked for them.)
 
 There is no Apple graphics window involved. The guest runs a headless X server
-(`Xvfb :99`) plus a lightweight window manager (`openbox`), and an in-guest C
-agent (`vmette-desktop-agent`) captures the framebuffer with `XGetImage` and
-injects input with `XTEST`. The agent speaks a small framed protocol over
-**vsock** — the same bidirectional channel vmette already wires up — so no
-network and no display server on the host are required.
+(`Xvfb :99`) plus a lightweight window manager (`openbox`), and a C agent
+(`vmette-desktop-agent`) captures the framebuffer with `XGetImage` and injects
+input with `XTEST`. The agent speaks a small framed protocol over **vsock** —
+the same bidirectional channel vmette already wires up — so no network and no
+display server on the host are required.
+
+The agent itself is supplied by **vmette** (a per-arch static binary it injects
+into the guest), not baked into the rootfs — so the desktop runs on any image
+that provides an X server + a window manager. See
+[Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
 ## Architecture
 
@@ -57,63 +62,105 @@ sessions left untouched for longer than the idle TTL (30 min).
    vmetted &
    ```
 
-2. **The desktop rootfs image.** You don't have to build anything: vmette pulls
-   the published image from `ghcr.io/chamuka-inc/vmette-desktop:latest`
-   automatically on first use (the image is public; CI publishes it on every
-   release tag). The first `desktop start` extracts it and caches it under
-   `~/Library/Caches/vmette/oci/`; later starts are cache hits.
+2. **A desktop rootfs.** You don't have to build anything: with no `--image`,
+   vmette pulls the published default `ghcr.io/chamuka-inc/vmette-desktop:latest`
+   automatically on first use (the image is public). The first `desktop start`
+   extracts it and caches it under `~/Library/Caches/vmette/oci/`; later starts
+   are cache hits. That image is a convenience default (Xvfb + openbox + chromium
+   + fonts) — **this repo no longer builds it**; the agent is host-injected (see
+   [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs)), so any GUI
+   image works and you customize by bringing your own, not by rebuilding ours.
 
-   Building locally is **optional** — it's the path for hacking on the image or
-   running offline. `make desktop-image` rebuilds the agent and the chromium
-   flags from the current tree and writes the canonical asset, so a *dev* session
-   reflects your source rather than the published `:latest`:
-
-   ```sh
-  make desktop-image       # build images/vmette-desktop/ → assets/<arch>/vmette-desktop-rootfs.tar
-   ```
-
-  The export lands at `assets/<arch>/vmette-desktop-rootfs.tar`, which both clients
-   discover the same way they discover `vmlinuz-virt` / `initramfs-vmette`
-   (`$VMETTE_ASSETS_DIR`, `./assets`, `<install prefix>/assets`) and which
-   **takes precedence** over the registry — no env var, no manual `docker
-   export`, no per-call `--image` needed.
-
-   **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring
-   how kernel/initramfs are resolved):
+   **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring how
+   kernel/initramfs are resolved):
 
    1. explicit `--image REF` (CLI) / `image` arg (MCP) — wins
    2. `$VMETTE_DESKTOP_IMAGE` (any rootfs spec, e.g. a `tar+file://` or OCI ref)
-  3. discovered `assets/<arch>/vmette-desktop-rootfs.tar` → `tar+file://…`
-   4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — public registry image (the
-      zero-setup default when no local asset is present)
+   3. a locally-provided `assets/<arch>/vmette-desktop-rootfs.tar` (e.g. a
+      `docker export` of your own GUI image) → `tar+file://…`
+   4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — the published default when no
+      local asset is present
 
    Because resolution is client-side, `$VMETTE_DESKTOP_IMAGE` is read from the
    **client** process (your shell for `vmette desktop start`, the `vmette-mcp`
    server for `desktop_start`) — not the daemon.
 
-   **Docker: needed to *build*, not to *run*.** vmette itself never shells out to
-   Docker — its OCI provider is a self-contained registry client, which is why
-  tier 4 works out of the box on a machine without Docker. `make desktop-image`
-  uses Docker only to *build* the rootfs locally. The default Docker platform
-  matches the guest architecture (`linux/arm64` on Apple Silicon,
-  `linux/amd64` on Intel), and `--platform` can override it.
+   **No Docker needed to run.** vmette never shells out to Docker — its OCI
+   provider is a self-contained registry client, so the published default works
+   out of the box on a machine without Docker. The reference recipe for that
+   image (and a starting point for your own) lives in `images/vmette-desktop/`
+   (`Dockerfile` + `entrypoint.sh` + `vmette-open`): `xvfb`, `openbox`,
+   `x11-utils`, fonts, `chromium` with an `/etc/chromium.d/` flags file (so a
+   bare `chromium <url>` renders under the headless software-GL guest:
+   `--no-sandbox`, `--use-gl=swiftshader`, `--start-maximized`, …).
 
-   To push the image to a registry instead (a deliberate, separate step):
+   **Building the image is optional** (Docker required) — only to customize the
+   rootfs or republish the default. `scripts/build-desktop-image.sh` wraps it:
 
    ```sh
-   bash scripts/build-desktop-image.sh --push           # docker login ghcr.io first
-   bash scripts/build-desktop-image.sh --tag my/desktop:dev --export
+   make desktop-image                          # → assets/<arch>/vmette-desktop-rootfs.tar (local, host arch)
+   scripts/build-desktop-image.sh --export     # same, explicit
+   scripts/build-desktop-image.sh --tag my-registry/my-desktop:latest --push   # publish your own
+   scripts/build-desktop-image.sh --push       # republish the default — full amd64+arm64 manifest
    ```
 
-   The image bundles `xvfb`, `openbox`, `x11-utils`, base fonts, the compiled
-   `vmette-desktop-agent`, and an entrypoint that starts `Xvfb`, the WM (with a
-   neutral root colour so an idle desktop isn't pure black), then the agent. It
-   also ships `chromium` plus an `/etc/chromium.d/` flags file so a bare
-   `chromium <url>` renders under the headless software-GL guest (`--no-sandbox`,
-   `--use-gl=swiftshader`, `--disable-dev-shm-usage`, …) — the browser
-   incantation lives with the browser, in the image, so `desktop_launch` and the
-   CLI stay application-agnostic. Drop the `chromium` install line to shrink the
-   image; the agent works without it (you can launch any X app).
+   A bare `--push` always rebuilds **both** architectures into one manifest
+   (arm64 builds under qemu, bundled with Docker Desktop), so a publish can never
+   leave one arch stale. `--export` (the `make` target) writes the local
+   `tar+file://` rootfs the CLI/MCP auto-discover ahead of the registry default.
+
+## Bring your own desktop rootfs
+
+The computer-use agent is **not** part of the rootfs image — vmette ships it and
+injects it at boot. So a desktop session runs on **any** rootfs that provides an
+**X server (`Xvfb`)** and a **window manager**; that is the entire contract. The
+bundled `vmette-desktop` image is just one convenient such rootfs (it also adds
+Chromium + fonts); you can equally point `--image` at a stock `debian + xvfb +
+openbox` image, your own GUI image, or an OCI ref:
+
+```sh
+vmette desktop start --image tar+file:///path/to/my-gui-rootfs.tar
+vmette desktop start --image my-registry/my-desktop:latest
+```
+
+How it works:
+
+- vmette builds a **per-arch, fully-static** `vmette-desktop-agent` (musl + a
+  from-source X client stack — `scripts/build-desktop-agent-static.sh`) into
+  `assets/<arch>/desktop-agent/`, beside a self-contained
+  `vmette-desktop-run.sh` startup. Being fully static, **one** agent binary runs
+  in any rootfs regardless of its libc (glibc or musl) — it carries its own libc
+  and X clients and needs nothing from the rootfs but the X server socket.
+
+  ```sh
+  bash scripts/build-desktop-agent-static.sh   # → assets/<arch>/desktop-agent/
+  ```
+
+- `vmetted` discovers that directory (`vmette_assets::resolve_agent_share`) and
+  mounts it into Agent-workload guests as the **read-only** `agent` virtio-fs
+  share. The guest's PID-1 init runs the injected `/mnt/agent/vmette-desktop-run.sh`,
+  which brings up `Xvfb` + a window manager (auto-detected: openbox / fluxbox /
+  icewm / …) and execs the static agent. The share is read-only so a guest can't
+  write back into vmette's host-side agent directory.
+
+- **Fallback / compatibility.** When the agent asset isn't present, the init
+  falls back to an agent baked into the rootfs at
+  `/usr/local/bin/vmette-desktop-entrypoint.sh` — which is what the bundled
+  `vmette-desktop` image ships, so it keeps working unchanged. When the asset
+  *is* present, the injected agent is used for every session (so a single,
+  host-version-matched agent runs everywhere).
+
+A minimal bring-your-own image needs only:
+
+```dockerfile
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb openbox \
+ && rm -rf /var/lib/apt/lists/*
+# add your apps (a browser, an editor, …); no vmette agent required.
+```
+
+The agent injects a host CA-cert policy for Chromium when `--ca-certs` is in
+play (best-effort), but otherwise makes no assumptions about the rootfs's apps.
 
 ## Use it (CLI)
 
@@ -133,6 +180,7 @@ vmette desktop exec-capture "$SID" 'cat /etc/os-release'   # run a command, prin
 
 vmette desktop move  "$SID" 640 400
 vmette desktop click "$SID" 640 400
+vmette desktop drag  "$SID" 200 200 600 400  # press at (200,200), drag to (600,400)
 vmette desktop type  "$SID" 'echo hello'
 vmette desktop key   "$SID" 'Return'
 vmette desktop scroll "$SID" 640 400 down 3
@@ -168,15 +216,15 @@ to be running; the MCP server connects to its socket. Override the socket with
 | Tool | Input | Returns |
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?`, `ca_certs?` | session id (text) |
-| `desktop_screenshot` | `session_id` | **PNG image content block** |
-| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | **PNG image content block** (once the screen stops changing) |
-| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture **plus a PNG image content block** of the fresh frame |
+| `desktop_screenshot` | `session_id` | a **framebuffer note** (`framebuffer WxH; …`) **plus a PNG image content block** |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + **PNG image content block** (once the screen stops changing) |
+| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture + framebuffer note **plus a PNG image content block** of the fresh frame |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
-| `desktop_move` | `session_id`, `x`, `y` | status text |
-| `desktop_click` | `session_id`, `x`, `y` | status text |
-| `desktop_double_click` | `session_id`, `x`, `y` | status text |
-| `desktop_right_click` | `session_id`, `x`, `y` | status text |
-| `desktop_middle_click` | `session_id`, `x`, `y` | status text |
+| `desktop_move` | `session_id`, `x`, `y` | status text (echoes where the pointer landed; flags `(constrained)`) |
+| `desktop_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
+| `desktop_double_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
+| `desktop_right_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
+| `desktop_middle_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
 | `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the current pointer position) |
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
@@ -192,10 +240,18 @@ to be running; the MCP server connects to its socket. Override the socket with
 
 `desktop_screenshot` returns an MCP image content block
 (`image/png`), which is what makes the loop consumable by a computer-use agent.
-`desktop_click` / `desktop_double_click` / `desktop_right_click` move the
-pointer to `(x, y)` first, then click (agent click actions fire at the current
-pointer position). `network=true` on `desktop_start` is subject to the server's
-`--allow-network` gate.
+Alongside the image it returns a **framebuffer note** (`framebuffer WxH; …
+origin top-left`): pointer/click coordinates are in that exact pixel space, so an
+agent reasoning over a downscaled rendering can map its target back to true
+coordinates instead of guessing the scale. `desktop_click` /
+`desktop_double_click` / `desktop_right_click` move the pointer to `(x, y)`
+first, then click (agent click actions fire at the current pointer position).
+Pointer actions (`desktop_move`/click/scroll/drag) **echo where the pointer
+actually landed** in their status text — if a window manager constrained the
+move, the reply reads `… landed at X Y (constrained)`, so a missed target is
+observable in one round-trip instead of requiring a follow-up screenshot.
+`network=true` on `desktop_start` is subject to the server's `--allow-network`
+gate.
 
 **Starting an app and seeing it: `desktop_launch`.** `desktop_exec` is
 fire-and-forget — it launches a command and returns immediately, leaving you to
@@ -247,8 +303,9 @@ One request object per connection; one reply object back.
 // → one action
 { "kind": "desktop_action", "session_id": "a1b2c3...",
   "action": { "action": "left_click" } }
-// ← { "kind": "action_result", "ok": true }
-//   screenshots add "png_base64"; cursor_position adds "x"/"y";
+// ← { "kind": "action_result", "ok": true, "x": 200, "y": 200 }
+//   screenshots add "png_base64"; cursor_position AND the pointer actions
+//   (move/click/scroll/drag) add "x"/"y" — the resulting pointer position;
 //   failures set "ok": false and "error".
 
 // → stop
@@ -267,8 +324,11 @@ Between the host `Session` and the in-guest agent the wire format is binary:
 ```
 
 The request header is an `Action`; the response header is a `ResponseHeader`
-(`ok`, `error?`, `x?`, `y?`, `payload_len`). Screenshots travel as a raw PNG
-payload after the header. See `crates/vmette/src/desktop.rs`.
+(`ok`, `error?`, `x?`, `y?`, `payload_len`). `x`/`y` carry the pointer position:
+`cursor_position` reports it, and every pointer action echoes the *resulting*
+position. Screenshots travel as a raw PNG payload after the header (its pixel
+dimensions are the coordinate space for all pointer actions). See
+`crates/vmette/src/desktop.rs`.
 
 ## Action reference
 
@@ -277,14 +337,14 @@ JSON shape is `{"action": "<name>", ...fields}`.
 
 | Action | Fields | Effect |
 |--------|--------|--------|
-| `screenshot` | — | Capture framebuffer → PNG payload. The mouse pointer is composited in (via XFixes), so the cursor shows in screenshots and the live view. |
+| `screenshot` | — | Capture framebuffer → PNG payload. The PNG's pixel size is the coordinate space for all pointer actions. The mouse pointer is composited in (via XFixes), so the cursor shows in screenshots and the live view. |
 | `cursor_position` | — | Report pointer `(x, y)` in the header. |
-| `mouse_move` | `x`, `y` | Absolute pointer move. |
-| `left_click` | — | Left click at current position. |
-| `right_click` | — | Right click at current position. |
-| `middle_click` | — | Middle click at current position. |
-| `double_click` | — | Double left click at current position. |
-| `left_click_drag` | `x`, `y` | Press, move to `(x, y)`, release. |
+| `mouse_move` | `x`, `y` | Absolute pointer move. Header echoes the resulting `(x, y)`. |
+| `left_click` | — | Left click at current position. Header echoes the click `(x, y)`. |
+| `right_click` | — | Right click at current position. Header echoes the click `(x, y)`. |
+| `middle_click` | — | Middle click at current position. Header echoes the click `(x, y)`. |
+| `double_click` | — | Double left click at current position. Header echoes the click `(x, y)`. |
+| `left_click_drag` | `x`, `y` | Press, drag to `(x, y)` with **interpolated motion** (so drag-and-drop targets recognize the gesture), release. Header echoes the resulting `(x, y)`. |
 | `type` | `text` | Type a UTF-8 string via synthetic key events. |
 | `key` | `keys` | Press a chord, e.g. `"ctrl+c"`, `"Return"`, `"alt+Tab"`. |
 | `scroll` | `x`, `y`, `direction`, `amount` | Scroll `amount` clicks (`up`/`down`/`left`/`right`). |

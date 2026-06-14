@@ -15,10 +15,12 @@
 // change ever races a synthetic key. See do_type for the full rationale.
 //
 // Wire protocol (must match crates/vmette/src/desktop.rs):
-//   request  (host → guest): [u32 LE header_len][header JSON]          (no payload)
-//   response (guest → host): [u32 LE header_len][header JSON][payload]  (payload optional)
-// The response header carries "payload_len" = number of trailing bytes
-// (a PNG for screenshots; 0 otherwise).
+//   request  (host → guest): [u32 LE req_id][u32 LE header_len][header JSON]            (no payload)
+//   response (guest → host): [u32 LE req_id][u32 LE header_len][header JSON][payload]   (payload optional)
+// The host tags each request with a monotonic req_id and demultiplexes
+// responses by it; the agent echoes the same req_id back. The response header
+// carries "payload_len" = number of trailing bytes (a PNG for screenshots; 0
+// otherwise).
 //
 // Flow:
 //   1. Open the X display (default ":99").
@@ -94,27 +96,36 @@ static int write_all(int fd, const void *buf, size_t n) {
     return 0;
 }
 
-// Send one framed response: [u32 LE header_len][header][payload].
-static int send_frame(int fd, const char *header, size_t hlen,
+// Write a little-endian u32 into a 4-byte buffer.
+static void put_u32_le(unsigned char *b, uint32_t v) {
+    b[0] = (unsigned char)(v & 0xff);
+    b[1] = (unsigned char)((v >> 8) & 0xff);
+    b[2] = (unsigned char)((v >> 16) & 0xff);
+    b[3] = (unsigned char)((v >> 24) & 0xff);
+}
+
+// Send one framed response: [u32 LE req_id][u32 LE header_len][header][payload].
+// `req_id` echoes the request's id so the host can route this reply to its
+// caller. It is an EXPLICIT parameter (not a global) because replies can be
+// deferred — an async exec_capture replies long after the next request has been
+// read, so each reply must carry the id captured when its request arrived.
+static int send_frame(int fd, uint32_t req_id, const char *header, size_t hlen,
                       const unsigned char *payload, size_t plen) {
-    uint32_t le = (uint32_t)hlen; // host is little-endian (arm64/x86_64)
-    unsigned char lenbuf[4];
-    lenbuf[0] = (unsigned char)(le & 0xff);
-    lenbuf[1] = (unsigned char)((le >> 8) & 0xff);
-    lenbuf[2] = (unsigned char)((le >> 16) & 0xff);
-    lenbuf[3] = (unsigned char)((le >> 24) & 0xff);
-    if (write_all(fd, lenbuf, 4) < 0) return -1;
+    unsigned char prefix[8]; // host is little-endian (arm64/x86_64)
+    put_u32_le(prefix, req_id);
+    put_u32_le(prefix + 4, (uint32_t)hlen);
+    if (write_all(fd, prefix, 8) < 0) return -1;
     if (write_all(fd, header, hlen) < 0) return -1;
     if (plen > 0 && write_all(fd, payload, plen) < 0) return -1;
     return 0;
 }
 
-static int send_ok(int fd) {
+static int send_ok(int fd, uint32_t req_id) {
     static const char h[] = "{\"ok\":true,\"payload_len\":0}";
-    return send_frame(fd, h, sizeof(h) - 1, NULL, 0);
+    return send_frame(fd, req_id, h, sizeof(h) - 1, NULL, 0);
 }
 
-static int send_err(int fd, const char *msg) {
+static int send_err(int fd, uint32_t req_id, const char *msg) {
     char h[512];
     // msg is internal/controlled; escape quotes/backslashes defensively.
     char esc[400];
@@ -127,31 +138,32 @@ static int send_err(int fd, const char *msg) {
     int n = snprintf(h, sizeof(h),
                      "{\"ok\":false,\"error\":\"%s\",\"payload_len\":0}", esc);
     if (n < 0) return -1;
-    return send_frame(fd, h, (size_t)n, NULL, 0);
+    return send_frame(fd, req_id, h, (size_t)n, NULL, 0);
 }
 
-static int send_coords(int fd, int x, int y) {
+static int send_coords(int fd, uint32_t req_id, int x, int y) {
     char h[128];
     int n = snprintf(h, sizeof(h),
                      "{\"ok\":true,\"x\":%d,\"y\":%d,\"payload_len\":0}", x, y);
     if (n < 0) return -1;
-    return send_frame(fd, h, (size_t)n, NULL, 0);
+    return send_frame(fd, req_id, h, (size_t)n, NULL, 0);
 }
 
 // Success reply whose `plen` payload bytes (a PNG, clipboard text, …) follow
 // the header. `plen == 0` is the bare-ok case.
-static int send_payload(int fd, const unsigned char *payload, size_t plen) {
+static int send_payload(int fd, uint32_t req_id, const unsigned char *payload,
+                        size_t plen) {
     char h[64];
     int n = snprintf(h, sizeof(h), "{\"ok\":true,\"payload_len\":%zu}", plen);
     if (n < 0) return -1;
-    return send_frame(fd, h, (size_t)n, payload, plen);
+    return send_frame(fd, req_id, h, (size_t)n, payload, plen);
 }
 
-// Reply for a synchronous exec: `plen` payload bytes (the combined
-// stdout/stderr) follow the header, and the header carries the child's exit
-// code. A negative `exit_code` means the child was killed (e.g. timeout) and
-// is serialized as JSON `null`, which the host reads as "no clean exit".
-static int send_exec_result(int fd, int exit_code,
+// Reply for an exec_capture: `plen` payload bytes (the combined stdout/stderr)
+// follow the header, and the header carries the child's exit code. A negative
+// `exit_code` means the child was killed (e.g. timeout) and is serialized as
+// JSON `null`, which the host reads as "no clean exit".
+static int send_exec_result(int fd, uint32_t req_id, int exit_code,
                             const unsigned char *payload, size_t plen) {
     char h[96];
     char code[16];
@@ -163,7 +175,7 @@ static int send_exec_result(int fd, int exit_code,
                      "{\"ok\":true,\"exit_code\":%s,\"payload_len\":%zu}", code,
                      plen);
     if (n < 0) return -1;
-    return send_frame(fd, h, (size_t)n, payload, plen);
+    return send_frame(fd, req_id, h, (size_t)n, payload, plen);
 }
 
 // ---- minimal JSON extraction (host-controlled schema) -------------------
@@ -241,6 +253,47 @@ static void click_button(unsigned button) {
     XTestFakeButtonEvent(g_dpy, button, True, CurrentTime);
     XTestFakeButtonEvent(g_dpy, button, False, CurrentTime);
     XFlush(g_dpy);
+}
+
+// Drag from the current pointer position to (tx, ty) with *interpolated* motion.
+// A single press -> jump -> release reads as a click that happened to end far
+// away; real drag-and-drop targets (LibreOffice's pivot layout, file managers,
+// list reordering) gate the drag on crossing a movement threshold AND seeing a
+// stream of intermediate motion events, then dwelling over the drop zone. So we
+// press, emit many small steps with short waits so the app's DnD loop registers
+// the gesture and highlights the drop target, dwell, then release.
+static void drag_pointer(int tx, int ty) {
+    Window r, c; int sx, sy, wx, wy; unsigned int mask;
+    if (!XQueryPointer(g_dpy, g_root, &r, &c, &sx, &sy, &wx, &wy, &mask)) {
+        sx = tx; sy = ty; // no start known: fall back to a direct move
+    }
+    XTestFakeButtonEvent(g_dpy, 1, True, CurrentTime);
+    XFlush(g_dpy);
+    usleep(60000); // let the button-press settle before motion begins
+    const int steps = 24;
+    for (int i = 1; i <= steps; i++) {
+        int x = sx + (tx - sx) * i / steps;
+        int y = sy + (ty - sy) * i / steps;
+        XTestFakeMotionEvent(g_dpy, g_screen, x, y, CurrentTime);
+        XFlush(g_dpy);
+        usleep(12000); // ~12ms/step so the target's DnD handler processes motion
+    }
+    XTestFakeMotionEvent(g_dpy, g_screen, tx, ty, CurrentTime);
+    XFlush(g_dpy);
+    usleep(90000); // dwell over the drop zone so it arms before release
+    XTestFakeButtonEvent(g_dpy, 1, False, CurrentTime);
+    XFlush(g_dpy);
+}
+
+// Success reply that echoes the *resulting* pointer position, so the host/agent
+// can verify where a move/click actually landed (a window manager can constrain
+// the pointer, so the request coords aren't always the truth). Falls back to a
+// bare ok if the pointer can't be queried.
+static int send_pointer(int fd, uint32_t req_id) {
+    Window r, c; int rx, ry, wx, wy; unsigned int mask;
+    if (!XQueryPointer(g_dpy, g_root, &r, &c, &rx, &ry, &wx, &wy, &mask))
+        return send_ok(fd, req_id);
+    return send_coords(fd, req_id, rx, ry);
 }
 
 // Map a key-name token to a keysym, accepting common aliases.
@@ -502,17 +555,17 @@ static void composite_cursor(unsigned char *rgb, int w, int h) {
     XFree(ci);
 }
 
-static int do_screenshot(int fd) {
+static int do_screenshot(int fd, uint32_t req_id) {
     XWindowAttributes wa;
     if (!XGetWindowAttributes(g_dpy, g_root, &wa))
-        return send_err(fd, "XGetWindowAttributes failed");
+        return send_err(fd, req_id,"XGetWindowAttributes failed");
     int w = wa.width, h = wa.height;
 
     XImage *img = XGetImage(g_dpy, g_root, 0, 0, w, h, AllPlanes, ZPixmap);
-    if (!img) return send_err(fd, "XGetImage failed");
+    if (!img) return send_err(fd, req_id,"XGetImage failed");
 
     unsigned char *rgb = (unsigned char *)malloc((size_t)w * h * 3);
-    if (!rgb) { XDestroyImage(img); return send_err(fd, "oom"); }
+    if (!rgb) { XDestroyImage(img); return send_err(fd, req_id,"oom"); }
 
     int rs = mask_shift(img->red_mask);
     int gs = mask_shift(img->green_mask);
@@ -536,9 +589,9 @@ static int do_screenshot(int fd) {
     struct png_buf pb = {0};
     int ok = stbi_write_png_to_func(png_sink, &pb, w, h, 3, rgb, w * 3);
     free(rgb);
-    if (!ok || pb.oom) { free(pb.data); return send_err(fd, "png encode failed"); }
+    if (!ok || pb.oom) { free(pb.data); return send_err(fd, req_id,"png encode failed"); }
 
-    int rc = send_payload(fd, pb.data, pb.len);
+    int rc = send_payload(fd, req_id,pb.data, pb.len);
     free(pb.data);
     return rc;
 }
@@ -607,10 +660,10 @@ static void serve_selection(XEvent *ev) {
 }
 
 // Read the CLIPBOARD selection and reply with its text as the frame payload.
-static int do_get_clipboard(int fd) {
+static int do_get_clipboard(int fd, uint32_t req_id) {
     // Fast path: we own it, so answer from our own copy without a round-trip.
     if (g_clip && XGetSelectionOwner(g_dpy, A_CLIPBOARD) == g_clip_win) {
-        return send_payload(fd, (unsigned char *)g_clip, g_clip_len);
+        return send_payload(fd, req_id,(unsigned char *)g_clip, g_clip_len);
     }
     int xfd = ConnectionNumber(g_dpy);
     // (Re)issue the conversion until an owner answers with data, or until a
@@ -653,10 +706,10 @@ static int do_get_clipboard(int fd) {
                                    &after, &data);
                 if (type == A_INCR) {
                     if (data) XFree(data);
-                    return send_err(fd, "clipboard too large (INCR unsupported)");
+                    return send_err(fd, req_id,"clipboard too large (INCR unsupported)");
                 }
                 size_t len = (data && format == 8) ? (size_t)nitems : 0;
-                int rc = send_payload(fd, data, len);
+                int rc = send_payload(fd, req_id,data, len);
                 if (data) XFree(data);
                 return rc;
             }
@@ -668,7 +721,7 @@ static int do_get_clipboard(int fd) {
         if (elapsed_ms >= 1500) {
             // Bounded out: an unset/unavailable clipboard is a normal state, so
             // report it as empty rather than an error.
-            return send_payload(fd, NULL, 0);
+            return send_payload(fd, req_id,NULL, 0);
         }
         if (need_convert) {
             // Got a "no owner" answer; pause briefly so we don't spin re-issuing
@@ -712,27 +765,94 @@ static void launch_argv(const char *prog, const char *arg) {
     // Parent does not wait; the app runs in the session.
 }
 
-// Run `cmd` to completion via `/bin/sh -c`, capturing its combined
-// stdout+stderr, and reply with [`send_exec_result`]. Bounded by `timeout_ms`
-// (the agent is single-threaded, so a runaway command would wedge the whole
-// session) — on expiry the child is SIGKILLed and the exit code reported as
-// `null`. Output is capped at EXEC_CAPTURE_MAX_OUTPUT bytes (excess dropped).
+// ---- async jobs: exec_capture + wait ------------------------------------
 //
-// Intended for short, terminating commands (read a file, run a probe). Do not
-// use it to launch a long-lived GUI app — use `exec`/`navigate` for that.
+// `exec_capture` (run a command to completion) and `wait` (sleep) are the only
+// actions that block for a meaningful time. Running them synchronously froze
+// the whole agent — input, screenshots, and X selection serving all stalled
+// until they returned. Instead each is registered as an async JOB and the main
+// select() loop drives it to completion while still serving other requests,
+// replying out of order with the job's captured `req_id` (the host
+// demultiplexes by `req_id`, so out-of-order replies are fine).
+//
+// The agent stays strictly single-threaded: a job is just an fd + a deadline in
+// the one loop, so nothing touches the X display off-thread and input stays
+// ordered. Only these two non-X actions defer.
 #define EXEC_CAPTURE_MAX_OUTPUT (256 * 1024)
-static int do_exec_capture(int fd, const char *cmd, long timeout_ms) {
+#define MAX_JOBS 16
+// After an exec job's pipe hits EOF the child has usually exited — but the
+// kernel closes the pipe write end a hair before the task becomes reapable, so
+// `waitpid(WNOHANG)` often returns 0 right at EOF for a perfectly clean exit. We
+// therefore *poll* for the exit (every EXEC_EOF_POLL_MS) rather than assuming
+// the child is detached. The kill bound stays the job's original run-timeout
+// deadline (timeout_ms): a command that merely redirected its stdout (`exec foo
+// >/dev/null`) but keeps doing real work is reaped with its true exit code when
+// it finishes, and only a child still alive at its run-timeout is force-killed —
+// so EOF never shortens the caller's timeout budget. The poll is non-blocking,
+// so this costs no interactivity.
+#define EXEC_EOF_POLL_MS 5
+
+struct job {
+    int active;
+    int is_wait;             // wait timer (no child/pipe) vs exec_capture
+    int eof;                 // exec: pipe drained, now awaiting the child's exit
+    uint32_t req_id;         // captured at submit; echoed in the deferred reply
+    pid_t pid;               // exec only
+    int outfd;               // exec only: read end of the child's stdout pipe (-1 once EOF'd)
+    unsigned char *buf;      // exec only: captured output (capped), malloc'd
+    size_t len;
+    struct timeval deadline; // exec: run-timeout SIGKILL at (or, once eof, the
+                             // detached force-kill grace); wait: reply ok at
+};
+static struct job g_jobs[MAX_JOBS];
+
+static struct job *job_alloc(void) {
+    for (int i = 0; i < MAX_JOBS; i++)
+        if (!g_jobs[i].active) return &g_jobs[i];
+    return NULL;
+}
+
+// `ms` from now as an absolute deadline.
+static struct timeval deadline_in(long ms) {
+    struct timeval t;
+    gettimeofday(&t, NULL);
+    t.tv_sec += ms / 1000;
+    t.tv_usec += (ms % 1000) * 1000;
+    if (t.tv_usec >= 1000000) { t.tv_sec += 1; t.tv_usec -= 1000000; }
+    return t;
+}
+
+// Milliseconds from now until `t` (negative once it has passed).
+static long ms_until(const struct timeval *t) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return (t->tv_sec - now.tv_sec) * 1000L + (t->tv_usec - now.tv_usec) / 1000L;
+}
+
+// Register an async exec_capture: fork the child with stdout+stderr on a pipe,
+// stash the job, and return WITHOUT replying — the reply is sent later by
+// drain_job (child EOF) or expire_jobs (timeout). Setup failures reply at once.
+static void start_exec_capture(int fd, uint32_t req_id, const char *cmd,
+                               long timeout_ms) {
+    struct job *j = job_alloc();
+    if (!j) { send_err(fd, req_id, "too many concurrent jobs"); return; }
+    unsigned char *buf = (unsigned char *)malloc(EXEC_CAPTURE_MAX_OUTPUT);
+    if (!buf) { send_err(fd, req_id, "oom"); return; }
     int pipefd[2];
-    if (pipe(pipefd) != 0) return send_err(fd, "pipe failed");
+    if (pipe(pipefd) != 0) {
+        free(buf);
+        send_err(fd, req_id, "pipe failed");
+        return;
+    }
     pid_t pid = fork();
     if (pid < 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return send_err(fd, "fork failed");
+        close(pipefd[0]); close(pipefd[1]); free(buf);
+        send_err(fd, req_id, "fork failed");
+        return;
     }
     if (pid == 0) {
-        // Child: route stdout+stderr into the pipe, detach the controlling
-        // tty, then exec the shell. stdin is closed so a command that reads it
+        // Child: route stdout+stderr into the pipe, detach the controlling tty,
+        // then exec the shell. stdin is /dev/null so a command that reads it
         // sees EOF rather than blocking forever.
         setsid();
         dup2(pipefd[1], STDOUT_FILENO);
@@ -747,117 +867,203 @@ static int do_exec_capture(int fd, const char *cmd, long timeout_ms) {
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
-
-    // Parent: drain the pipe until EOF (child exit) or the deadline, then reap.
     close(pipefd[1]);
-    unsigned char *buf = (unsigned char *)malloc(EXEC_CAPTURE_MAX_OUTPUT);
-    if (!buf) {
-        close(pipefd[0]);
-        kill(pid, SIGKILL);
-        waitpid(pid, NULL, 0);
-        return send_err(fd, "oom");
-    }
-    size_t len = 0;
-    int killed = 0;
-    struct timeval start, now;
-    gettimeofday(&start, NULL);
-    for (;;) {
-        gettimeofday(&now, NULL);
-        long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L +
-                          (now.tv_usec - start.tv_usec) / 1000L;
-        long remaining = timeout_ms - elapsed_ms;
-        if (remaining <= 0) {
-            kill(pid, SIGKILL);
-            killed = 1;
-            break;
-        }
-        fd_set r;
-        FD_ZERO(&r);
-        FD_SET(pipefd[0], &r);
-        struct timeval tv = {.tv_sec = remaining / 1000,
-                             .tv_usec = (remaining % 1000) * 1000};
-        int sel = select(pipefd[0] + 1, &r, NULL, NULL, &tv);
-        if (sel < 0) { if (errno == EINTR) continue; break; }
-        if (sel == 0) { kill(pid, SIGKILL); killed = 1; break; }
-        // Read into the remaining buffer; once full, keep draining into a
-        // scratch byte so the child isn't blocked on a full pipe.
-        if (len < EXEC_CAPTURE_MAX_OUTPUT) {
-            ssize_t got = read(pipefd[0], buf + len, EXEC_CAPTURE_MAX_OUTPUT - len);
-            if (got < 0) { if (errno == EINTR) continue; break; }
-            if (got == 0) break; // EOF: child closed all write ends
-            len += (size_t)got;
-        } else {
-            unsigned char scratch[4096];
-            ssize_t got = read(pipefd[0], scratch, sizeof(scratch));
-            if (got < 0) { if (errno == EINTR) continue; break; }
-            if (got == 0) break;
-        }
-    }
-    close(pipefd[0]);
-
-    int wstatus = 0;
-    waitpid(pid, &wstatus, 0);
-    int exit_code;
-    if (killed) {
-        exit_code = -1; // serialized as null: no clean exit (timed out)
-    } else if (WIFEXITED(wstatus)) {
-        exit_code = WEXITSTATUS(wstatus);
-    } else {
-        exit_code = -1; // killed by a signal: also "no clean exit"
-    }
-
-    int rc = send_exec_result(fd, exit_code, buf, len);
-    free(buf);
-    return rc;
+    j->active = 1; j->is_wait = 0; j->eof = 0; j->req_id = req_id; j->pid = pid;
+    j->outfd = pipefd[0]; j->buf = buf; j->len = 0;
+    j->deadline = deadline_in(timeout_ms);
 }
 
-static int handle(int fd, const char *json) {
+// Register a wait timer: reply ok once the deadline fires (see expire_jobs).
+static void start_wait(uint32_t req_id, long ms) {
+    struct job *j = job_alloc();
+    if (!j) return; // table full: drop (wait is best-effort; host will time out)
+    j->active = 1; j->is_wait = 1; j->eof = 0; j->req_id = req_id;
+    j->pid = -1; j->outfd = -1; j->buf = NULL; j->len = 0;
+    j->deadline = deadline_in(ms);
+}
+
+// EINTR-safe blocking reap of a specific child. Bounded: every caller SIGKILLs
+// the child first, so the reap returns promptly.
+static pid_t reap_pid(pid_t pid, int *wstatus) {
+    pid_t w;
+    do { w = waitpid(pid, wstatus, 0); } while (w < 0 && errno == EINTR);
+    return w;
+}
+
+// Non-blocking reap: 1 if the child has been reaped (exited, or already gone),
+// 0 if it is still running. `*wstatus` carries the exit status on a real exit;
+// it is zeroed for the already-gone (ECHILD) case so the caller reads exit 0.
+static int try_reap(pid_t pid, int *wstatus) {
+    pid_t w;
+    do { w = waitpid(pid, wstatus, WNOHANG); } while (w < 0 && errno == EINTR);
+    if (w < 0) *wstatus = 0; // ECHILD: no child to wait on; treat as clean exit
+    return w != 0;
+}
+
+// Reply exit code: the child's status, or -1 (=> JSON null) when it did not
+// exit cleanly (killed/signalled).
+static int exit_code_of(int wstatus) {
+    return WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
+}
+
+// Send an exec job's captured result and tear the job down.
+static void deliver_exec(int fd, struct job *j, int code) {
+    send_exec_result(fd, j->req_id, code, j->buf, j->len);
+    if (j->outfd >= 0) close(j->outfd);
+    free(j->buf);
+    j->active = 0;
+    j->eof = 0;
+}
+
+// An exec job's pipe is readable: accumulate output (capped). On EOF the output
+// is complete; reap the child if it is already done, else mark the job
+// `eof`-awaiting so expire_jobs polls for its exit without blocking the loop.
+static void drain_job(int fd, struct job *j) {
+    if (j->len < EXEC_CAPTURE_MAX_OUTPUT) {
+        ssize_t got = read(j->outfd, j->buf + j->len,
+                           EXEC_CAPTURE_MAX_OUTPUT - j->len);
+        if (got > 0) { j->len += (size_t)got; return; }
+        if (got < 0 && errno == EINTR) return;
+    } else {
+        // Buffer full: keep draining so the child never blocks on a full pipe,
+        // but drop the overflow (matches the old cap-and-discard behavior).
+        unsigned char scratch[4096];
+        ssize_t got = read(j->outfd, scratch, sizeof(scratch));
+        if (got > 0) return;
+        if (got < 0 && errno == EINTR) return;
+    }
+    // EOF or hard error.
+    int wstatus = 0;
+    if (try_reap(j->pid, &wstatus)) {
+        deliver_exec(fd, j, exit_code_of(wstatus)); // common case: already exited
+    } else {
+        // Not reapable yet: either the exit just hasn't landed (the usual race —
+        // resolved within a poll or two) or the child redirected/detached its
+        // stdio and is still working. Stop reading the pipe and await the exit
+        // via expire_jobs, keeping the original run-timeout deadline as the
+        // kill bound (EOF must not shorten the caller's timeout_ms budget).
+        close(j->outfd);
+        j->outfd = -1;
+        j->eof = 1;
+    }
+}
+
+// Service job timers/reaps after each select() wake. Non-blocking: every check
+// is a single WNOHANG (the only blocking reap is the bounded one after we have
+// already SIGKILLed). Handles: an EOF'd exec awaiting its exit (reap when done,
+// or force-kill a detached child once its grace elapses); a wait timer; and an
+// exec past its run timeout.
+static void expire_jobs(int fd) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        struct job *j = &g_jobs[i];
+        if (!j->active) continue;
+        if (j->eof) {
+            int wstatus = 0;
+            if (try_reap(j->pid, &wstatus)) {
+                // Exited — deliver its real code even if the deadline just
+                // passed (a finished child is preferred over a spurious kill).
+                deliver_exec(fd, j, exit_code_of(wstatus));
+            } else if (ms_until(&j->deadline) <= 0) {
+                // Still alive at its run-timeout → kill the whole session group
+                // (the child setsid()'d, so -pid reaches backgrounded
+                // grandchildren too), reap, report null exit.
+                kill(-j->pid, SIGKILL);
+                reap_pid(j->pid, &wstatus);
+                deliver_exec(fd, j, -1);
+            }
+            continue;
+        }
+        if (ms_until(&j->deadline) > 0) continue;
+        if (j->is_wait) {
+            send_ok(fd, j->req_id);
+            j->active = 0;
+        } else {
+            // exec run-timeout: kill the whole session group, reap, null exit.
+            int wstatus = 0;
+            kill(-j->pid, SIGKILL);
+            reap_pid(j->pid, &wstatus);
+            deliver_exec(fd, j, -1);
+        }
+    }
+}
+
+// select() timeout = time until the nearest job deadline, or NULL (block) when
+// no jobs are pending. Negative remaining clamps to 0 (fire immediately).
+static struct timeval *jobs_timeout(struct timeval *tv) {
+    long min_ms = -1;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (!g_jobs[i].active) continue;
+        // An EOF'd exec is polled for its exit on a short fixed interval; every
+        // other job wakes at its deadline.
+        long ms = g_jobs[i].eof ? EXEC_EOF_POLL_MS : ms_until(&g_jobs[i].deadline);
+        if (ms < 0) ms = 0;
+        if (min_ms < 0 || ms < min_ms) min_ms = ms;
+    }
+    if (min_ms < 0) return NULL;
+    tv->tv_sec = min_ms / 1000;
+    tv->tv_usec = (min_ms % 1000) * 1000;
+    return tv;
+}
+
+// Kill + reap any still-running exec jobs at teardown so children don't leak.
+static void reap_all_jobs(void) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        struct job *j = &g_jobs[i];
+        if (!j->active || j->is_wait) continue;
+        kill(-j->pid, SIGKILL); // whole session group, not just sh
+        reap_pid(j->pid, NULL);
+        if (j->outfd >= 0) close(j->outfd); // -1 once the job is eof-awaiting
+        free(j->buf);
+        j->active = 0;
+    }
+}
+
+// Dispatch one request. Most actions reply synchronously and return the
+// send_*() result (<0 ⇒ host gone). `exec_capture` and `wait` instead register
+// an async job and return 0 — their reply is sent later by the main loop.
+static int handle(int fd, uint32_t req_id, const char *json) {
     char action[64];
     if (!json_str(json, "action", action, sizeof(action)))
-        return send_err(fd, "missing action");
+        return send_err(fd, req_id,"missing action");
 
     long x = 0, y = 0, amount = 0, ms = 0;
 
     if (!strcmp(action, "screenshot")) {
-        return do_screenshot(fd);
+        return do_screenshot(fd, req_id);
     } else if (!strcmp(action, "cursor_position")) {
         Window r, c; int rx, ry, wx, wy; unsigned int mask;
         if (!XQueryPointer(g_dpy, g_root, &r, &c, &rx, &ry, &wx, &wy, &mask))
-            return send_err(fd, "XQueryPointer failed");
-        return send_coords(fd, rx, ry);
+            return send_err(fd, req_id,"XQueryPointer failed");
+        return send_coords(fd, req_id, rx, ry);
     } else if (!strcmp(action, "mouse_move")) {
         json_int(json, "x", &x); json_int(json, "y", &y);
         move_pointer((int)x, (int)y);
-        return send_ok(fd);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "left_click")) {
-        click_button(1); return send_ok(fd);
+        click_button(1); return send_pointer(fd, req_id);
     } else if (!strcmp(action, "right_click")) {
-        click_button(3); return send_ok(fd);
+        click_button(3); return send_pointer(fd, req_id);
     } else if (!strcmp(action, "middle_click")) {
-        click_button(2); return send_ok(fd);
+        click_button(2); return send_pointer(fd, req_id);
     } else if (!strcmp(action, "double_click")) {
         click_button(1); usleep(50000); click_button(1);
-        return send_ok(fd);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "left_click_drag")) {
         json_int(json, "x", &x); json_int(json, "y", &y);
-        XTestFakeButtonEvent(g_dpy, 1, True, CurrentTime);
-        XFlush(g_dpy);
-        move_pointer((int)x, (int)y);
-        XTestFakeButtonEvent(g_dpy, 1, False, CurrentTime);
-        XFlush(g_dpy);
-        return send_ok(fd);
+        drag_pointer((int)x, (int)y);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "type")) {
         char text[8192];
         if (!json_str(json, "text", text, sizeof(text)))
-            return send_err(fd, "missing text");
-        if (do_type(text) < 0) return send_err(fd, "no scratch keycode");
-        return send_ok(fd);
+            return send_err(fd, req_id,"missing text");
+        if (do_type(text) < 0) return send_err(fd, req_id,"no scratch keycode");
+        return send_ok(fd, req_id);
     } else if (!strcmp(action, "key")) {
         char keys[256];
         if (!json_str(json, "keys", keys, sizeof(keys)))
-            return send_err(fd, "missing keys");
-        if (do_key_chord(keys) < 0) return send_err(fd, "bad key chord");
-        return send_ok(fd);
+            return send_err(fd, req_id,"missing keys");
+        if (do_key_chord(keys) < 0) return send_err(fd, req_id,"bad key chord");
+        return send_ok(fd, req_id);
     } else if (!strcmp(action, "scroll")) {
         char dir[16] = "down";
         json_int(json, "x", &x); json_int(json, "y", &y);
@@ -871,58 +1077,64 @@ static int handle(int fd, const char *json) {
         else if (!strcmp(dir, "right")) button = 7;
         if (amount <= 0) amount = 1;
         for (long i = 0; i < amount; i++) click_button(button);
-        return send_ok(fd);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "wait")) {
         json_int(json, "ms", &ms);
-        if (ms > 0) usleep((useconds_t)(ms * 1000));
-        return send_ok(fd);
+        if (ms <= 0) return send_ok(fd, req_id);
+        // Async timer: reply ok when the deadline fires, without blocking the
+        // loop. The reply carries this req_id; the host demuxes it.
+        start_wait(req_id, ms);
+        return 0;
     } else if (!strcmp(action, "exec")) {
         char cmd[4096];
         if (!json_str(json, "command", cmd, sizeof(cmd)))
-            return send_err(fd, "missing command");
+            return send_err(fd, req_id,"missing command");
         launch_detached(cmd);
-        return send_ok(fd);
+        return send_ok(fd, req_id);
     } else if (!strcmp(action, "navigate")) {
         // Size the URL buffer to the header; a long URL must not be truncated.
         size_t cap = strlen(json) + 1;
         char *url = (char *)malloc(cap);
-        if (!url) return send_err(fd, "oom");
+        if (!url) return send_err(fd, req_id,"oom");
         if (!json_str(json, "url", url, cap)) {
             free(url);
-            return send_err(fd, "missing url");
+            return send_err(fd, req_id,"missing url");
         }
         // Hand the URL to the launcher as one argv element — no shell, so it
         // can't be word-split or used to inject commands.
         launch_argv("vmette-open", url);
         free(url);
-        return send_ok(fd);
+        return send_ok(fd, req_id);
     } else if (!strcmp(action, "exec_capture")) {
         char cmd[4096];
         if (!json_str(json, "command", cmd, sizeof(cmd)))
-            return send_err(fd, "missing command");
+            return send_err(fd, req_id,"missing command");
         long timeout_ms = 0;
         json_int(json, "timeout_ms", &timeout_ms);
-        // Default and clamp below the host's per-read vsock timeout (30s), or a
-        // long command would trip that before the reply is sent.
+        // Default and clamp below the host's per-request vsock timeout (30s),
+        // or a long command would trip that before the reply is sent.
         if (timeout_ms <= 0) timeout_ms = 15000;
         if (timeout_ms > 25000) timeout_ms = 25000;
-        return do_exec_capture(fd, cmd, timeout_ms);
+        // Async: spawn the child and reply later (on its EOF or the deadline),
+        // so a long command no longer stalls input/screenshots/clipboard.
+        start_exec_capture(fd, req_id, cmd, timeout_ms);
+        return 0;
     } else if (!strcmp(action, "set_clipboard")) {
         // The decoded text can't exceed the header length; size the buffer to
         // it so large pastes aren't truncated by a fixed cap.
         size_t cap = strlen(json) + 1;
         char *text = (char *)malloc(cap);
-        if (!text) return send_err(fd, "oom");
+        if (!text) return send_err(fd, req_id,"oom");
         if (!json_str(json, "text", text, cap)) {
             free(text);
-            return send_err(fd, "missing text");
+            return send_err(fd, req_id,"missing text");
         }
         do_set_clipboard(text, strlen(text)); // takes ownership of `text`
-        return send_ok(fd);
+        return send_ok(fd, req_id);
     } else if (!strcmp(action, "get_clipboard")) {
-        return do_get_clipboard(fd);
+        return do_get_clipboard(fd, req_id);
     }
-    return send_err(fd, "unknown action");
+    return send_err(fd, req_id,"unknown action");
 }
 
 // ---- main ---------------------------------------------------------------
@@ -976,9 +1188,12 @@ int main(int argc, char **argv) {
     fprintf(stderr, "agent: connected to host:%u, serving on %s\n",
             port, display);
 
-    // Multiplex the vsock request stream and the X connection: requests are
-    // handled as before, while SelectionRequest events (from an app pasting
-    // what set_clipboard owns) are served between requests via serve_selection.
+    // Multiplex the vsock request stream, the X connection, and any in-flight
+    // async-job pipes (exec_capture). Requests are served as they arrive;
+    // SelectionRequest events (an app pasting what set_clipboard owns) are
+    // served via serve_selection; exec/wait jobs complete in the background and
+    // reply out of order. The select() timeout tracks the nearest job deadline
+    // so exec timeouts and wait timers fire on schedule.
     int xfd = ConnectionNumber(g_dpy);
     for (;;) {
         // Serve any X events already queued before blocking.
@@ -992,10 +1207,29 @@ int main(int argc, char **argv) {
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
         FD_SET(xfd, &rfds);
-        int maxfd = (fd > xfd ? fd : xfd) + 1;
-        if (select(maxfd, &rfds, NULL, NULL, NULL) < 0) {
+        int maxfd = (fd > xfd ? fd : xfd);
+        for (int i = 0; i < MAX_JOBS; i++) {
+            // Only exec jobs with a live pipe (not yet EOF'd → outfd >= 0) are
+            // selectable; an eof-awaiting job has no fd, it polls via jobs_timeout.
+            if (g_jobs[i].active && !g_jobs[i].is_wait && g_jobs[i].outfd >= 0) {
+                FD_SET(g_jobs[i].outfd, &rfds);
+                if (g_jobs[i].outfd > maxfd) maxfd = g_jobs[i].outfd;
+            }
+        }
+        struct timeval tvbuf;
+        struct timeval *tv = jobs_timeout(&tvbuf);
+        if (select(maxfd + 1, &rfds, NULL, NULL, tv) < 0) {
             if (errno == EINTR) continue;
             break;
+        }
+
+        // Deadlines/reaps first (a wait fires; an EOF'd exec is reaped; an exec
+        // past its timeout is killed), then drain any exec pipes with output/EOF.
+        expire_jobs(fd);
+        for (int i = 0; i < MAX_JOBS; i++) {
+            if (g_jobs[i].active && !g_jobs[i].is_wait && g_jobs[i].outfd >= 0 &&
+                FD_ISSET(g_jobs[i].outfd, &rfds))
+                drain_job(fd, &g_jobs[i]);
         }
 
         if (FD_ISSET(xfd, &rfds)) {
@@ -1007,22 +1241,29 @@ int main(int argc, char **argv) {
         }
 
         if (FD_ISSET(fd, &rfds)) {
-            unsigned char lenbuf[4];
-            if (read_exact(fd, lenbuf, 4) < 0) break; // host closed
-            uint32_t hlen = (uint32_t)lenbuf[0] | ((uint32_t)lenbuf[1] << 8) |
-                            ((uint32_t)lenbuf[2] << 16) |
-                            ((uint32_t)lenbuf[3] << 24);
+            // Frame prefix: [u32 LE req_id][u32 LE header_len]. The req_id is a
+            // local passed to handle(), so a deferred async reply later echoes
+            // the id captured here even after newer requests are served.
+            unsigned char prefix[8];
+            if (read_exact(fd, prefix, 8) < 0) break; // host closed
+            uint32_t req_id = (uint32_t)prefix[0] | ((uint32_t)prefix[1] << 8) |
+                              ((uint32_t)prefix[2] << 16) |
+                              ((uint32_t)prefix[3] << 24);
+            uint32_t hlen = (uint32_t)prefix[4] | ((uint32_t)prefix[5] << 8) |
+                            ((uint32_t)prefix[6] << 16) |
+                            ((uint32_t)prefix[7] << 24);
             if (hlen == 0 || hlen > (1u << 20)) break;
             char *hdr = (char *)malloc(hlen + 1);
             if (!hdr) break;
             if (read_exact(fd, hdr, hlen) < 0) { free(hdr); break; }
             hdr[hlen] = '\0';
-            int rc = handle(fd, hdr);
+            int rc = handle(fd, req_id, hdr);
             free(hdr);
             if (rc < 0) break; // write failed → host gone
         }
     }
 
+    reap_all_jobs(); // kill + reap any children still running at teardown
     close(fd);
     XCloseDisplay(g_dpy);
     return 0;

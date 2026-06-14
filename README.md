@@ -119,17 +119,17 @@ forwards your mouse/keyboard as the same actions the agent uses, so a human and 
 agent share one display. The same capability is exposed to agents through the MCP
 `desktop_*` tools (`desktop_screenshot` returns a PNG image block).
 
-> **The desktop rootfs.** The desktop needs a Debian-slim image (Xvfb + openbox + the
-> agent) — a separate, larger rootfs from the headless paths. You don't have to build
-> it: `vmette desktop start` pulls the published image from
+> **The desktop rootfs.** The desktop needs a GUI rootfs — an X server (Xvfb) and a
+> window manager — separate from the headless paths. You don't have to build anything:
+> `vmette desktop start` pulls the published default image from
 > `ghcr.io/chamuka-inc/vmette-desktop` automatically on first use (then cached under
 > `~/Library/Caches/vmette/oci/`), so the MCP and CLI desktop paths work out of the
-> box — no Docker needed. Building locally is optional, for hacking on the image or
-> working offline: `make desktop-image` (needs Docker; builds the platform matching
-> the guest architecture) writes `assets/<arch>/vmette-desktop-rootfs.tar`, which is
-> auto-discovered and **takes precedence** over the registry so a dev session reflects
-> your source. Resolution order: `--image` → `$VMETTE_DESKTOP_IMAGE` → local
-> `assets/<arch>/vmette-desktop-rootfs.tar` → the `ghcr.io/chamuka-inc/vmette-desktop` image.
+> box — no Docker needed. The computer-use agent is host-injected (a static binary
+> vmette ships), so any GUI image works: bring your own with `--image <ref>` /
+> `$VMETTE_DESKTOP_IMAGE`, or drop a `vmette-desktop-rootfs.tar` in `assets/<arch>/`.
+> Resolution order: `--image` → `$VMETTE_DESKTOP_IMAGE` → local
+> `assets/<arch>/vmette-desktop-rootfs.tar` → the published
+> `ghcr.io/chamuka-inc/vmette-desktop` image. See `docs/DESKTOP.md`.
 
 See [`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol, action
 reference, and image build.

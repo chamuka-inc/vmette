@@ -7,6 +7,7 @@ members = [
     "crates/vmette-proto",
     "crates/vmette-providers",
     "crates/vmette-daemon",
+    "crates/vmette-daemon-client",
     "crates/vmette-mcp",
     "crates/vmette-provider-oci",
     "crates/vmette-provider-squashfs",
@@ -40,6 +41,7 @@ serde_json           = "1"
 vmette                   = { path = "crates/vmette", version = "0.10.0" }
 vmette-proto             = { path = "crates/vmette-proto", version = "0.10.0" }
 vmette-assets            = { path = "crates/vmette-assets", version = "0.10.0" }
+vmette-daemon-client     = { path = "crates/vmette-daemon-client", version = "0.10.0" }
 vmette-providers         = { path = "crates/vmette-providers", version = "0.10.0" }
 vmette-provider-oci      = { path = "crates/vmette-provider-oci", version = "0.10.0" }
 vmette-provider-squashfs = { path = "crates/vmette-provider-squashfs", version = "0.10.0" }

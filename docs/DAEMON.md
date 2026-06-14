@@ -8,10 +8,10 @@ directly, use the [MCP server](MCP.md); for one-off commands, the [CLI](CLI.md).
 `vmetted` listens on a UNIX socket and serves two request families over
 the same protocol:
 
-- **Stateless runs** — one guest run per connection, dispatched by
-  spawning the `vmette` CLI as a subprocess (the schema below). A
-  warm-snapshot pool to replace the per-request cold boot is a planned
-  future optimization (Apple Silicon); it is not yet implemented.
+- **Stateless runs** — one guest run per connection, booted **in-process**
+  via a capture-aware `vmette::Session` (the schema below). A warm-snapshot
+  pool to replace the per-request cold boot is a planned future optimization
+  (Apple Silicon); it is not yet implemented.
 - **Stateful desktop sessions** — `desktop_*` requests that drive a
   persistent in-process VM held across connections (see
   [Desktop session requests](#desktop-session-requests)).
@@ -19,9 +19,8 @@ the same protocol:
 ## Run
 
 ```sh
-vmetted                                      # default socket + vmette path
+vmetted                                      # default socket
 vmetted --socket /tmp/vmette.sock            # override path
-vmetted --vmette /usr/local/bin/vmette       # override CLI binary
 ```
 
 Default socket: `$HOME/Library/Caches/vmette/vmette.sock`.
@@ -165,15 +164,14 @@ A daemon-side failure on any kind returns `{"kind":"error","message":"…"}`.
 
 ## Today vs the warm-pool roadmap
 
-The stateless run path today spawns a `vmette` subprocess per request
+The stateless run path today boots a fresh microVM in-process per request
 (full cold boot). A warm-snapshot pool is a planned optimization, not
 yet shipped (aarch64 only, since snapshot/restore is Apple-Silicon-only):
 
 | Feature | Today | Warm-pool roadmap (aarch64 only) |
 |---------|-------|----------------------------------|
 | Per-request cost | ~1 s (full cold boot) | ~50 ms (snapshot resume) |
-| Implementation | subprocess spawn per request | in-process warm-snapshot pool |
-| Library API | unchanged | adds `OutputSink` trait for non-stdio output |
+| Implementation | in-process `Session` per request | in-process warm-snapshot pool |
 
 ## When to use vmetted vs vmette
 

@@ -18,13 +18,29 @@
 ```sh
 make build                  # cargo build --release + codesign vmette
 make assets init guest-bin  # pull alpine kernel/initramfs/rootfs + repack
-make desktop-image          # build the desktop rootfs from source → assets/ (needs Docker)
 make test                   # cargo tests + end-to-end VM smoke
 ```
 
 `make run 'echo hi'` runs a one-shot guest with sensible defaults.
-`make desktop-image` exports the computer-use rootfs to
-`assets/<arch>/vmette-desktop-rootfs.tar`, which the CLI/MCP auto-discover.
+
+`desktop start` defaults to the published image
+`ghcr.io/chamuka-inc/vmette-desktop:latest`
+(`vmette_assets::DEFAULT_DESKTOP_IMAGE`), pulled automatically on first use — no
+build required. The agent is host-injected, so any GUI rootfs (Xvfb + a window
+manager) works — bring your own via `--image <ref>` / `$VMETTE_DESKTOP_IMAGE`;
+`images/vmette-desktop/` is the reference recipe.
+
+Building the desktop image is **optional** (needs Docker) — only to customize the
+rootfs or republish the default:
+
+```sh
+make desktop-image                      # local tar+file:// rootfs (host arch) at assets/<arch>/
+scripts/build-desktop-image.sh --push   # republish the default — full amd64+arm64 manifest
+```
+
+A bare `--push` rebuilds both architectures into one manifest (arm64 under qemu),
+so a publish can't leave one arch stale. See
+[DESKTOP.md](DESKTOP.md#bring-your-own-desktop-rootfs) for the full recipe.
 
 ## Cutting a release
 
@@ -40,8 +56,8 @@ creds), then the lockstep version bump (workspace + the 7 internal dep pins) +
 `cargo update -w`, CHANGELOG `[Unreleased]` → `[VERSION]`, gates
 (`fmt`/`clippy -D warnings`/`test`), the `release: vX.Y.Z` commit + tag, and —
 behind a confirmation — `cargo publish` of the 7 libs in dep order followed by
-the `main` + tag push that fires `release.yml` (tarball/GitHub Release) and
-`desktop-image.yml`. Everything before publish is local and reversible; a
+the `main` + tag push that fires `release.yml` (tarball/GitHub Release).
+Everything before publish is local and reversible; a
 declined or failed run leaves the commit + tag for inspection (undo with
 `git reset --hard HEAD~1 && git tag -d vX.Y.Z`).
 
@@ -59,7 +75,7 @@ crates/vmette-provider-oci/      OCI/Docker image rootfs provider
 crates/vmette-provider-squashfs/ squashfs block-image rootfs provider
 crates/vmette-provider-tar/      tarball rootfs provider
 guest/                           C sources cross-compiled with musl for the alpine guest
-images/vmette-desktop/           Dockerfile + entrypoint for the desktop rootfs (untracked build inputs)
+images/vmette-desktop/           reference recipe for the published desktop image (+ the injected agent's run script)
 scripts/                         asset pipeline + dev wrappers + installer
 tests/                           cargo unit tests live in-crate; smoke runner here
 ```

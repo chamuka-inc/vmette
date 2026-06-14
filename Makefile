@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-image run shell test test-desktop test-view clean
+.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-agent desktop-agent-all desktop-image run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -9,9 +9,9 @@ build:         ## cargo build the workspace + codesign vmette/vmetted/vmette-mcp
 	cargo build --release
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmetted
-	# vmette-mcp boots no VM itself (it spawns vmette / talks to vmetted), so
-	# it needs no virtualization entitlement — ad-hoc sign it with least privilege.
-	codesign --sign - --force --options=runtime target/release/vmette-mcp
+	# vmette-mcp boots one-shot VMs in-process (execute/fetch_url/workspace), so it
+	# needs the virtualization entitlement too — it no longer forks the vmette CLI.
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette-mcp
 
 header:        ## Regenerate the checked-in C header from src/ffi.rs (cbindgen)
 	cargo build -p vmette --features regenerate-header
@@ -54,10 +54,8 @@ universal:     ## Build a fat x86_64+arm64 binary at target/universal/release/
 	    target/universal/release/vmette
 	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
 	    target/universal/release/vmetted
-	# vmette-mcp boots no VM itself (it spawns vmette / talks to vmetted), so
-	# it needs no virtualization entitlement — ad-hoc sign it so it runs on
-	# Apple Silicon, with least privilege.
-	codesign --sign - --force --options=runtime \
+	# vmette-mcp boots one-shot VMs in-process now, so it needs the entitlement too.
+	codesign --sign - --force --entitlements entitlements.plist --options=runtime \
 	    target/universal/release/vmette-mcp
 	@lipo -info target/universal/release/vmette target/universal/release/vmetted target/universal/release/vmette-mcp target/universal/release/libvmette.dylib
 
@@ -79,7 +77,15 @@ guest-assets-all: ## Build boot assets + guest helpers for both x86_64 and aarch
 	    ARCH=$$arch bash scripts/build-vsock-send.sh; \
 	done
 
-desktop-image: ## Build the desktop rootfs from source → assets/<arch>/vmette-desktop-rootfs.tar
+desktop-agent: ## Build the host-injected static desktop agent (host guest arch) → assets/<arch>/desktop-agent/
+	bash scripts/build-desktop-agent-static.sh
+
+desktop-agent-all: ## Cross-compile the static desktop agent for both x86_64 and aarch64 guests (no Docker)
+	for arch in x86_64 aarch64; do \
+	    ARCH=$$arch bash scripts/build-desktop-agent-static.sh || exit 1; \
+	done
+
+desktop-image: ## OPTIONAL: build a custom desktop rootfs → assets/<arch>/vmette-desktop-rootfs.tar (needs Docker; default start uses the published image)
 	bash scripts/build-desktop-image.sh --export
 
 run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
@@ -92,7 +98,7 @@ test:          ## Run cargo unit tests + end-to-end one-shot VM smoke
 	cargo test --workspace
 	bash tests/run.sh
 
-test-desktop:  ## End-to-end desktop smoke: boots a real Xvfb desktop VM via vmetted (builds the rootfs image once if missing)
+test-desktop:  ## End-to-end desktop smoke: boots a real Xvfb desktop VM via vmetted (pulls the published desktop image on first use)
 	bash tests/desktop.sh
 
 test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and drives it with an RFB client
@@ -101,7 +107,7 @@ test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and dri
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
 
-dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers + LICENSE
+dist: universal guest-assets-all desktop-agent-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers + desktop agents + LICENSE
 	rm -rf dist
 	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,assets,share/vmette/guest}
 	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/
@@ -119,6 +125,13 @@ dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with
 	        mkdir -p dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch; \
 	        cp assets/$$arch/alpine-rootfs/usr/local/bin/vsock-send dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch/; \
 	        cp assets/$$arch/alpine-rootfs/usr/local/bin/vsock-runner dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch/; \
+	    fi; \
+	    if [[ -f assets/$$arch/desktop-agent/vmette-desktop-agent ]]; then \
+	        mkdir -p dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent; \
+	        cp assets/$$arch/desktop-agent/vmette-desktop-agent  dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/; \
+	        cp assets/$$arch/desktop-agent/vmette-desktop-run.sh dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/; \
+	        chmod +x dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/vmette-desktop-agent \
+	                 dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/vmette-desktop-run.sh; \
 	    fi; \
 	done
 	if [[ -s assets/vmlinuz-virt && -s assets/initramfs-vmette ]]; then \

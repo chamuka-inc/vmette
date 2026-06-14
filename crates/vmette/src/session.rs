@@ -21,11 +21,12 @@
 //! (issues a graceful stop) before handing the `Session` off to the thread
 //! that owns its lifetime via [`Session::wait`].
 
+use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use block2::RcBlock;
@@ -40,7 +41,7 @@ use objc2_virtualization::{
 
 use crate::desktop::{self, Action, ResponseHeader};
 use crate::error::Error;
-use crate::vz::config::{build as build_vz_config, resolve_vsock_port};
+use crate::vz::config::{build as build_vz_config, resolve_vsock_port, SerialSink};
 use crate::vz::delegate::{DelegateState, VmetteDelegate};
 use crate::vz::vsock::{ListenerMode, ListenerState, VsockLogger};
 use crate::{cmdline, Config, ShareMount, WorkloadStrategy};
@@ -50,11 +51,12 @@ use crate::{cmdline, Config, ShareMount, WorkloadStrategy};
 /// Xvfb + WM + agent, which can take several seconds on first run.
 const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Per-read timeout on the agent vsock fd. Bounds how long a single framed
-/// round-trip can stall on a wedged guest before the read errors out, so the
-/// blocking thread issuing the request can't hang forever. Generous: a
-/// software-rendered screenshot frame can be slow, but data flowing resets the
-/// timer per read syscall, so this only trips when the guest stops responding.
+/// Per-request response timeout. Bounds how long a single [`Demux::request`]
+/// blocks on its reply channel before giving up, so a caller can't hang forever
+/// on a wedged guest. Enforced at the channel (not as a socket `SO_RCVTIMEO`),
+/// so the shared reader thread keeps doing pure blocking reads and only this one
+/// caller fails; its late response is later drained and dropped by `req_id`.
+/// Generous: a software-rendered screenshot frame can be slow.
 const AGENT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Send-wrapper for an objc2 `Retained`. The wrapped VM is only ever touched
@@ -132,6 +134,179 @@ impl EndSlot {
     }
 }
 
+/// One framed reply delivered from the demux reader thread to a waiting
+/// caller: either the parsed response, or a message describing why the stream
+/// died (read error, EOF, framing corruption).
+type Reply = Result<(ResponseHeader, Vec<u8>), String>;
+
+/// Host-side response demultiplexer over the single agent vsock fd (C4).
+///
+/// A dedicated reader thread owns all reads on the fd; callers register a
+/// one-shot channel keyed by a monotonic `req_id`, write their request frame
+/// under the short [`Demux::write`] lock, then block on their own channel. The
+/// reader routes each response to the matching `req_id`. This means:
+///
+/// - a slow screenshot no longer serializes another caller's *submission* —
+///   only the brief frame write is mutually excluded, not the read;
+/// - a per-request timeout is enforced at the caller's channel, so a wedged
+///   request fails alone (its late response is later drained and dropped by
+///   `req_id`) without desyncing the stream;
+/// - a stream-fatal error (read failure, EOF, or a header that won't parse —
+///   we then can't know the payload length) poisons the whole demux once and
+///   wakes every waiter, since the framing can no longer be trusted.
+///
+/// The guest agent is single-threaded and still executes one request at a
+/// time; the demux decouples the host side, it does not parallelize the guest.
+struct Demux {
+    /// Serializes request-frame writes onto the fd. Held only for the write,
+    /// never across the (slow) read — that is the whole point.
+    write: Mutex<()>,
+    /// Monotonic request id; wraps after `u32::MAX` requests (harmless — an id
+    /// is only live between submit and reply).
+    next_id: AtomicU32,
+    /// In-flight callers, keyed by `req_id`. The reader removes-and-sends on
+    /// arrival; a timed-out caller removes its own entry so the reader drops
+    /// the orphaned late response.
+    waiters: Arc<Mutex<HashMap<u32, SyncSender<Reply>>>>,
+    /// Set once when the stream becomes unusable; subsequent requests fail
+    /// fast with this message instead of registering a doomed waiter.
+    poison: Arc<Mutex<Option<String>>>,
+    /// The accepted agent vsock fd. Borrowed (not owned) — [`AgentConn`] caches
+    /// and closes it; closing it is what unblocks the reader's `read` at
+    /// teardown.
+    fd: RawFd,
+}
+
+impl Demux {
+    /// Spawn the reader thread and return the demux. `fd` must already be
+    /// connected (the reader does pure blocking reads with no socket timeout —
+    /// the per-request timeout lives at the caller's channel).
+    fn start(fd: RawFd) -> Demux {
+        let waiters: Arc<Mutex<HashMap<u32, SyncSender<Reply>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let poison: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let waiters_r = waiters.clone();
+        let poison_r = poison.clone();
+        std::thread::spawn(move || demux_reader(fd, waiters_r, poison_r));
+        Demux {
+            write: Mutex::new(()),
+            next_id: AtomicU32::new(0),
+            waiters,
+            poison,
+            fd,
+        }
+    }
+
+    /// First poison message, if the stream has died.
+    fn poisoned(&self) -> Option<String> {
+        self.poison.lock().unwrap().clone()
+    }
+
+    /// Record the first poison message (later writers don't clobber it).
+    fn poison_with(&self, msg: String) {
+        let mut p = self.poison.lock().unwrap();
+        if p.is_none() {
+            *p = Some(msg);
+        }
+    }
+
+    /// Submit one [`Action`] and block (up to [`AGENT_READ_TIMEOUT`]) for the
+    /// reader to route back its response.
+    fn request(&self, action: &Action) -> Result<(ResponseHeader, Vec<u8>), Error> {
+        if let Some(msg) = self.poisoned() {
+            return Err(Error::Vsock(msg));
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = sync_channel::<Reply>(1);
+        self.waiters.lock().unwrap().insert(id, tx);
+
+        // The reader thread poisons (one lock) then drains the waiter map
+        // (another lock) on stream death. If it poisoned-and-drained in the
+        // window between our entry-check above and the insert just now, our `tx`
+        // would sit unrouted until the full read timeout. Re-check after the
+        // insert so this teardown race fails fast instead of hanging 30s: if
+        // poison is now set, the reader has already drained (or will, finding
+        // and erroring our entry) — either way we drop out cleanly.
+        if let Some(msg) = self.poisoned() {
+            self.waiters.lock().unwrap().remove(&id);
+            return Err(Error::Vsock(msg));
+        }
+
+        {
+            // Hold `write` only for the frame write so concurrent callers can't
+            // interleave bytes on the fd; release before the (slow) wait.
+            let _w = self.write.lock().unwrap();
+            let mut stream = FdStream(self.fd);
+            if let Err(e) = desktop::send_action(&mut stream, id, action) {
+                // A partial frame may have hit the wire — the stream can no
+                // longer be framed. Poison so every caller fails cleanly.
+                self.waiters.lock().unwrap().remove(&id);
+                let msg = format!("agent request write failed: {e}");
+                self.poison_with(msg.clone());
+                return Err(Error::Vsock(msg));
+            }
+        }
+
+        match rx.recv_timeout(AGENT_READ_TIMEOUT) {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(msg)) => Err(Error::Vsock(msg)),
+            Err(RecvTimeoutError::Timeout) => {
+                // Give up on this id; the reader will drain and drop the late
+                // response by req_id, leaving the stream synced for others.
+                self.waiters.lock().unwrap().remove(&id);
+                Err(Error::Vsock(
+                    "timed out waiting for the guest agent response".into(),
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                // The reader dropped our sender → the stream poisoned.
+                Err(Error::Vsock(self.poisoned().unwrap_or_else(|| {
+                    "agent connection closed unexpectedly".into()
+                })))
+            }
+        }
+    }
+}
+
+/// Reader thread: own all reads on the agent fd, routing each framed response
+/// to the waiter registered under its `req_id`. Exits (poisoning all waiters)
+/// on the first unrecoverable framing error — including EOF when the guest
+/// powers off, which is the normal teardown path.
+fn demux_reader(
+    fd: RawFd,
+    waiters: Arc<Mutex<HashMap<u32, SyncSender<Reply>>>>,
+    poison: Arc<Mutex<Option<String>>>,
+) {
+    let mut stream = FdStream(fd);
+    loop {
+        match desktop::read_response(&mut stream) {
+            Ok((id, header, payload)) => {
+                // Remove-and-send: a present waiter gets its reply; an absent
+                // one (caller timed out) means we just drain+drop this frame,
+                // which keeps the stream synced for every other id.
+                if let Some(tx) = waiters.lock().unwrap().remove(&id) {
+                    let _ = tx.send(Ok((header, payload)));
+                }
+            }
+            Err(e) => {
+                let msg = format!("agent stream closed: {e}");
+                {
+                    let mut p = poison.lock().unwrap();
+                    if p.is_none() {
+                        *p = Some(msg.clone());
+                    }
+                }
+                // Wake everyone still blocked so they fail now, not at timeout.
+                let mut w = waiters.lock().unwrap();
+                for (_, tx) in w.drain() {
+                    let _ = tx.send(Err(msg.clone()));
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// The accepted agent vsock connection plus the channel the listener uses to
 /// deliver it. Shared (behind `Arc`) by the [`Session`] and any
 /// [`SessionClient`]; whichever drops last closes the fd. `None` rx for
@@ -142,11 +317,11 @@ pub(crate) struct AgentConn {
     // `fd()` drains it on first use and caches the fd in `fd`.
     rx: Mutex<Option<Receiver<RawFd>>>,
     fd: Mutex<Option<RawFd>>,
-    // Serializes the request round-trip. The framed protocol is a single
-    // request/response stream with no multiplexing, so concurrent callers
-    // (the `SessionClient` handle is `Clone` and shared via `Arc`) must not
-    // interleave their `[len][header][payload]` frames on the one fd.
-    io: Mutex<()>,
+    // The response demultiplexer (C4), built lazily on the first request once
+    // the fd has been resolved. `init` guards the one-time fallible build so a
+    // burst of first requests doesn't race two reader threads onto one fd.
+    demux: OnceLock<Demux>,
+    init: Mutex<()>,
 }
 
 impl AgentConn {
@@ -158,35 +333,23 @@ impl AgentConn {
                 "request() is only valid for Agent-workload sessions".into(),
             ));
         }
-        // Resolve the fd outside the `io` lock: the first call blocks up to
-        // AGENT_CONNECT_TIMEOUT for the guest to connect, and that wait must
-        // not serialize unrelated callers. `fd()` has its own lock.
-        let fd = self.fd()?;
-        // Hold `io` across the round-trip so concurrent requests on cloned
-        // `SessionClient`s cannot interleave frames on the shared fd.
-        let _io = self.io.lock().unwrap();
-        let mut stream = FdStream(fd);
-        let outcome = desktop::send_action(&mut stream, action)
-            .and_then(|()| desktop::read_response(&mut stream));
-        match outcome {
-            Ok((header, payload)) => Ok((header, payload)),
-            Err(e) => {
-                // A failed or timed-out round-trip can leave a partial frame
-                // buffered on the socket; reusing the fd would desync every
-                // later request (stale bytes parsed as the next header).
-                // Invalidate it so the session fails cleanly instead.
-                self.invalidate_fd();
-                Err(e.into())
-            }
-        }
+        self.demux()?.request(action)
     }
 
-    /// Close and forget the cached agent fd after an I/O failure, so the next
-    /// request doesn't read a stale half-frame off a desynced socket.
-    fn invalidate_fd(&self) {
-        if let Some(fd) = self.fd.lock().unwrap().take() {
-            unsafe { libc::close(fd) };
+    /// Return the response demux, building it (and spawning its reader thread)
+    /// on first use once the agent fd is resolved. The fd resolution blocks up
+    /// to [`AGENT_CONNECT_TIMEOUT`] for the guest's outbound connection.
+    fn demux(&self) -> Result<&Demux, Error> {
+        if let Some(d) = self.demux.get() {
+            return Ok(d);
         }
+        let _g = self.init.lock().unwrap();
+        if let Some(d) = self.demux.get() {
+            return Ok(d); // lost the init race
+        }
+        let fd = self.fd()?;
+        let _ = self.demux.set(Demux::start(fd));
+        Ok(self.demux.get().unwrap())
     }
 
     /// Return the cached agent connection fd, blocking on first use until the
@@ -203,30 +366,8 @@ impl AgentConn {
         let fd = rx
             .recv_timeout(AGENT_CONNECT_TIMEOUT)
             .map_err(|_| Error::Vsock("timed out waiting for the guest agent to connect".into()))?;
-        // Bound subsequent reads so a wedged guest can't hang the blocking
-        // thread issuing a request indefinitely (`FdStream::read` has no
-        // timeout of its own).
-        set_recv_timeout(fd, AGENT_READ_TIMEOUT);
         *cached = Some(fd);
         Ok(fd)
-    }
-}
-
-/// Best-effort `SO_RCVTIMEO` on a socket fd. A failure here only costs us the
-/// read-timeout safety net, so we don't surface it as an error.
-fn set_recv_timeout(fd: RawFd, dur: Duration) {
-    let tv = libc::timeval {
-        tv_sec: dur.as_secs() as libc::time_t,
-        tv_usec: dur.subsec_micros() as libc::suseconds_t,
-    };
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_RCVTIMEO,
-            &tv as *const _ as *const libc::c_void,
-            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-        );
     }
 }
 
@@ -326,6 +467,72 @@ fn make_scratch_image(mib: u64) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
+/// Cap on captured guest output (matches the prior subprocess/MCP cap). Past
+/// this the buffer stops growing (but the pipe keeps draining so the guest never
+/// blocks) and a truncation marker is appended once.
+const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
+
+/// Owns the host end of the capture pipe (write side; the read side is owned by
+/// the reader thread, which closes it on exit). Closed on session drop so the
+/// daemon doesn't leak a descriptor per run.
+struct CapturePipe {
+    write_fd: RawFd,
+}
+
+impl Drop for CapturePipe {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.write_fd) };
+    }
+}
+
+/// Drain the capture pipe (`read_fd`, owned + closed here), sending output
+/// chunks on `tx` until the session ends and a short grace elapses with no
+/// further bytes. The channel lets a consumer either **stream** chunks live
+/// (the daemon, via [`Session::capture_rx`]) or **buffer** them at the end (the
+/// MCP server / [`Session::wait_captured`]). Non-blocking so it can observe `end`
+/// rather than block forever on a guest that never closes the console. Bounded
+/// by [`CAPTURE_CAP_BYTES`]; keeps reading past the cap so a chatty guest never
+/// blocks on a full pipe, but stops *sending* past it (after a one-time marker).
+fn drain_capture(read_fd: RawFd, end: Arc<EndSlot>, tx: std::sync::mpsc::Sender<Vec<u8>>) {
+    unsafe {
+        let fl = libc::fcntl(read_fd, libc::F_GETFL);
+        libc::fcntl(read_fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+    }
+    let mut tmp = [0u8; 8192];
+    let mut sent: usize = 0;
+    let mut truncated = false;
+    let mut grace: u32 = 0;
+    loop {
+        let n = unsafe { libc::read(read_fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+        if n > 0 {
+            grace = 0;
+            if sent < CAPTURE_CAP_BYTES {
+                let take = (n as usize).min(CAPTURE_CAP_BYTES - sent);
+                // A send error means the receiver was dropped — keep draining the
+                // pipe (so the guest never blocks) but stop sending.
+                let _ = tx.send(tmp[..take].to_vec());
+                sent += take;
+                if take < n as usize && !truncated {
+                    truncated = true;
+                    let _ = tx.send(b"\n[output truncated at 1048576 bytes]\n".to_vec());
+                }
+            }
+            continue;
+        }
+        // EOF (0) → done. EAGAIN/error (<0) → stop once the VM ended and a brief
+        // grace (~0.5s) has passed with no trailing bytes; else poll on.
+        if n == 0 || (end.is_set() && grace >= 25) {
+            break;
+        }
+        if end.is_set() {
+            grace += 1;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe { libc::close(read_fd) };
+    // `tx` drops here → the channel closes, ending any consumer's iteration.
+}
+
 /// A booted VM and everything that must outlive its dispatch queue.
 pub struct Session {
     vm: Retained<VZVirtualMachine>,
@@ -342,6 +549,11 @@ pub struct Session {
     _control_dir: Option<ControlDirGuard>,
     // Ephemeral `--scratch` disk image; removed when the session drops.
     _scratch_file: Option<ScratchFileGuard>,
+    // C2 capture: the host pipe write end (closed on drop) + the receiver of
+    // output chunks the reader thread sends. Consumed once, by either
+    // `wait_captured` (buffer) or `capture_rx` (stream).
+    _capture: Option<CapturePipe>,
+    capture_rx: Mutex<Option<std::sync::mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl Session {
@@ -356,65 +568,104 @@ impl Session {
     pub fn start(config: &Config) -> Result<Session, Error> {
         let vsock_port = resolve_vsock_port(config.vsock_port);
 
-        // The guest root is never host-writable: a block rootfs is overlaid
-        // with a tmpfs, and a directory rootfs is now mounted read-only on the
-        // host + overlaid with a tmpfs in the guest (per-session isolation). So
-        // whenever there's a writable workload, the guest has no host-visible
-        // surface to drop `.vmette-exit` into. Auto-attach a writable "ctl"
-        // virtio-fs share backed by a per-session host temp dir; the guest
-        // writes its exit code there and the host reads it back. Clone the
-        // config so this injected share never leaks into the caller's `Config`.
-        //
-        // A truly read-only directory rootfs (`--rootfs-ro`) gets no exit
-        // channel — it can't write one and the guest can't either.
+        // The `ctl` virtio-fs share is ALWAYS attached: it carries the typed
+        // boot envelope (`boot.env`, the host→guest config the guest's `/init`
+        // sources) and, when the root is writable, the guest's exit code
+        // (`.vmette-exit`). It is backed by a per-session host temp dir. Clone
+        // the config so this injected share never leaks into the caller's
+        // `Config`.
         let mut working = config.clone();
-        let mut control_dir: Option<ControlDirGuard> = None;
-        let needs_ctl = config.rootfs_block.is_some()
-            || config.rootfs_share.as_ref().is_some_and(|rs| !rs.read_only);
-        let exit_code_file = if needs_ctl {
-            // "ctl" is reserved for the exit channel injected below. A caller
-            // share with the same tag would produce two virtio-fs devices
-            // tagged "ctl" and the guest would mount one of them at /mnt/ctl
-            // nondeterministically — silently breaking exit-code read-back.
-            // Reject loudly instead.
-            if config.shares.iter().any(|s| s.tag == "ctl") {
-                return Err(Error::InvalidConfig(
-                    "share tag \"ctl\" is reserved for the rootfs exit channel".into(),
-                ));
-            }
-            let dir = make_control_dir()?;
-            let p = dir.join(".vmette-exit");
+        // "ctl" is reserved. A caller share with the same tag would produce two
+        // virtio-fs devices tagged "ctl" and the guest would mount one
+        // nondeterministically — silently breaking boot-env/exit-code delivery.
+        if config.shares.iter().any(|s| s.tag == crate::CTL_SHARE_TAG) {
+            return Err(Error::InvalidConfig(
+                "share tag \"ctl\" is reserved for the boot/exit channel".into(),
+            ));
+        }
+        let ctl_dir = make_control_dir()?;
+        working.shares.push(ShareMount {
+            tag: crate::CTL_SHARE_TAG.into(),
+            path: ctl_dir.clone(),
+        });
+        let control_dir = Some(ControlDirGuard(ctl_dir.clone()));
+        // The guest writes its exit code into `ctl` only when the root is
+        // writable (a block rootfs or an overlaid virtio-fs share). A truly
+        // read-only directory rootfs (`--rootfs-ro`) can't and the guest won't —
+        // but it still reads `boot.env` from the same share.
+        let writable_root = match &config.rootfs {
+            Some(crate::Rootfs::Block(_)) => true,
+            Some(crate::Rootfs::Share(rs)) => !rs.read_only,
+            None => false,
+        };
+        let exit_code_file = if writable_root {
+            let p = ctl_dir.join(".vmette-exit");
             let _ = std::fs::remove_file(&p);
-            working.shares.push(ShareMount {
-                tag: "ctl".into(),
-                path: dir.clone(),
-            });
-            control_dir = Some(ControlDirGuard(dir));
             Some(p)
         } else {
             None
         };
 
         // Ephemeral scratch disk (`--scratch`): only meaningful when the guest
-        // builds a writable overlay (`needs_ctl` is exactly that condition — a
-        // block rootfs or a writable directory rootfs). A read-only rootfs has
-        // no overlay upper to back, so the disk would go unused; skip it. The
-        // guard deletes the image when the session drops, keeping the sandbox
-        // ephemeral.
-        let scratch_file = match (needs_ctl, config.scratch_mib) {
+        // builds a writable overlay (exactly the `writable_root` condition). A
+        // read-only rootfs has no overlay upper to back, so the disk would go
+        // unused; skip it. The guard deletes the image when the session drops,
+        // keeping the sandbox ephemeral.
+        let scratch_file = match (writable_root, config.scratch_mib) {
             (true, Some(mib)) => Some(ScratchFileGuard(make_scratch_image(mib)?)),
             _ => None,
         };
         let scratch_path = scratch_file.as_ref().map(|g| g.0.clone());
-        // Name the device the same way the guest will see it (attach order in
-        // build_vz_config below); the cmdline carries it so /init knows which
-        // block device to format ext4.
-        let scratch_dev = scratch_path
-            .as_ref()
-            .map(|_| cmdline::scratch_device_name(&working));
 
-        let cmdline = cmdline::build(&working, vsock_port, scratch_dev.as_deref());
-        let cfg = build_vz_config(&working, &cmdline, vsock_port, scratch_path.as_deref())?;
+        let mut cmdline = cmdline::build(&working, vsock_port);
+
+        // C2 capture: when the caller wants the guest output captured in-process
+        // (daemon/MCP), wire `hvc0` to a host pipe and push the kernel console +
+        // `/init` chatter to a discarded `hvc1` (`console=hvc1`). A reader thread
+        // drains the pipe into a bounded buffer for [`Session::wait_captured`].
+        // Otherwise the single console inherits the host terminal.
+        // `capture` carries (read_fd for the reader thread, CapturePipe owning
+        // the write end). `None` when not capturing.
+        let capture: Option<(RawFd, CapturePipe)> = if config.capture_output {
+            let mut fds: [libc::c_int; 2] = [0; 2];
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return Err(Error::Io(std::io::Error::last_os_error()));
+            }
+            // Move the kernel console off hvc0 so it stays clean for the exec.
+            cmdline = cmdline.replace("console=hvc0", "console=hvc1");
+            Some((fds[0], CapturePipe { write_fd: fds[1] }))
+        } else {
+            None
+        };
+        let sink = match &capture {
+            Some((_, p)) => SerialSink::Capture {
+                write_fd: p.write_fd,
+            },
+            None => SerialSink::Inherit,
+        };
+
+        // `build` assigns the scratch disk's guest device name from its actual
+        // slot in the storage array and hands it back, so the attach order and
+        // the name have one owner (no separate `scratch_device_name` formula).
+        let (cfg, scratch_dev) = build_vz_config(
+            &working,
+            &cmdline,
+            vsock_port,
+            scratch_path.as_deref(),
+            sink,
+        )?;
+
+        // C1: write the typed boot envelope the guest's `/init` sources from the
+        // `ctl` share. Built from the caller's original `config` (not `working`),
+        // so the implicit `ctl` share is excluded from `shares`. `capture_output`
+        // rides through `from_config` so the guest redirects the exec to `hvc0`.
+        // Written after `build` so it can carry the scratch device name `build`
+        // assigned; the guest only reads it once the VM starts (below).
+        if let Some(guard) = &control_dir {
+            let params = crate::boot::from_config(config, scratch_dev.as_deref());
+            std::fs::write(guard.0.join("boot.env"), crate::boot::to_env(&params))
+                .map_err(Error::Io)?;
+        }
 
         // Private serial queue for this VM. libdispatch services it on its
         // worker pool, so all VZ callbacks fire there without a run loop, and
@@ -426,6 +677,21 @@ impl Session {
 
         let end = EndSlot::new();
         let timed_out = Arc::new(AtomicBool::new(false));
+
+        // Start draining the capture pipe now (before the VM runs) so the guest
+        // never blocks on a full pipe. The reader owns `read_fd`, sends output
+        // chunks on a channel, and stops once `end` is recorded; `Session` keeps
+        // the `write_fd` (CapturePipe) alive for the VM's lifetime.
+        let capture_rx = match &capture {
+            Some((read_fd, _)) => {
+                let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                let end_for_reader = end.clone();
+                let read_fd = *read_fd;
+                std::thread::spawn(move || drain_capture(read_fd, end_for_reader, tx));
+                Some(rx)
+            }
+            None => None,
+        };
 
         let delegate = VmetteDelegate::new(DelegateState {
             exit_code_file,
@@ -465,7 +731,8 @@ impl Session {
             workload: config.workload,
             rx: Mutex::new(agent_rx),
             fd: Mutex::new(None),
-            io: Mutex::new(()),
+            demux: OnceLock::new(),
+            init: Mutex::new(()),
         });
 
         // All VM mutation (setDelegate, setSocketListener, start, the timeout
@@ -534,6 +801,8 @@ impl Session {
             _vsock_keepalive: vsock_keepalive,
             _control_dir: control_dir,
             _scratch_file: scratch_file,
+            _capture: capture.map(|(_, p)| p),
+            capture_rx: Mutex::new(capture_rx),
         })
     }
 
@@ -554,6 +823,48 @@ impl Session {
     /// pump any run loop — the VM runs on its own dispatch queue.
     pub fn wait(&self) -> SessionEnd {
         self.end.wait_end()
+    }
+
+    /// Block until the session ends, then return the exit code plus the captured
+    /// guest output (combined stdout+stderr) as a [`RunOutput`]. Only meaningful
+    /// for a session started with [`Config::capture_output`](crate::Config::capture_output);
+    /// otherwise `output` is empty. Drains the capture channel to completion
+    /// (which closes once the reader has flushed all trailing output around
+    /// poweroff), so every byte is included. Buffered — for live streaming use
+    /// [`Session::capture_rx`] instead.
+    pub fn wait_captured(&self) -> crate::RunOutput {
+        let end = self.end.wait_end();
+        let mut out = Vec::new();
+        if let Some(rx) = self.capture_rx.lock().unwrap().take() {
+            for chunk in rx {
+                out.extend_from_slice(&chunk);
+            }
+        }
+        let exit_code = match end {
+            SessionEnd::Exited(code) => code,
+            SessionEnd::TimedOut => 124,
+            SessionEnd::Stopped => 0,
+            SessionEnd::Error(_) => 1,
+        };
+        // The guest console is a tty (ONLCR), so every `\n` arrives as `\r\n`.
+        // Normalize on the fully-buffered string (safe — no chunk boundaries) so
+        // the captured output is clean LF, matching the prior subprocess path's
+        // console handling. Lone `\r` (e.g. progress redraws) is left intact.
+        crate::RunOutput {
+            exit_code,
+            output: String::from_utf8_lossy(&out).replace("\r\n", "\n"),
+        }
+    }
+
+    /// Take the capture channel for **streaming** the guest's output chunks live
+    /// as the VM runs (the daemon forwards them as `Frame::Stdout`). Each item is
+    /// a chunk of combined stdout+stderr bytes; iteration ends when the session
+    /// has fully ended and all trailing output is flushed. Returns `None` if the
+    /// session was not started with `capture_output`, or if the channel was
+    /// already taken (by an earlier `capture_rx`/`wait_captured`). The caller
+    /// reads the exit code via [`Session::wait`] after the stream ends.
+    pub fn capture_rx(&self) -> Option<std::sync::mpsc::Receiver<Vec<u8>>> {
+        self.capture_rx.lock().unwrap().take()
     }
 
     /// Request a graceful force-stop of the guest. The stop completes on the

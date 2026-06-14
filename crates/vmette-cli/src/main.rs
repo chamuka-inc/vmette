@@ -26,11 +26,8 @@ pub(crate) fn ensure_ca_share(shares: &mut Vec<ShareMount>) {
     {
         return;
     }
-    if let Some(path) = vmette_assets::resolve_ca_certs(None) {
-        shares.push(ShareMount {
-            tag: vmette_assets::CA_CERTS_SHARE_TAG.into(),
-            path,
-        });
+    if let Some(share) = vmette_assets::resolve_ca_share(None) {
+        shares.push(share);
     }
 }
 
@@ -610,12 +607,9 @@ fn main() -> ExitCode {
     config.set_rootfs_artifact(artifact, parsed.rootfs_ro);
 
     match vmette::run(&config) {
-        Ok(out) => {
-            // Note: vmette::run normally exits via the VM's stop delegate
-            // and never returns here. This branch only fires for snapshot
-            // ops which return without going through the runloop.
-            ExitCode::from(out.exit_code as u8)
-        }
+        // `run` returns the guest's exit code (it no longer exits the process);
+        // the CLI owns the exit decision and forwards it.
+        Ok(out) => ExitCode::from(out.exit_code as u8),
         Err(e) => {
             eprintln!("[vmette] error: {}", e);
             ExitCode::from(1)

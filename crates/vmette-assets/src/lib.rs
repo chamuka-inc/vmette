@@ -13,26 +13,26 @@
 //! The release tarball ships `vmlinuz-virt` and `initramfs-vmette` under
 //! `<prefix>/assets`, so a `curl | install.sh` user boots without flags.
 //!
-//! The desktop (Agent) workload needs one more input: the desktop rootfs
-//! image. Unlike the kernel/initramfs it is *provider-resolved* (a `tar+file://`
-//! / OCI spec, not a direct path), so [`resolve_desktop_image`] returns a spec
-//! string rather than a path — but it is discovered through the *same* search,
-//! so a locally built `vmette-desktop-rootfs.tar` in `assets/` takes precedence
-//! over the published registry image, letting a dev session reflect the current
-//! tree. This lives here, not in the daemon, because both clients already share
-//! this crate and the daemon takes a concrete `image` in its request (like
-//! kernel/initramfs).
+//! The desktop (Agent) workload needs one more input: a desktop rootfs. Unlike
+//! the kernel/initramfs it is *provider-resolved* (a `tar+file://` / OCI spec,
+//! not a direct path), so [`resolve_desktop_image`] returns a spec string rather
+//! than a path — but it is discovered through the *same* search, so a
+//! locally-provided `vmette-desktop-rootfs.tar` in `assets/` takes precedence
+//! over the published default image. (The agent is host-injected, so any GUI
+//! rootfs works; that local tar is a bring-your-own override, not something this
+//! repo builds.) This lives here, not in the daemon, because both clients
+//! already share this crate and the daemon takes a concrete `image` in its
+//! request (like kernel/initramfs).
 
 use std::path::{Path, PathBuf};
 
-/// Canonical filename of the locally built desktop rootfs export. Produced by
-/// `make desktop-image` (`scripts/build-desktop-image.sh --export`) from the
-/// current `images/vmette-desktop/` source, so it always embodies the source
-/// in the tree — no stale-registry guessing.
-///
-/// MUST match `DEFAULT_EXPORT` in `scripts/build-desktop-image.sh` (the script
-/// writes the file; this discovers it). Renaming one without the other silently
-/// breaks discovery.
+use vmette_proto::ShareMount;
+
+/// Canonical filename of a locally-provided desktop rootfs export, discovered in
+/// `assets/<arch>/` as a bring-your-own override of the published default image
+/// (e.g. `docker create … && docker export … > assets/<arch>/vmette-desktop-rootfs.tar`
+/// of your own GUI image). Present → used as `tar+file://…`; absent → the
+/// published default. This repo no longer builds it.
 pub const DESKTOP_ROOTFS_ASSET: &str = "vmette-desktop-rootfs.tar";
 
 /// Env var that pins the desktop rootfs spec, overriding the discovered local
@@ -57,6 +57,19 @@ pub const CA_CERTS_ENV: &str = "VMETTE_CA_CERTS";
 /// certificates (mounted at `/mnt/certs`). MUST match the tag handled in
 /// `scripts/custom-init.sh` and the desktop image's entrypoint.
 pub const CA_CERTS_SHARE_TAG: &str = "certs";
+
+/// Per-arch asset directory holding the host-injected desktop agent: a static
+/// `vmette-desktop-agent` plus `vmette-desktop-run.sh`. Built by
+/// `scripts/build-desktop-agent-static.sh` into `assets/<arch>/<name>`.
+pub const DESKTOP_AGENT_DIR: &str = "desktop-agent";
+
+/// virtio-fs share tag for the host-injected desktop agent (mounted at
+/// `/mnt/agent`). When present, the guest init's desktop branch runs the
+/// injected `vmette-desktop-run.sh` instead of requiring an agent baked into
+/// the rootfs — so any GUI rootfs (Xvfb + a WM) works. MUST match the tag and
+/// path handled in `scripts/custom-init.sh`. Reserved (a caller share may not
+/// reuse it).
+pub const AGENT_SHARE_TAG: &str = "agent";
 
 /// Architecture name used by Alpine's release directories and by vmette's
 /// per-guest-arch asset layout under `assets/`.
@@ -239,4 +252,48 @@ pub fn resolve_ca_certs(explicit: Option<PathBuf>) -> Option<PathBuf> {
         }
     }
     default_ca_certs_dir()
+}
+
+/// Resolve the host CA-cert directory ([`resolve_ca_certs`]) and wrap it as the
+/// virtio-fs [`ShareMount`] the guest mounts (tag [`CA_CERTS_SHARE_TAG`]). The
+/// single owner of "the CA share to inject" — every boot path (CLI one-shot, the
+/// MCP run/desktop tools) builds it through here, so the tag and resolution
+/// order can't drift. `None` when no CA is configured (the common case).
+pub fn resolve_ca_share(explicit: Option<PathBuf>) -> Option<ShareMount> {
+    resolve_ca_certs(explicit).map(|path| ShareMount {
+        tag: CA_CERTS_SHARE_TAG.to_string(),
+        path,
+    })
+}
+
+/// Locate the host-injected desktop-agent directory ([`DESKTOP_AGENT_DIR`]) and
+/// wrap it as the virtio-fs [`ShareMount`] (tag [`AGENT_SHARE_TAG`]) the daemon
+/// mounts into Agent-workload guests. `None` when the asset isn't present (then
+/// the guest falls back to an agent baked into the rootfs image). Validates the
+/// dir actually carries the run script so a stray empty dir isn't injected.
+pub fn resolve_agent_share() -> Option<ShareMount> {
+    let dir = find(DESKTOP_AGENT_DIR)?;
+    // Require both halves so a half-populated dir isn't injected (it would mount
+    // fine but the run script would FATAL at boot for a missing agent binary).
+    if !dir.join("vmette-desktop-run.sh").is_file() || !dir.join("vmette-desktop-agent").is_file() {
+        return None;
+    }
+    Some(ShareMount {
+        tag: AGENT_SHARE_TAG.to_string(),
+        path: dir,
+    })
+}
+
+#[cfg(test)]
+mod ca_share_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_ca_share_wraps_with_the_tag() {
+        // An explicit, non-empty path is returned as the certs share verbatim.
+        let dir = std::env::temp_dir();
+        let share = resolve_ca_share(Some(dir.clone())).expect("explicit dir resolves");
+        assert_eq!(share.tag, CA_CERTS_SHARE_TAG);
+        assert_eq!(share.path, dir);
+    }
 }

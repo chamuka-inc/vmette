@@ -14,6 +14,7 @@ use std::path::PathBuf;
 pub mod error;
 pub use error::Error;
 
+mod boot;
 mod cmdline;
 mod lifecycle;
 mod session;
@@ -33,11 +34,22 @@ pub use session::{Session, SessionClient, SessionEnd, StopHandle};
 /// single type. Re-exported here as part of the core's public surface.
 pub use vmette_proto::ShareMount;
 
+/// The virtio-fs tag the guest `/init` mounts the read-only/overlaid root share
+/// under (directory-rootfs mode). Reserved.
+pub(crate) const ROOTFS_SHARE_TAG: &str = "rootfs";
+/// The virtio-fs tag of the always-attached control share carrying `boot.env`
+/// (host→guest config) and `.vmette-exit` (the guest's exit code). Reserved.
+pub(crate) const CTL_SHARE_TAG: &str = "ctl";
+// These two, plus `vmette_assets::CA_CERTS_SHARE_TAG` ("certs"), form the small
+// reserved share-tag namespace a caller's `shares` may not reuse. The guest side
+// hard-codes the same strings in `scripts/custom-init.sh` (it's shell, so it
+// can't import these) — keep them in lockstep.
+
 /// Selects what the guest does once booted, and therefore which terminal
 /// event ends the [`Session`].
 ///
-/// - [`OneShot`](WorkloadStrategy::OneShot): the guest runs the
-///   `vmette.exec` command and powers off, writing its code to
+/// - [`OneShot`](WorkloadStrategy::OneShot): the guest runs the exec
+///   command (from the `boot.env` envelope) and powers off, writing its code to
 ///   `.vmette-exit`. The session ends on the lifecycle-delegate poweroff.
 ///   This is the headless default and the only path the CLI/FFI use.
 /// - [`Agent`](WorkloadStrategy::Agent): the guest starts a desktop
@@ -72,11 +84,23 @@ pub struct RootfsShare {
 
 /// A filesystem image attached as virtio-blk slot 0 (`/dev/vda`) and
 /// mounted read-only as the lower layer of a tmpfs-backed overlay root.
-/// Mutually exclusive with [`RootfsShare`].
 #[derive(Debug, Clone)]
 pub struct RootfsBlock {
     pub path: PathBuf,
     pub fstype: BlockFs,
+}
+
+/// The guest root filesystem. Exactly one form — the two are mutually exclusive
+/// *by construction*, replacing a pair of `Option` fields that had to be kept in
+/// sync by setter discipline. Usually populated from a resolved
+/// [`RootfsArtifact`] via [`Config::set_rootfs_artifact`].
+#[derive(Debug, Clone)]
+pub enum Rootfs {
+    /// Host directory shared as `/` over virtio-fs.
+    Share(RootfsShare),
+    /// Block image (e.g. squashfs) attached read-only as `/dev/vda` and overlaid
+    /// with a tmpfs for writes.
+    Block(RootfsBlock),
 }
 
 /// One-shot VM configuration. Build with [`Config::new`], populate
@@ -86,11 +110,10 @@ pub struct Config {
     pub kernel: PathBuf,
     pub initramfs: PathBuf,
     pub cmdline: String,
-    pub rootfs_share: Option<RootfsShare>,
-    /// Block-image rootfs (e.g. a squashfs), mutually exclusive with
-    /// `rootfs_share`. When set, the image is attached read-only as
-    /// `/dev/vda` and the guest overlays a tmpfs for writes.
-    pub rootfs_block: Option<RootfsBlock>,
+    /// The guest root filesystem ([`Rootfs::Share`] or [`Rootfs::Block`]).
+    /// `None` runs in the initramfs only (no shared/block root). Set it from a
+    /// resolved artifact with [`Config::set_rootfs_artifact`].
+    pub rootfs: Option<Rootfs>,
     pub shares: Vec<ShareMount>,
     pub disks: Vec<PathBuf>,
     pub exec_cmd: Option<String>,
@@ -119,6 +142,14 @@ pub struct Config {
     /// command runs (the CLI's `--env KEY=VALUE`). Applied *after* any OCI
     /// image `Env`, so these override the image's values — like `docker run -e`.
     pub env: Vec<(String, String)>,
+    /// Capture the guest's combined stdout+stderr into [`RunOutput`] instead of
+    /// streaming it to the host's stdio. When set, [`Session`] wires a dedicated
+    /// clean console (`hvc0`) for the exec output and moves the kernel console +
+    /// `/init` chatter to a discarded second console (`hvc1`), so the captured
+    /// stream carries no boot/init noise. Used by the daemon and MCP server to
+    /// run one-shot workloads in-process; the interactive CLI leaves it `false`
+    /// and inherits the host terminal. Read it back via [`Session::wait_captured`].
+    pub capture_output: bool,
     /// Optional ephemeral scratch disk size in **MiB** (the CLI's `--scratch`).
     /// When set, vmette materializes a sparse raw image of this size, attaches
     /// it read-write as the last virtio-blk device, and the guest formats it
@@ -138,8 +169,7 @@ impl Config {
             kernel: kernel.into(),
             initramfs: initramfs.into(),
             cmdline: "console=hvc0 quiet".into(),
-            rootfs_share: None,
-            rootfs_block: None,
+            rootfs: None,
             shares: Vec::new(),
             disks: Vec::new(),
             exec_cmd: None,
@@ -156,6 +186,7 @@ impl Config {
             display_size: (1280, 800),
             quiet: false,
             env: Vec::new(),
+            capture_output: false,
             scratch_mib: None,
         }
     }
@@ -166,18 +197,77 @@ impl Config {
     /// on a block image, which is always attached read-only.
     pub fn set_rootfs_artifact(&mut self, artifact: RootfsArtifact, force_read_only: bool) {
         match artifact {
-            RootfsArtifact::Directory { path, read_only } => {
-                self.rootfs_block = None;
-                self.rootfs_share = Some(RootfsShare {
+            RootfsArtifact::Directory {
+                path,
+                read_only,
+                image_env,
+            } => {
+                self.rootfs = Some(Rootfs::Share(RootfsShare {
                     path,
                     read_only: read_only || force_read_only,
-                });
+                }));
+                // Prepend the image's declared env so the caller's `--env`
+                // (already in `self.env`) renders *after* it and wins on key
+                // collisions — matching `docker run -e`. Both reach the guest in
+                // the single `boot.env` env block; there is no separate
+                // image-env file. Order within each group is preserved.
+                if !image_env.is_empty() {
+                    let caller = std::mem::take(&mut self.env);
+                    self.env = image_env;
+                    self.env.extend(caller);
+                }
             }
             RootfsArtifact::BlockImage { path, fstype } => {
-                self.rootfs_share = None;
-                self.rootfs_block = Some(RootfsBlock { path, fstype });
+                self.rootfs = Some(Rootfs::Block(RootfsBlock { path, fstype }));
             }
         }
+    }
+
+    /// Build a one-shot [`Config`] from a daemon run
+    /// [`Request`](vmette_proto::daemon::Request) plus its already-resolved
+    /// rootfs `artifact`, for running the workload **in-process**. This is the
+    /// owner of the daemon's `Request` → `Config` mapping; it superseded an
+    /// earlier path that rendered the request to `vmette` CLI argv and forked a
+    /// subprocess. (The MCP server's one-shot sandbox does not carry a daemon
+    /// `Request` — it sets the small subset of fields its tools expose directly
+    /// on a `Config`.)
+    ///
+    /// Rootfs resolution (the provider registry / network I/O) stays with the
+    /// caller — it passes the resolved `artifact` and the request's `rootfs_ro`.
+    /// `capture_output` is set so [`Session::wait_captured`]/[`Session::capture_rx`]
+    /// can return the guest output. The request carries no caller `--env`, so
+    /// `env` is just the image's declared env (via `set_rootfs_artifact`).
+    pub fn from_run_request(
+        req: &vmette_proto::daemon::Request,
+        artifact: RootfsArtifact,
+        capture_output: bool,
+    ) -> Self {
+        let mut c = Config::new(&req.kernel, &req.initramfs);
+        c.exec_cmd = Some(req.exec.clone());
+        c.shares = req.shares.clone();
+        c.disks = req.disks.clone();
+        c.net = req.net;
+        c.switch_root = req.switch_root;
+        c.capture_output = capture_output;
+        c.timeout_seconds = req.timeout_seconds;
+        c.scratch_mib = req.scratch_mib;
+        if let Some(v) = req.vcpus {
+            c.vcpus = v;
+        }
+        if let Some(m) = req.mem_mib {
+            c.mem_mib = m;
+        }
+        if let Some(g) = req.guest_vsock_port {
+            c.guest_vsock_port = g;
+        }
+        // Wire protocol: -1 disable, 0 auto, >0 fixed, absent → auto.
+        c.vsock_port = match req.vsock_port {
+            Some(-1) => VsockPort::Disabled,
+            Some(n) if n > 0 => VsockPort::Fixed(n as u32),
+            _ => VsockPort::Auto,
+        };
+        c.set_rootfs_artifact(artifact, req.rootfs_ro);
+        c
     }
 }
 
@@ -256,5 +346,58 @@ mod env_tests {
         // All-invalid renders to None.
         assert!(render_env_exports(&[("1BAD".into(), "x".into())]).is_none());
         assert!(render_env_exports(&[]).is_none());
+    }
+
+    #[test]
+    fn set_rootfs_artifact_prepends_image_env_caller_overrides() {
+        use crate::{Config, RootfsArtifact};
+        let mut c = Config::new("/k", "/i");
+        // Caller --env already loaded.
+        c.env = vec![
+            ("PATH".into(), "/caller".into()),
+            ("CALLER_ONLY".into(), "1".into()),
+        ];
+        c.set_rootfs_artifact(
+            RootfsArtifact::Directory {
+                path: "/r".into(),
+                read_only: false,
+                image_env: vec![
+                    ("PATH".into(), "/image".into()),
+                    ("IMAGE_ONLY".into(), "1".into()),
+                ],
+            },
+            false,
+        );
+        // Image env first, caller env after — one merged list, no second channel.
+        assert_eq!(
+            c.env,
+            vec![
+                ("PATH".into(), "/image".into()),
+                ("IMAGE_ONLY".into(), "1".into()),
+                ("PATH".into(), "/caller".into()),
+                ("CALLER_ONLY".into(), "1".into()),
+            ]
+        );
+        // When rendered, the caller's PATH export comes last → wins at eval time.
+        let rendered = render_env_exports(&c.env).unwrap();
+        let img = rendered.find("export PATH='/image'").unwrap();
+        let cal = rendered.find("export PATH='/caller'").unwrap();
+        assert!(cal > img, "caller PATH must render after image PATH");
+    }
+
+    #[test]
+    fn set_rootfs_artifact_no_image_env_leaves_caller_env() {
+        use crate::{Config, RootfsArtifact};
+        let mut c = Config::new("/k", "/i");
+        c.env = vec![("FOO".into(), "bar".into())];
+        c.set_rootfs_artifact(
+            RootfsArtifact::Directory {
+                path: "/r".into(),
+                read_only: false,
+                image_env: Vec::new(),
+            },
+            false,
+        );
+        assert_eq!(c.env, vec![("FOO".into(), "bar".into())]);
     }
 }

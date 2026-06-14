@@ -65,21 +65,17 @@ tar -xzf "$TMP/$TARBALL" -C "$PREFIX" --strip-components=1
 xattr -dr com.apple.quarantine "$PREFIX" 2>/dev/null || true
 
 # Ad-hoc codesign; the tarball ships unsigned (or sealed-but-untrusted)
-# binaries. vmette + vmetted boot VMs so they get the virtualization
-# entitlement; vmette-mcp only spawns vmette / talks to vmetted, so it is
-# signed with least privilege (no entitlement) — still required for it to
-# run at all on Apple Silicon.
+# binaries. All three boot VMs and so need the virtualization entitlement:
+# vmette + vmetted directly, and vmette-mcp now boots one-shot VMs in-process
+# for execute/fetch_url/workspace (it no longer forks the vmette CLI).
 ENT="$PREFIX/entitlements.plist"
 if [[ -f "$ENT" ]]; then
-    for bin in vmette vmetted; do
+    for bin in vmette vmetted vmette-mcp; do
         if [[ -x "$PREFIX/bin/$bin" ]]; then
             codesign --sign - --force --entitlements "$ENT" \
                 --options=runtime "$PREFIX/bin/$bin" >/dev/null
         fi
     done
-fi
-if [[ -x "$PREFIX/bin/vmette-mcp" ]]; then
-    codesign --sign - --force --options=runtime "$PREFIX/bin/vmette-mcp" >/dev/null
 fi
 
 ln -sf "$PREFIX/bin/vmette"     "$BIN_DIR/vmette"

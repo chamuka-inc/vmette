@@ -11,7 +11,7 @@
 use std::env;
 use std::process::ExitCode;
 
-use vmette::{Config, RootfsShare, VsockPort};
+use vmette::{Config, Rootfs, RootfsShare, VsockPort};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -25,10 +25,10 @@ fn main() -> ExitCode {
         .unwrap_or_else(|| "uname -a; cat /etc/alpine-release; exit 0".into());
 
     let mut cfg = Config::new(&args[0], &args[1]);
-    cfg.rootfs_share = Some(RootfsShare {
+    cfg.rootfs = Some(Rootfs::Share(RootfsShare {
         path: args[2].clone().into(),
         read_only: false,
-    });
+    }));
     cfg.exec_cmd = Some(cmd);
     cfg.vsock_port = VsockPort::Auto;
 

@@ -122,7 +122,7 @@ echo "  bump Cargo.toml: workspace version + ${#LIBS[@]} internal dep pins, $CUR
 echo "  CHANGELOG: promote [Unreleased] → [$NEW] — $DATE"
 echo "  commit 'release: $TAG' (Cargo.toml, Cargo.lock, CHANGELOG.md) + tag $TAG"
 echo "  publish to crates.io (dep order): ${LIBS[*]}"
-echo "  push origin main + $TAG → fires release.yml (tarball/GitHub Release) + desktop-image.yml"
+echo "  push origin main + $TAG → fires release.yml (tarball/GitHub Release)"
 echo
 
 if [[ -n "$DRY_RUN" ]]; then
@@ -194,7 +194,7 @@ echo
 # ---- push (fires release CI) ---------------------------------------------
 bold "push"
 git push -q origin main; ok "pushed main"
-git push -q origin "$TAG"; ok "pushed $TAG → release.yml + desktop-image.yml"
+git push -q origin "$TAG"; ok "pushed $TAG → release.yml"
 echo
 
 bold "✓ released $TAG"

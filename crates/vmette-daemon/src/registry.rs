@@ -1,8 +1,8 @@
 //! Desktop session registry — the daemon's **stateful** subsystem.
 //!
-//! This is deliberately separate from the stateless per-request dispatch in
-//! `main.rs` (which forks a `vmette` subprocess and forgets about it). Here we
-//! hold *live* [`vmette::Session`] VMs in-process so a desktop persists across
+//! This is deliberately separate from the stateless per-request run lane in
+//! `main.rs` (which boots a one-shot `vmette::Session`, streams its output, and
+//! drops it). Here we hold *live* [`vmette::Session`] VMs so a desktop persists across
 //! many client requests: a single VM boots Xvfb + a WM + the computer-use
 //! agent once, then services screenshot/click/type round-trips until it is
 //! explicitly stopped.
@@ -199,9 +199,10 @@ impl Registry {
                 "resolving desktop image {}: {e}\n\
                  The default image is published publicly to GHCR, so this usually \
                  means no network / offline mode or a registry error. To run \
-                 without pulling, build the rootfs locally with `make desktop-image` \
-                 — it exports to assets/<arch>/vmette-desktop-rootfs.tar, which the CLI/MCP \
-                 then auto-discover (or pass --image / set $VMETTE_DESKTOP_IMAGE). \
+                 without pulling, point at a local GUI rootfs: pass --image / set \
+                 $VMETTE_DESKTOP_IMAGE (any image with Xvfb + a window manager — \
+                 the agent is host-injected), or drop a tarball at \
+                 assets/<arch>/vmette-desktop-rootfs.tar (auto-discovered). \
                  See docs/DESKTOP.md.",
                 params.image
             )
@@ -216,6 +217,22 @@ impl Registry {
         cfg.shares = params.shares;
         cfg.vcpus = params.vcpus;
         cfg.mem_mib = params.mem_mib;
+        // Inject the host-shipped desktop agent (static binary + run script) as
+        // the `agent` virtio-fs share when it's present in the assets. With it,
+        // the guest init runs the injected agent against any GUI rootfs (Xvfb +
+        // WM) — no agent baked into the image. Absent (e.g. not built), the init
+        // falls back to an in-image entrypoint, so the bundled vmette-desktop
+        // image keeps working. The agent is vmette's own runtime artifact (not a
+        // user-chosen asset like the image), so the daemon owns its injection —
+        // mirroring `locate_guest_helpers` below.
+        if let Some(agent) = vmette_assets::resolve_agent_share() {
+            // Drop any caller-supplied share with the reserved `agent` tag first,
+            // so a socket client can't shadow vmette's agent with its own dir
+            // (the guest would then run an attacker-controlled run script). The
+            // host-injected agent always wins.
+            cfg.shares.retain(|s| s.tag != agent.tag);
+            cfg.shares.push(agent);
+        }
         // Writable share: the entrypoint writes Xvfb/openbox logs under /var.
         cfg.set_rootfs_artifact(artifact, false);
         // The detector sizes itself off the resolved framebuffer (the request's
@@ -617,7 +634,8 @@ fn crop_png(frame: &Frame, rect: Rect) -> Result<Vec<u8>> {
 
 /// Best-effort location of the static guest helpers (vsock-send/runner) so the
 /// OCI provider can inject them into resolved rootfs trees, mirroring the CLI.
-fn locate_guest_helpers() -> Option<PathBuf> {
+/// Shared with the stateless in-process run lane in `main`.
+pub(crate) fn locate_guest_helpers() -> Option<PathBuf> {
     let arch = vmette_assets::guest_arch();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(share) = exe

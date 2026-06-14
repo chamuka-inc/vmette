@@ -36,12 +36,16 @@ SIZE="1024x768"
 # --- bootstrap prereqs ----------------------------------------------------
 [[ -s "$KERNEL"    ]] || bash "$HERE/scripts/fetch-assets.sh"
 [[ -s "$INITRAMFS" ]] || bash "$HERE/scripts/build-initramfs.sh"
-if [[ ! -s "$IMAGE_TAR" ]]; then
-    echo "→ desktop rootfs image missing; building from source (one-time, Docker)…"
-    bash "$HERE/scripts/build-desktop-image.sh" --export "$IMAGE_TAR" || {
-        echo "FATAL: could not build the desktop rootfs image (need Docker)." >&2
-        exit 1
-    }
+# The desktop rootfs is no longer built by this repo; the gates use a local
+# `vmette-desktop-rootfs.tar` if one is present (e.g. a `docker export` of a GUI
+# image), otherwise fall through to the published image (DEFAULT_DESKTOP_IMAGE),
+# pulled on first use. IMG_ARGS pins the local tar (tier 1) when available.
+if [[ -s "$IMAGE_TAR" ]]; then
+    IMG_ARGS=(--image "tar+file://$IMAGE_TAR")
+    echo "→ using local desktop image: $IMAGE_TAR"
+else
+    IMG_ARGS=()
+    echo "→ no local desktop image; using the published default (pulled on first use)"
 fi
 
 # --- build + sign the code under test (always, from source) ---------------
@@ -64,7 +68,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$VMETTED" --socket "$SOCK" --vmette "$VMETTE" >/dev/null 2>&1 &
+"$VMETTED" --socket "$SOCK" >/dev/null 2>&1 &
 VMETTED_PID=$!
 for _ in $(seq 1 50); do
     [[ -S "$SOCK" ]] && break
@@ -123,7 +127,7 @@ echo "=== vmette desktop smoke ($(date +%H:%M:%S)) ==="
 # 1. Boot a desktop at a NON-default size — exercises the geometry path end to
 #    end (request size → StartParams.display_size → Config → cmdline → Xvfb).
 SESSION="$("$VMETTE" desktop --socket "$SOCK" start \
-    --image "tar+file://$IMAGE_TAR" --size "$SIZE" \
+    ${IMG_ARGS[@]+"${IMG_ARGS[@]}"} --size "$SIZE" \
     --kernel "$KERNEL" --initramfs "$INITRAMFS" 2>/dev/null)"
 [[ -n "$SESSION" ]]; check "start desktop → session id"
 

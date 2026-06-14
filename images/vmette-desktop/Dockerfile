@@ -73,10 +73,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # caller. Without these the window maps but stays black: we are root with user
 # namespaces off (--no-sandbox) and there is no GPU (software GL). `--test-type`
 # suppresses the "unsupported command-line flag: --no-sandbox" infobar that
-# otherwise sits across the top of every frame the agent sees.
+# otherwise sits across the top of every frame the agent sees. `--start-maximized`
+# is essential: with no size hint Chromium opens a tiny (~10x10) window that
+# Openbox does not auto-resize, so the agent's screenshots come back blank. The
+# `navigate` action launches a bare `chromium <url>` with no geometry, so the
+# window must size itself to the Xvfb screen here.
 RUN mkdir -p /etc/chromium.d \
     && printf '%s\n' \
-        'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu --disable-gpu-compositing --use-gl=swiftshader --no-first-run --disable-features=Translate --disable-session-crashed-bubble --hide-crash-restore-bubble"' \
+        'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type --disable-dev-shm-usage --disable-gpu --disable-gpu-compositing --use-gl=swiftshader --start-maximized --no-first-run --disable-features=Translate --disable-session-crashed-bubble --hide-crash-restore-bubble"' \
         > /etc/chromium.d/00-vmette-swiftshader
 
 COPY --from=builder /usr/local/bin/vmette-desktop-agent /usr/local/bin/vmette-desktop-agent

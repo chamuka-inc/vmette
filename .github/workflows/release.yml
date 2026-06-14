@@ -26,11 +26,13 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
-      # Prebuilt macOS-hosted Linux musl toolchains for the guest helpers.
-      # FiloSottile/musl-cross compiles GCC from source (~30 min, blows the job
-      # timeout); messense ships a prebuilt tarball that installs in seconds.
-      # The release tarball is universal and includes both x86_64 and aarch64
-      # guest assets, so both helper toolchains must be available.
+      # Prebuilt macOS-hosted Linux musl toolchains. Used to cross-compile the
+      # static guest helpers AND the static desktop agent (its X client stack is
+      # built from source against these) — no Docker. FiloSottile/musl-cross
+      # compiles GCC from source (~30 min, blows the timeout); messense ships a
+      # prebuilt tarball that installs in seconds. The release tarball is
+      # universal and ships both x86_64 and aarch64 guest assets, so both
+      # toolchains must be available.
       - name: install Linux musl cross toolchains (prebuilt)
         run: |
           brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl

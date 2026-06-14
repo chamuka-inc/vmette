@@ -1,43 +1,53 @@
 //! Top-level [`run`] orchestration. `run` is a thin, CLI-facing wrapper
 //! over a one-shot [`Session`]: it owns the terminal (raw mode + signal
 //! handlers) and the user-visible banner, starts a session, blocks until
-//! it ends, and exits the process with the guest's code.
+//! it ends, restores the terminal, and **returns** a [`RunOutput`] with the
+//! guest's exit code. It never exits the process — the caller (the `vmette`
+//! CLI's `main`, an FFI embedder) chooses the process exit code. A library
+//! that owns the process is hostile to embedders, so the exit decision lives
+//! with the binary.
 //!
 //! The VM lifecycle itself — building the config, the delegate, the vsock
 //! listener, the timeout, and pumping the run loop — lives in
 //! [`crate::session`] so it is reusable in-process (the daemon hosts many
-//! sessions). `run` is the only place that calls `std::process::exit`, so
-//! its happy path still never returns; the `Result<RunOutput, Error>`
-//! shape is for setup errors (invalid config, snapshot unsupported, …).
+//! sessions).
 
 use crate::error::Error;
 use crate::session::{Session, SessionEnd};
 use crate::terminal::{enter_raw_mode, install_signal_handlers, restore_terminal};
 use crate::Config;
 
-/// Result of a completed [`run`]. Currently only carries the exit code,
-/// but kept as a struct so we can grow it without breaking callers.
-#[derive(Debug, Clone, Copy)]
+/// Result of a completed [`run`] or [`Session::wait_captured`](crate::Session::wait_captured).
+#[derive(Debug, Clone)]
 pub struct RunOutput {
     pub exit_code: i32,
+    /// Captured guest output (combined stdout+stderr) when the session ran with
+    /// [`Config::capture_output`](crate::Config::capture_output); empty otherwise
+    /// (the interactive `run` path streams to the terminal). Bounded — truncated
+    /// past 1 MiB with a marker.
+    pub output: String,
 }
 
-/// Boot the configured guest, exec the command, block until poweroff,
-/// then exit the process with the guest's exit code.
-///
-/// Note: on success the function does not return — it calls
-/// `std::process::exit` once the session ends. The `Result<RunOutput, Error>`
-/// shape is for error paths (config invalid, VM failed to start, snapshot
-/// unsupported, etc).
+/// Boot the configured guest, exec the command, block until poweroff, restore
+/// the terminal, and return a [`RunOutput`] carrying the guest's exit code
+/// (124 on timeout, 0 on a requested stop, 1 on a guest error). `Err` is for
+/// setup failures (config invalid, VM failed to start, snapshot unsupported).
+/// The process exit code is the caller's to choose.
 pub fn run(config: &Config) -> Result<RunOutput, Error> {
     // Snapshot dispatch — both build and resume go through here.
     if let Some(p) = &config.build_snapshot {
         crate::vz::snapshot::build(config, p)?;
-        return Ok(RunOutput { exit_code: 0 });
+        return Ok(RunOutput {
+            exit_code: 0,
+            output: String::new(),
+        });
     }
     if let Some(p) = &config.resume_snapshot {
         let code = crate::vz::snapshot::resume(config, p)?;
-        return Ok(RunOutput { exit_code: code });
+        return Ok(RunOutput {
+            exit_code: code,
+            output: String::new(),
+        });
     }
 
     install_signal_handlers();
@@ -61,18 +71,16 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
 
     let end = session.wait();
     restore_terminal();
-    // Drop the session before std::process::exit, which skips destructors:
-    // this runs the Session's teardown guards (the ephemeral `--scratch` disk
-    // image and the block-rootfs `ctl` temp dir) so they don't leak on the
-    // CLI path. `end` is owned, so dropping the session here is safe; the
-    // guest has already stopped. (The daemon path drops Session normally.)
+    // Drop the session (runs its teardown guards — the ephemeral `--scratch`
+    // disk image and the block-rootfs `ctl` temp dir) before returning. `end`
+    // is owned, so this is safe; the guest has already stopped.
     drop(session);
-    match end {
+    let exit_code = match end {
         SessionEnd::Exited(code) => {
             if !config.quiet {
                 eprintln!("\r\n[vmette] guest stopped (exit {})\r", code);
             }
-            std::process::exit(code);
+            code
         }
         SessionEnd::TimedOut => {
             if !config.quiet {
@@ -81,33 +89,37 @@ pub fn run(config: &Config) -> Result<RunOutput, Error> {
                     config.timeout_seconds.unwrap_or(0)
                 );
             }
-            std::process::exit(124);
+            124
         }
         SessionEnd::Stopped => {
             if !config.quiet {
                 eprintln!("\r\n[vmette] guest stopped (exit 0)\r");
             }
-            std::process::exit(0);
+            0
         }
         SessionEnd::Error(msg) => {
             // An error is always worth surfacing, even under --quiet.
             eprintln!("\r\n[vmette] guest stopped with error: {}\r", msg);
-            std::process::exit(1);
+            1
         }
-    }
+    };
+    Ok(RunOutput {
+        exit_code,
+        output: String::new(),
+    })
 }
 
 fn eprint_banner(config: &Config, cmdline: &str, vsock_port: Option<u32>) {
-    let rootfs = if let Some(rb) = &config.rootfs_block {
-        format!("{} ({} block, ro)", rb.path.display(), rb.fstype)
-    } else if let Some(r) = &config.rootfs_share {
-        format!(
+    let rootfs = match &config.rootfs {
+        Some(crate::Rootfs::Block(rb)) => {
+            format!("{} ({} block, ro)", rb.path.display(), rb.fstype)
+        }
+        Some(crate::Rootfs::Share(r)) => format!(
             "{}{}",
             r.path.display(),
             if r.read_only { " (ro)" } else { "" }
-        )
-    } else {
-        "(none)".into()
+        ),
+        None => "(none)".into(),
     };
     let vsock = match vsock_port {
         None => "(disabled)".into(),

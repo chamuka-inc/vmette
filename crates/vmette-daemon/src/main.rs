@@ -1,22 +1,20 @@
 //! vmetted — long-lived UNIX-socket dispatcher for vmette.
 //!
-//! v0.1 architecture: one request per connection, line-delimited JSON.
-//! Spawns the `vmette` CLI as a subprocess per request. This avoids
-//! library churn around output capture (the lib forwards guest stdio
-//! straight to the daemon process's stdio); the trade-off is ~50 ms of
-//! fork/exec per call.
+//! One request per connection, line-delimited JSON. Two subsystems share the
+//! socket, both running VZ **in-process** (no forked `vmette` subprocess):
 //!
-//! Future (v0.2, Apple Silicon only): in-process pool of warm
-//! snapshots restored per request, dispatched via vsock. That requires
-//! library changes — see Phase 5 notes in the plan.
+//!   * stateless run — boots a one-shot capture-aware `vmette::Session` per
+//!     request and streams its clean guest output back;
+//!   * stateful desktop — the session registry holds live Agent-workload VMs
+//!     across many `desktop_*` requests.
 //!
 //! ## Protocol
 //!
 //! Per connection:
 //!
 //!   client → daemon : one JSON object on a single line. Only kernel,
-//!   initramfs, rootfs, and exec are required; omitted optional fields take
-//!   the `vmette` CLI's own default (the daemon never re-spells them):
+//!   initramfs, rootfs, and exec are required; omitted optional fields take the
+//!   one true default (the daemon never re-spells them):
 //!       { "kernel": "/path", "initramfs": "/path",
 //!         "rootfs": "/path/to/dir | alpine:3.20 | tar+https://... | oci://...",
 //!         "exec": "echo hi",
@@ -26,22 +24,18 @@
 //!
 //!   daemon → client : streamed JSON objects, one per line:
 //!       { "kind": "stdout", "data": "..." }
-//!       { "kind": "stderr", "data": "..." }
 //!       { "kind": "exit",   "code": 0 }
 //!
 //! ## CLI
 //!
-//!   vmetted [--socket PATH] [--vmette PATH]
+//!   vmetted [--socket PATH]
 //!
 //! Defaults:
 //!   --socket  $HOME/Library/Caches/vmette/vmette.sock
-//!   --vmette  $(dirname argv[0])/vmette  (falls back to PATH lookup)
 
 mod registry;
 mod view;
 
-use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,7 +43,6 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
 use vmette_proto::agent::{Action, ResponseHeader};
@@ -111,21 +104,6 @@ fn action_reply(header: ResponseHeader, payload: Option<Vec<u8>>, want_text: boo
     }
 }
 
-fn locate_vmette() -> PathBuf {
-    if let Ok(p) = std::env::var("VMETTE_BIN") {
-        return PathBuf::from(p);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("vmette");
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-    PathBuf::from("vmette")
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -137,12 +115,10 @@ async fn main() -> Result<()> {
         .init();
 
     let mut socket = vmette_assets::default_socket();
-    let mut vmette_bin = locate_vmette();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--socket" => socket = args.next().context("--socket needs PATH")?.into(),
-            "--vmette" => vmette_bin = args.next().context("--vmette needs PATH")?.into(),
             "--version" | "-V" => {
                 println!("vmetted {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
@@ -150,10 +126,9 @@ async fn main() -> Result<()> {
             "-h" | "--help" => {
                 eprintln!(
                     "vmetted — UNIX socket dispatcher for vmette\n\n\
-                     usage: vmetted [--socket PATH] [--vmette PATH] [--version]\n\n\
+                     usage: vmetted [--socket PATH] [--version]\n\n\
                      defaults:\n  \
-                       --socket  $HOME/Library/Caches/vmette/vmette.sock\n  \
-                       --vmette  (next to vmetted, or PATH lookup)\n"
+                       --socket  $HOME/Library/Caches/vmette/vmette.sock\n"
                 );
                 return Ok(());
             }
@@ -168,10 +143,10 @@ async fn main() -> Result<()> {
 
     let listener =
         UnixListener::bind(&socket).with_context(|| format!("bind {}", socket.display()))?;
-    info!(socket = %socket.display(), vmette = %vmette_bin.display(), "vmetted listening");
+    info!(socket = %socket.display(), "vmetted listening");
 
     // Stateful subsystem: the desktop session registry. Kept entirely
-    // separate from the stateless subprocess dispatch above.
+    // separate from the stateless in-process run lane.
     let registry = Registry::new(
         MAX_DESKTOP_SESSIONS,
         DESKTOP_IDLE_TTL,
@@ -205,10 +180,9 @@ async fn main() -> Result<()> {
             accept = listener.accept() => {
                 match accept {
                     Ok((stream, _)) => {
-                        let bin = vmette_bin.clone();
                         let registry = registry.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = dispatch(stream, bin, registry).await {
+                            if let Err(e) = dispatch(stream, registry).await {
                                 warn!(error = %e, "handler failed");
                             }
                         });
@@ -236,8 +210,8 @@ async fn main() -> Result<()> {
 /// Per-connection entry point. Reads the single request line, peeks whether it
 /// carries a `desktop_*` kind, and routes: desktop requests to the stateful
 /// session registry, everything else (the untagged run [`Request`]) to the
-/// stateless subprocess path.
-async fn dispatch(stream: UnixStream, vmette_bin: PathBuf, registry: Arc<Registry>) -> Result<()> {
+/// stateless in-process run lane.
+async fn dispatch(stream: UnixStream, registry: Arc<Registry>) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -269,7 +243,10 @@ async fn dispatch(stream: UnixStream, vmette_bin: PathBuf, registry: Arc<Registr
         Ok(())
     } else {
         let req: Request = serde_json::from_str(line).context("parse run request")?;
-        run_workload(req, write_half, vmette_bin).await
+        // C2: run the one-shot workload in-process (capture-aware `Session`),
+        // the same substrate the desktop registry uses — no fork, no argv
+        // round-trip, no console marker-scraping.
+        run_workload_inproc(req, write_half).await
     }
 }
 
@@ -364,129 +341,93 @@ async fn desktop_result(line: &str, registry: Arc<Registry>) -> Result<DesktopRe
     }
 }
 
-async fn run_workload(
+/// Run a one-shot workload IN-PROCESS via a capture-aware `vmette::Session` —
+/// the same substrate the desktop registry uses. The rootfs is resolved through
+/// the shared provider registry, the request maps to a `Config` via
+/// `Config::from_run_request`, and the guest's output is captured on a dedicated
+/// clean console (no init/kernel noise, no marker-scraping) and streamed as
+/// `Frame::Stdout` followed by `Frame::Exit`. Replaces forking the `vmette` CLI.
+async fn run_workload_inproc(
     req: Request,
     mut write_half: tokio::net::unix::OwnedWriteHalf,
-    vmette_bin: PathBuf,
 ) -> Result<()> {
-    // Translate Request → vmette CLI flags via the single owner of that
-    // mapping in `vmette-proto`; the MCP sandbox path renders the same way.
-    let mut cmd = Command::new(&vmette_bin);
-    cmd.args(req.to_cli_args());
-
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    // Kill the vmette subprocess (and its VZ microVM) if this handler
-    // is dropped — e.g. client disconnected mid-stream and a write_frame
-    // returned BrokenPipe. Without this, the VM keeps running until its
-    // natural exit (potentially --timeout = hours), leaking VZ state.
-    cmd.kill_on_drop(true);
-
-    let mut child = cmd.spawn().context("spawn vmette")?;
-    let child_stdout = child.stdout.take().unwrap();
-    let child_stderr = child.stderr.take().unwrap();
-
-    // Spawn one task per stream so each `read_line` runs to completion
-    // and owns its BufReader. Frames flow to a single mpsc channel and
-    // the main task forwards them to the socket. Avoids tokio::select!
-    // cancelling read_line mid-call — AsyncBufReadExt::read_line is
-    // documented NOT cancel-safe (bytes already in the BufReader can
-    // be lost when the future is dropped).
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Frame>(64);
+    // Lets the async side force-stop the VM if the client disconnects mid-run,
+    // so a vanished client doesn't leak a VM running to its timeout. The worker
+    // fills it once the session is live.
+    let stop_slot: Arc<std::sync::Mutex<Option<vmette::StopHandle>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let stop_for_worker = stop_slot.clone();
 
-    // read_until + from_utf8_lossy tolerates non-UTF-8 bytes (binary
-    // output from xxd/tar/etc.) by replacing them with U+FFFD instead
-    // of erroring out. read_line would have killed the reader task on
-    // the first invalid sequence and silently truncated all subsequent
-    // guest output.
-    let tx_out = tx.clone();
-    let out_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(child_stdout);
-        let mut buf: Vec<u8> = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    let data = String::from_utf8_lossy(&buf).into_owned();
-                    if tx_out.send(Frame::Stdout { data }).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if !buf.is_empty() {
-                        let data = String::from_utf8_lossy(&buf).into_owned();
-                        let _ = tx_out.send(Frame::Stdout { data }).await;
-                    }
-                    let _ = tx_out
-                        .send(Frame::Error {
-                            message: format!("stdout: {e}"),
-                        })
-                        .await;
-                    break;
+    // The VM runs on a blocking thread (`Session` is `!Send` and does blocking
+    // VZ work); it streams frames back over the channel.
+    let worker = tokio::task::spawn_blocking(move || -> Result<()> {
+        let provider = vmette_providers::default_registry();
+        let ctx = vmette::provider::Context::new(vmette_assets::default_cache_root())
+            .offline(req.offline)
+            .guest_helpers_dir(registry::locate_guest_helpers());
+        let artifact = provider
+            .resolve(&req.rootfs, &ctx)
+            .map_err(|e| anyhow!("resolving rootfs {}: {e}", req.rootfs))?;
+        let cfg = vmette::Config::from_run_request(&req, artifact, true);
+        let session = vmette::Session::start(&cfg).map_err(|e| anyhow!("session start: {e}"))?;
+        *stop_for_worker.lock().unwrap() = Some(session.stop_handle());
+        if let Some(chunks) = session.capture_rx() {
+            for chunk in chunks {
+                let data = String::from_utf8_lossy(&chunk).into_owned();
+                if tx.blocking_send(Frame::Stdout { data }).is_err() {
+                    break; // client gone
                 }
             }
         }
+        let code = match session.wait() {
+            vmette::SessionEnd::Exited(c) => c,
+            vmette::SessionEnd::TimedOut => 124,
+            vmette::SessionEnd::Stopped => 0,
+            vmette::SessionEnd::Error(_) => 1,
+        };
+        let _ = tx.blocking_send(Frame::Exit { code });
+        Ok(())
     });
 
-    let tx_err = tx.clone();
-    let err_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(child_stderr);
-        let mut buf: Vec<u8> = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    let data = String::from_utf8_lossy(&buf).into_owned();
-                    if tx_err.send(Frame::Stderr { data }).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if !buf.is_empty() {
-                        let data = String::from_utf8_lossy(&buf).into_owned();
-                        let _ = tx_err.send(Frame::Stderr { data }).await;
-                    }
-                    let _ = tx_err
-                        .send(Frame::Error {
-                            message: format!("stderr: {e}"),
-                        })
-                        .await;
-                    break;
-                }
-            }
-        }
-    });
-
-    // Drop our copy so the channel closes once both reader tasks finish.
-    drop(tx);
-
-    // Forward frames until both reader tasks finish (channel closes).
+    // Forward frames to the socket as they stream.
+    let mut client_gone = false;
     while let Some(frame) = rx.recv().await {
         if write_frame(&mut write_half, &frame).await.is_err() {
-            // Client gone — abandon the stream. kill_on_drop will tear
-            // down the subprocess when this handler returns.
-            return Ok(());
+            client_gone = true;
+            break; // client disconnected
         }
     }
-    let _ = out_task.await;
-    let _ = err_task.await;
-
-    // Always emit a terminal frame so the client can stop reading.
-    // child.wait() errors get surfaced as Frame::Error rather than
-    // swallowed via ?-propagation, which would leave the client
-    // hanging on a socket with no exit marker.
-    let exit_frame = match child.wait().await {
-        Ok(status) => Frame::Exit {
-            code: status.code().unwrap_or(-1),
-        },
-        Err(e) => Frame::Error {
-            message: format!("wait: {e}"),
-        },
-    };
-    let _ = write_frame(&mut write_half, &exit_frame).await;
+    // If the client vanished mid-run, force-stop the VM so it doesn't keep
+    // running to its timeout.
+    if client_gone {
+        if let Some(h) = stop_slot.lock().unwrap().take() {
+            h.stop();
+        }
+    }
+    // Surface a setup error (resolve/start) as a terminal Error frame; the happy
+    // path already sent Exit.
+    match worker.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            let _ = write_frame(
+                &mut write_half,
+                &Frame::Error {
+                    message: format!("{e:#}"),
+                },
+            )
+            .await;
+        }
+        Err(e) => {
+            let _ = write_frame(
+                &mut write_half,
+                &Frame::Error {
+                    message: format!("run task panicked: {e}"),
+                },
+            )
+            .await;
+        }
+    }
     let _ = write_half.shutdown().await;
     Ok(())
 }

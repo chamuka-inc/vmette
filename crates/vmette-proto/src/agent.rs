@@ -15,27 +15,38 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
-    /// Capture the framebuffer; response carries a PNG payload.
+    /// Capture the framebuffer; response carries a PNG payload. The PNG's pixel
+    /// dimensions are the coordinate space every pointer action targets
+    /// (top-left origin), so a caller can map a downscaled rendering back to
+    /// true coordinates.
     Screenshot,
     /// Report the current pointer position in the response header (`x`,`y`).
     CursorPosition,
-    /// Absolute pointer move to `(x, y)`.
+    /// Absolute pointer move to `(x, y)`. The response header echoes the
+    /// *resulting* pointer position (`x`,`y`) — a window manager can constrain
+    /// the pointer, so the echo is the ground truth of where it landed.
     MouseMove { x: i32, y: i32 },
-    /// Left button click at the current pointer position.
+    /// Left button click at the current pointer position. The response header
+    /// echoes the pointer position the click fired at (`x`,`y`).
     LeftClick,
-    /// Right button click at the current pointer position.
+    /// Right button click at the current pointer position. The response header
+    /// echoes the pointer position the click fired at (`x`,`y`).
     RightClick,
-    /// Middle button click at the current pointer position.
+    /// Middle button click at the current pointer position. The response header
+    /// echoes the pointer position the click fired at (`x`,`y`).
     MiddleClick,
-    /// Double left click at the current pointer position.
+    /// Double left click at the current pointer position. The response header
+    /// echoes the pointer position the click fired at (`x`,`y`).
     DoubleClick,
-    /// Press-move-release: drag from the current position to `(x, y)`.
+    /// Press-move-release: drag from the current position to `(x, y)`. The
+    /// response header echoes the resulting pointer position (`x`,`y`).
     LeftClickDrag { x: i32, y: i32 },
     /// Type a UTF-8 string via synthetic key events.
     Type { text: String },
     /// Press a key chord, e.g. `"ctrl+c"`, `"Return"`, `"alt+Tab"`.
     Key { keys: String },
-    /// Scroll `amount` clicks in `direction` at `(x, y)`.
+    /// Scroll `amount` clicks in `direction` at `(x, y)`. The response header
+    /// echoes the resulting pointer position (`x`,`y`).
     Scroll {
         x: i32,
         y: i32,
@@ -89,7 +100,10 @@ pub enum ScrollDirection {
 
 /// JSON header of a response frame (guest → host). `ok` reports success;
 /// on failure `error` carries a message and no payload follows. `x`/`y`
-/// are populated by [`Action::CursorPosition`]. `exit_code` is populated by
+/// carry the pointer position: [`Action::CursorPosition`] reports it, and the
+/// pointer actions (move / clicks / drag / scroll) echo the *resulting*
+/// position so a caller can verify where the pointer actually landed.
+/// `exit_code` is populated by
 /// [`Action::ExecCapture`] (`None` ⇒ the command did not exit cleanly, e.g.
 /// it timed out). `payload_len` is the count of binary bytes (e.g. PNG)
 /// following this header in the frame.
@@ -149,6 +163,19 @@ mod tests {
         let a = Action::MouseMove { x: 10, y: 20 };
         let j = serde_json::to_string(&a).unwrap();
         assert_eq!(j, r#"{"action":"mouse_move","x":10,"y":20}"#);
+        let back: Action = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn left_click_drag_round_trips() {
+        // The drag target's wire shape — the contract the CLI `drag` verb, the
+        // MCP `desktop_drag` tool, and the guest agent's interpolated drag all
+        // agree on. The agent reads `x`/`y` as the drag *end*; it starts at the
+        // current pointer.
+        let a = Action::LeftClickDrag { x: 640, y: 400 };
+        let j = serde_json::to_string(&a).unwrap();
+        assert_eq!(j, r#"{"action":"left_click_drag","x":640,"y":400}"#);
         let back: Action = serde_json::from_str(&j).unwrap();
         assert_eq!(back, a);
     }

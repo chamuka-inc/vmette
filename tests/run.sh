@@ -23,6 +23,14 @@ ROOTFS="$ASSETS/alpine-rootfs"
 [[ -x "$ROOTFS/bin/sh"                   ]] || bash "$HERE/scripts/fetch-alpine-rootfs.sh"
 [[ -x "$ROOTFS/usr/local/bin/vsock-send" ]] || bash "$HERE/scripts/build-vsock-send.sh"
 
+# Staleness guard: the staged initramfs embeds a *copy* of custom-init.sh, so a
+# source edit without a rebuild silently ships the old /init. Auto-rebuild when
+# the source is newer (the boot-time BOOT_PROTO_VERSION check is the backstop).
+if [[ "$HERE/scripts/custom-init.sh" -nt "$ASSETS/initramfs-vmette" ]]; then
+    echo "→ custom-init.sh newer than initramfs; rebuilding"
+    bash "$HERE/scripts/build-initramfs.sh"
+fi
+
 # Always rebuild + re-sign — cargo test or any other build can break
 # the previous signature, and a missing entitlement looks identical to
 # a config-invalid error.

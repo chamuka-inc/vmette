@@ -24,6 +24,14 @@ ENT="$HERE/entitlements.plist"
 [[ -x "$ROOTFS/bin/sh"                   ]] || bash "$HERE/scripts/fetch-alpine-rootfs.sh"
 [[ -x "$ROOTFS/usr/local/bin/vsock-send" ]] || bash "$HERE/scripts/build-vsock-send.sh"
 
+# The staged initramfs embeds a copy of custom-init.sh; rebuild when the source
+# is newer so an edit can't silently ship the old /init (the guest's
+# BOOT_PROTO_VERSION check is the boot-time backstop).
+if [[ "$HERE/scripts/custom-init.sh" -nt "$ASSETS/initramfs-vmette" ]]; then
+    echo "→ custom-init.sh newer than initramfs; rebuilding"
+    bash "$HERE/scripts/build-initramfs.sh"
+fi
+
 echo "→ cargo build --release"
 ( cd "$HERE" && cargo build --release -p vmette-cli )
 

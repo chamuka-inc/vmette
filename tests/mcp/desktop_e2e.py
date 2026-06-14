@@ -10,14 +10,11 @@ settle, and returns the frame. The Chromium incantation (software GL,
 the mouse input path. All over the MCP desktop_* tools, the same surface a
 computer-use agent would use.
 
-Image: override with DESKTOP_IMAGE. Default is the local browser rootfs
-tar. To (re)produce that tar from the browser image:
-
-    cid=$(docker create --platform linux/amd64 vmette-desktop:browser)
-    docker export "$cid" -o /tmp/vmette-desktop-rootfs/rootfs-browser.tar
-    docker rm "$cid"
-
-or build the image first with scripts/build-desktop-image.sh.
+Image: leave DESKTOP_IMAGE unset (the default) to let vmette resolve the desktop
+image the same way the CLI/MCP do — auto-discover a local
+assets/<arch>/vmette-desktop-rootfs.tar (build one with `make desktop-image`),
+else pull the published DEFAULT_DESKTOP_IMAGE. Set DESKTOP_IMAGE to pin a
+specific rootfs, e.g. `tar+file:///path/to/rootfs.tar` or an OCI ref.
 """
 import base64
 import os
@@ -26,9 +23,10 @@ import time
 
 from driver import MCP, text_of, check, PASS, FAIL
 
-IMAGE = os.environ.get(
-    "DESKTOP_IMAGE", "tar+file:///tmp/vmette-desktop-rootfs/rootfs-browser.tar"
-)
+# Unset → let vmette resolve the default desktop image: it auto-discovers a
+# local assets/<arch>/vmette-desktop-rootfs.tar, else pulls the published
+# DEFAULT_DESKTOP_IMAGE. Set DESKTOP_IMAGE to pin a specific rootfs ref.
+IMAGE = os.environ.get("DESKTOP_IMAGE")
 QUERY = os.environ.get("DESKTOP_QUERY", "Apple Virtualization framework")
 URL = "https://duckduckgo.com/?q=" + QUERY.replace(" ", "+")
 
@@ -57,7 +55,7 @@ def shot(m, sid, path):
 
 
 def preflight():
-    if IMAGE.startswith("tar+file://"):
+    if IMAGE and IMAGE.startswith("tar+file://"):
         p = IMAGE[len("tar+file://"):]
         if not os.path.exists(p):
             print(f"✗ browser rootfs tar not found: {p}", file=sys.stderr)
@@ -73,10 +71,12 @@ def main():
                              "clientInfo": {"name": "desk", "version": "0"}})
     m.notify("notifications/initialized")
 
-    print(f"== desktop_start (browser rootfs + Xvfb, network on; up to 8 min)\n   image={IMAGE}")
+    print(f"== desktop_start (browser rootfs + Xvfb, network on; up to 8 min)\n   image={IMAGE or '(server default)'}")
     t0 = time.time()
-    r = m.call_tool("desktop_start", {"image": IMAGE, "size": "1280x800", "network": True},
-                    timeout=480)
+    start_args = {"size": "1280x800", "network": True}
+    if IMAGE:
+        start_args["image"] = IMAGE
+    r = m.call_tool("desktop_start", start_args, timeout=480)
     if "error" in r:
         check("desktop_start", False, str(r["error"])[:160]); m.close(); sys.exit(1)
     sid = text_of(r).strip()
@@ -126,6 +126,18 @@ def main():
         check("click ok", "click at 200 200" in text_of(r))
         r = m.call_tool("desktop_cursor_position", {"session_id": sid}, timeout=60)
         check("cursor reports 200 200", text_of(r).strip() == "200 200", text_of(r).strip())
+
+        # Drag path: the guest agent drags with interpolated motion (so DnD
+        # targets recognize the gesture). desktop_drag starts at the current
+        # pointer and ends at (x,y) — confirm it runs and the pointer lands at
+        # the drag end. (A bare Xvfb+WM has no drop target, so this exercises the
+        # action round-trip + landing, not a full DnD drop.)
+        print("\n== drag path (move -> drag -> cursor_position)")
+        m.call_tool("desktop_move", {"session_id": sid, "x": 200, "y": 200}, timeout=60)
+        r = m.call_tool("desktop_drag", {"session_id": sid, "x": 520, "y": 360}, timeout=60)
+        check("drag ok", bool(text_of(r)))
+        r = m.call_tool("desktop_cursor_position", {"session_id": sid}, timeout=60)
+        check("drag landed at 520 360", text_of(r).strip() == "520 360", text_of(r).strip())
     finally:
         print("\n== desktop_stop")
         r = m.call_tool("desktop_stop", {"session_id": sid}, timeout=60)

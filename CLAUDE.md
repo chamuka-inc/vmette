@@ -21,7 +21,7 @@ binary and macOS.
 
 ## Workspace layout
 
-Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MIT):
+Eleven crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MIT):
 
 | Crate | Purpose |
 |-------|---------|
@@ -30,7 +30,8 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
 | `crates/vmette-providers` | Aggregator exposing `default_registry()` (DirProvider→Squashfs→Tar→Oci, the single load-bearing order). Used by the CLI + daemon so both resolve specs identically. |
 | `crates/vmette-assets` | Shared boot-asset (kernel + initramfs) discovery for the binaries. |
 | `crates/vmette-cli` | `vmette` CLI binary. Hand-rolled arg parsing (no clap — keeps the binary small). |
-| `crates/vmette-daemon` | `vmetted` — UNIX-socket dispatcher (tokio). Stateless subprocess dispatch + stateful desktop registry; owns the pixel-`settle` perception module. |
+| `crates/vmette-daemon` | `vmetted` — UNIX-socket dispatcher (tokio). In-process stateless run lane + stateful desktop registry; owns the pixel-`settle` perception module. |
+| `crates/vmette-daemon-client` | Sync transport for the `vmetted` desktop socket (connect / lazy-auto-spawn / line framing) — the single owner, shared by the CLI (directly) and the MCP server (via `spawn_blocking`). |
 | `crates/vmette-mcp` | MCP server (`vmette-mcp`) exposing vmette to AI agents over stdio. |
 | `crates/vmette-provider-oci` | OCI/Docker image rootfs provider (catch-all for bare refs + `oci://`); per-registry `AuthResolver` for private images. |
 | `crates/vmette-provider-squashfs` | Squashfs block-image rootfs provider (`squashfs+file://`, `squashfs+https://`, `squashfs+http://`). Returns `BlockImage`. |
@@ -55,15 +56,23 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
   read-only block device) + `Registry` dispatcher + `Context` (cache root,
   offline flag, optional guest-helpers dir). Built-in `DirProvider`;
   OCI/tar/squashfs live in sibling crates.
-- **`desktop.rs`** — the framed vsock **codec** `[u32 LE header_len][JSON header][optional binary payload]`
-  (pure, no VZ/objc2). The `Action`/`ResponseHeader`/`ScrollDirection` *types*
-  it carries live in `vmette-proto` and are re-exported here (and as
-  `vmette::Action` etc.). The pixel-settle perception module is **not** here —
-  it moved to the daemon, its only consumer.
-- **`cmdline.rs`** — assembles the kernel cmdline, emitting `vmette.*=…` tokens
-  (exec base64, rootfs, `rootfs_block=squashfs` + auto `ctl` control share for
-  block images, shares, net, vsock_port, switch_root, snapshot mode,
-  `vmette.desktop=1` + `vmette.display=WxH` for the Agent strategy).
+- **`desktop.rs`** — the framed vsock **codec** `[u32 LE req_id][u32 LE header_len][JSON header][optional binary payload]`
+  (pure, no VZ/objc2). The `req_id` prefix (C4) lets the host demultiplexer
+  (`session.rs::Demux`) route responses to the right caller; the guest agent
+  echoes it. The `Action`/`ResponseHeader`/`ScrollDirection` *types* it carries
+  live in `vmette-proto` and are re-exported here (and as `vmette::Action` etc.);
+  `req_id` is framing, not a proto type. The pixel-settle perception module is
+  **not** here — it moved to the daemon, its only consumer.
+- **`cmdline.rs`** — assembles the kernel cmdline. After the typed-boot-contract
+  refactor it emits only `vmette.boot=ctl` (telling `/init` to source the
+  `boot.env` envelope) plus `vmette.vsock_port` when vsock is on; everything else
+  (exec, env, rootfs mode, shares, scratch device, switch-root, net, workload)
+  travels in **`boot.rs`**'s `BootParams` envelope written to the `ctl` share.
+- **`boot.rs`** — the host↔guest **boot contract** codec. `to_env` serializes the
+  typed `vmette_proto::boot::BootParams` to the `KEY=VALUE` `boot.env` envelope
+  `Session` writes to the `ctl` virtio-fs share; the guest `/init` sources it.
+  `BootParams` (versioned by `BOOT_PROTO_VERSION`) replaces the old `vmette.*`
+  cmdline tokens; `from_config` maps a `Config` to it.
 - **`ffi.rs`** — the C ABI (cbindgen → `include/vmette.h`). Opaque
   `#[repr(C)]` handles, paired `*_new`/`*_free`, `VmetteStatus` i32 codes. Every
   fn is `unsafe extern "C"`; safety contracts documented at the module level + a
@@ -80,11 +89,13 @@ Ten crates (workspace `version = 0.1.0`, edition 2021, `rust-version = 1.80`, MI
 
 Two **deliberately separate** subsystems:
 
-- **Stateless dispatch** (`main.rs`): the existing per-request path forks a
-  `vmette` subprocess and streams stdout/stderr/exit back over the socket. It
-  peeks `kind`: a `desktop_*` request deserializes into the typed
-  `vmette_proto::daemon::DesktopRequest` enum and is matched (no stringly second
-  dispatch); everything else is the untagged run `Request`.
+- **Stateless dispatch** (`main.rs`): the per-request path boots a one-shot
+  capture-aware `vmette::Session` **in-process** (`run_workload_inproc`), via
+  `Config::from_run_request`, and streams the guest's clean captured output back
+  as `Frame::Stdout`/`Frame::Exit` over the socket — no forked subprocess, no
+  console marker-scraping. It peeks `kind`: a `desktop_*` request deserializes
+  into the typed `vmette_proto::daemon::DesktopRequest` enum and is matched (no
+  stringly second dispatch); everything else is the untagged run `Request`.
 - **Stateful desktop registry** (`registry.rs`): holds live `vmette::Session`
   VMs (Agent workload) in-process so a desktop persists across many requests.
   Resolves rootfs images via `vmette_providers::default_registry()`. Guardrails:
@@ -100,9 +111,10 @@ Two **deliberately separate** subsystems:
 
 ## MCP server — `crates/vmette-mcp/src/`
 
-`server.rs` registers tools: `execute`, `fetch_url`, `workspace_*` (direct
-subprocess path), and `desktop_*` (routed through `vmetted` via
-`daemon_client.rs`, since persistence requires the daemon). `daemon_client.rs`
+`server.rs` registers tools: `execute`, `fetch_url`, `workspace_*` (booted
+**in-process** by `sandbox.rs` via a capture-aware `vmette::Session` — the MCP
+server itself carries the virtualization entitlement), and `desktop_*` (routed
+through `vmetted` via `daemon_client.rs`, since persistence requires the daemon). `daemon_client.rs`
 builds requests and parses replies as `vmette-proto` types (no hand-rolled
 `json!`), so a protocol change is a compile error here. `desktop_screenshot`
 returns an MCP image content block. `--allow-network` gates outbound network.
@@ -114,16 +126,33 @@ returns an MCP image content block. `--allow-network` gates outbound network.
 - **`guest/`** (C, cross-compiled for Linux x86_64): `vsock-send.c`,
   `vsock-runner.c` (snapshot-mode helpers, static musl, injected into the
   initramfs) and `vmette-desktop-agent.c` (computer-use agent: XTEST input +
-  XGetImage capture + stb PNG, links libX11/libXtst **dynamically**, so it ships
-  inside the desktop rootfs, not the initramfs).
+  XGetImage capture + stb PNG). It is built two ways: **dynamically** baked into
+  the bundled desktop image (`build-desktop-agent.sh` / the image Dockerfile),
+  and **fully static** (musl + a from-source X client stack) by
+  `build-desktop-agent-static.sh` for the host-injected path below.
 - **`scripts/`**: `fetch-assets.sh`, `fetch-alpine-rootfs.sh`,
   `build-initramfs.sh` (repacks the initramfs and injects `custom-init.sh` as
   `/init`), `custom-init.sh` (the guest PID-1: parses the cmdline, mounts shares,
-  chroots/switch_roots, runs the exec or the desktop branch, writes
+  chroots/switch_roots, runs the exec or the desktop branch — which prefers a
+  host-**injected** agent at `/mnt/agent` over an in-image entrypoint — writes
   `.vmette-exit`, powers off), `build-vsock-send.sh`, `build-desktop-agent.sh`,
-  `build-desktop-image.sh`, `run.sh`, `install.sh`.
-- **`images/vmette-desktop/`** (untracked): Dockerfile + entrypoint for the
-  Debian-slim desktop rootfs (Xvfb + openbox + the agent).
+  `build-desktop-agent-static.sh` (builds the static agent + `vmette-desktop-run.sh`
+  into `assets/<arch>/desktop-agent/`, which the daemon discovers via
+  `vmette_assets::resolve_agent_share` and injects as the `agent` virtio-fs share
+  so any GUI rootfs works), `run.sh`, `install.sh`.
+- **`images/vmette-desktop/`**: the **reference recipe** for the published default
+  desktop image (`vmette_assets::DEFAULT_DESKTOP_IMAGE`,
+  `ghcr.io/chamuka-inc/vmette-desktop:latest`) — `Dockerfile` + `entrypoint.sh` +
+  `vmette-open` for a Debian-slim rootfs (Xvfb + openbox + a baked-in agent). The
+  published image is pulled on first use; building it is **optional** (Docker) via
+  `scripts/build-desktop-image.sh` (`make desktop-image` wraps `--export`; a bare
+  `--push` republishes the full amd64+arm64 manifest) — only to customize the
+  rootfs or republish the default. The recipe doubles as a bring-your-own
+  template, since the agent is host-injected and any GUI rootfs works.
+  `vmette-desktop-run.sh` is the
+  host-**injected** startup (shipped in the `agent` share, run by the init's
+  desktop branch) that brings up Xvfb + a WM and execs the injected static agent,
+  so a vmette-specific image isn't required.
 
 **Important:** after editing `scripts/custom-init.sh`, rebuild the initramfs
 (`bash scripts/build-initramfs.sh`) — the live `assets/<arch>/initramfs-vmette` embeds a

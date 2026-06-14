@@ -2673,6 +2673,9 @@ dependencies = [
 [[package]]
 name = "vmette-assets"
 version = "0.10.0"
+dependencies = [
+ "vmette-proto",
+]
 
 [[package]]
 name = "vmette-cli"
@@ -2684,6 +2687,7 @@ dependencies = [
  "tracing-subscriber",
  "vmette",
  "vmette-assets",
+ "vmette-daemon-client",
  "vmette-proto",
  "vmette-providers",
 ]
@@ -2707,10 +2711,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmette-daemon-client"
+version = "0.10.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "vmette-assets",
+ "vmette-proto",
+]
+
+[[package]]
 name = "vmette-mcp"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "base64",
  "libc",
  "nix",
  "rmcp",
@@ -2723,8 +2738,11 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "vmette",
  "vmette-assets",
+ "vmette-daemon-client",
  "vmette-proto",
+ "vmette-providers",
 ]
 
 [[package]]

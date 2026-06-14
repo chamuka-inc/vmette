@@ -28,9 +28,44 @@ REPO = os.environ.get("VMETTE_REPO") or str(pathlib.Path(__file__).resolve().par
 MCP_BIN = os.environ.get("VMETTE_MCP_BIN", f"{REPO}/target/release/vmette-mcp")
 VMETTE_BIN = os.environ.get("VMETTE_BIN", f"{REPO}/target/release/vmette")
 
+_bootstrapped = False
+
+
+def ensure_built_and_signed():
+    """Build + codesign the binaries under test, from source, once per run.
+
+    vmette-mcp boots one-shot VMs *in-process* (execute/workspace/fetch_url) and
+    auto-spawns vmetted for the desktop tools; both boot VMs in-process, so each
+    needs the com.apple.security.virtualization entitlement. Any cargo build
+    invalidates a prior signature, so — like tests/desktop.sh — we rebuild and
+    re-sign unconditionally rather than trust a stale binary. Skipped when the
+    binaries are overridden to point outside the repo (VMETTE_MCP_BIN).
+    """
+    global _bootstrapped
+    if _bootstrapped or os.environ.get("VMETTE_SKIP_BUILD"):
+        return
+    _bootstrapped = True
+    if not MCP_BIN.startswith(REPO):
+        return  # custom binary path — caller owns building/signing it
+    ents = f"{REPO}/entitlements.plist"
+    subprocess.run(
+        ["cargo", "build", "--release", "-p", "vmette-mcp", "-p", "vmette-cli",
+         "-p", "vmette-daemon"],
+        cwd=REPO, check=True,
+    )
+    for binary in ("vmette-mcp", "vmetted", "vmette"):
+        path = f"{REPO}/target/release/{binary}"
+        if os.path.exists(path):
+            subprocess.run(
+                ["codesign", "--sign", "-", "--force", "--entitlements", ents,
+                 "--options=runtime", path],
+                check=True, capture_output=True,
+            )
+
 
 class MCP:
     def __init__(self, allow_network=True):
+        ensure_built_and_signed()
         args = [MCP_BIN]
         if allow_network:
             args.append("--allow-network")

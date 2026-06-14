@@ -392,9 +392,11 @@ impl RootfsProvider for OciProvider {
                 warn!(error = %e, "guest-helper inject failed; vsock workflows may not work in this image");
             }
         }
+        let image_env = read_image_env(&rootfs);
         Ok(RootfsArtifact::Directory {
             path: rootfs,
             read_only: false,
+            image_env,
         })
     }
 }
@@ -595,10 +597,18 @@ pub async fn pull_with_options(
         extract_layer(&layer.data, media, &rootfs)?;
     }
 
-    // Surface the image's configured environment (PATH, etc.) to the guest so
-    // a `docker`-style toolchain image works without the caller re-deriving
-    // PATH — the guest `/init` sources this before running the exec.
-    write_image_env(&rootfs, &image.config.data);
+    // Persist the image's configured environment (PATH, …) as a host-side cache
+    // artifact, so `provide()` can return it on a later cache hit without
+    // re-pulling. This is NOT a guest contract: the guest never reads it. The
+    // env reaches the guest merged into the single `boot.env` block (see
+    // `vmette::Config::set_rootfs_artifact`), so a `docker`-style toolchain
+    // image's PATH is in scope with no second env channel.
+    let image_env = parse_image_env(&image.config.data);
+    if !image_env.is_empty() {
+        if let Ok(json) = serde_json::to_vec(&image_env) {
+            let _ = std::fs::write(rootfs.join(IMAGE_ENV_FILE), json);
+        }
+    }
 
     // Atomic marker write: stage to a temp file then rename, so a crash
     // between writes can't leave a truncated marker that future runs
@@ -611,42 +621,44 @@ pub async fn pull_with_options(
     Ok(rootfs)
 }
 
-/// Write the image config's `Env` entries into the extracted rootfs as a
-/// shell-sourceable `/.vmette-image-env` (one `export KEY='VALUE'` per line).
-/// The guest `/init` sources it before the exec, so an image's configured
-/// `PATH` (cargo, node, …) and other env are in scope — matching how
-/// `docker run` applies the image's env. Best-effort: a malformed config or a
-/// write failure is silently ignored (the env is a convenience, not required).
-fn write_image_env(rootfs: &Path, config_blob: &[u8]) {
-    if let Some(out) = render_image_env(config_blob) {
-        // The filename is a cross-language contract: the guest PID-1
-        // (scripts/custom-init.sh) sources `/.vmette-image-env` before the
-        // exec. Renaming one side without the other silently drops the image
-        // env. Env is an OCI-image-config concept, so only this provider writes
-        // it — dir/tar/squashfs rootfses carry no Env.
-        let _ = std::fs::write(rootfs.join(".vmette-image-env"), out);
-    }
+/// Host-side cache file holding the image's parsed env as JSON
+/// (`[[key,value],…]`). Read back by [`read_image_env`] on every resolve
+/// (including cache hits). NOT a guest contract — the guest never reads it.
+const IMAGE_ENV_FILE: &str = ".vmette-image-env.json";
+
+/// Read the cached image env an earlier extraction persisted, as `(key, value)`
+/// pairs. Empty when absent or unparseable (the env is a convenience, never
+/// required), e.g. for a rootfs cached before this file format existed.
+fn read_image_env(rootfs: &Path) -> Vec<(String, String)> {
+    std::fs::read(rootfs.join(IMAGE_ENV_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
-/// Parse an OCI image config's `Env` array (`["KEY=VALUE", …]`) and render it
-/// into shell `export KEY='VALUE'` lines via the shared
-/// [`vmette::render_env_exports`] — the same renderer the `--env` cmdline
-/// channel uses, so image env and caller env share identical key/escaping
-/// rules. Returns `None` when the blob is unparseable or carries no usable env.
-fn render_image_env(config_blob: &[u8]) -> Option<String> {
-    let cfg = serde_json::from_slice::<serde_json::Value>(config_blob).ok()?;
-    let pairs: Vec<(String, String)> = cfg
-        .get("config")
+/// Parse an OCI image config's `Env` array (`["KEY=VALUE", …]`) into `(key,
+/// value)` pairs, dropping entries whose key is not a valid shell identifier
+/// (the same rule [`vmette::render_env_exports`] applies when the host renders
+/// the merged env into `boot.env`). Returns an empty vec when the blob is
+/// unparseable or carries no usable env.
+fn parse_image_env(config_blob: &[u8]) -> Vec<(String, String)> {
+    let Ok(cfg) = serde_json::from_slice::<serde_json::Value>(config_blob) else {
+        return Vec::new();
+    };
+    cfg.get("config")
         .and_then(|c| c.get("Env"))
-        .and_then(|e| e.as_array())?
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .filter_map(|kv| {
-            kv.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| entry.as_str())
+                .filter_map(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                })
+                .filter(|(k, _)| vmette::is_valid_env_key(k))
+                .collect()
         })
-        .collect();
-    vmette::render_env_exports(&pairs)
+        .unwrap_or_default()
 }
 
 fn extracted_path(cache_root: &Path, image_ref: &str, digest: &str) -> PathBuf {
@@ -870,27 +882,26 @@ mod tests {
     }
 
     #[test]
-    fn image_env_renders_exports_and_escapes() {
+    fn image_env_parses_pairs_and_drops_invalid_keys() {
         let blob = br#"{"config":{"Env":["PATH=/usr/local/cargo/bin:/bin","RUST_VERSION=1.96.0","BAD KEY=x","1LEAD=x","WEIRD=it's","HAS=a=b"]}}"#;
-        let out = render_image_env(blob).expect("some env");
-        assert!(out.contains("export PATH='/usr/local/cargo/bin:/bin'\n"));
-        assert!(out.contains("export RUST_VERSION='1.96.0'\n"));
+        let pairs = parse_image_env(blob);
+        assert!(pairs.contains(&("PATH".into(), "/usr/local/cargo/bin:/bin".into())));
+        assert!(pairs.contains(&("RUST_VERSION".into(), "1.96.0".into())));
         // split_once keeps `=` in the value.
-        assert!(out.contains("export HAS='a=b'\n"));
-        // Non-identifier keys are dropped: a space, and a leading digit (an
-        // invalid shell identifier the guest would reject on source).
-        assert!(!out.contains("BAD KEY"));
-        assert!(!out.contains("1LEAD"));
-        // Single quotes in the value are escaped so sourcing stays inert.
-        assert!(out.contains(r"export WEIRD='it'\''s'"));
+        assert!(pairs.contains(&("HAS".into(), "a=b".into())));
+        // A single quote is carried verbatim as data; escaping happens later
+        // when the host renders the merged env into boot.env.
+        assert!(pairs.contains(&("WEIRD".into(), "it's".into())));
+        // Non-identifier keys are dropped (space, leading digit).
+        assert!(!pairs.iter().any(|(k, _)| k == "BAD KEY" || k == "1LEAD"));
     }
 
     #[test]
-    fn image_env_none_when_absent_or_unparseable() {
-        assert!(render_image_env(b"{}").is_none());
-        assert!(render_image_env(br#"{"config":{}}"#).is_none());
-        assert!(render_image_env(br#"{"config":{"Env":[]}}"#).is_none());
-        assert!(render_image_env(b"not json at all").is_none());
+    fn image_env_empty_when_absent_or_unparseable() {
+        assert!(parse_image_env(b"{}").is_empty());
+        assert!(parse_image_env(br#"{"config":{}}"#).is_empty());
+        assert!(parse_image_env(br#"{"config":{"Env":[]}}"#).is_empty());
+        assert!(parse_image_env(b"not json at all").is_empty());
     }
 
     #[test]
