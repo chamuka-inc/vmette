@@ -75,7 +75,7 @@ echo
 echo "=== vmette live view smoke ($(date +%H:%M:%S)) ==="
 
 SESSION="$("$VMETTE" desktop --socket "$SOCK" start \
-    "${IMG_ARGS[@]}" --size "$SIZE" \
+    ${IMG_ARGS[@]+"${IMG_ARGS[@]}"} --size "$SIZE" \
     --kernel "$KERNEL" --initramfs "$INITRAMFS" 2>/dev/null)"
 [[ -n "$SESSION" ]]; check "start desktop → session id"
 
