@@ -24,6 +24,14 @@
 
 set -euo pipefail
 
+# Build under the byte-wise C locale. libX11's `nls/locale.alias` build runs the
+# host `sed` over a file containing non-ASCII locale names; under a UTF-8 locale
+# macOS's BSD sed rejects those bytes ("sed: RE error: illegal byte sequence")
+# and the cross-build dies. C locale makes sed operate byte-wise and skip the
+# multibyte validation. (Local builds often pass anyway via GNU sed / a UTF-8
+# locale, but a clean macos-14 CI runner has neither — see release.yml.)
+export LC_ALL=C LANG=C
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$HERE/scripts/guest-arch.sh"
 ARCH="$(vmette_guest_arch)"
