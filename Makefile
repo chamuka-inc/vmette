@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-image run shell test test-desktop test-view clean
+.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-image desktop-agent desktop-agent-all run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -80,6 +80,14 @@ guest-assets-all: ## Build boot assets + guest helpers for both x86_64 and aarch
 desktop-image: ## Build the desktop rootfs from source → assets/<arch>/vmette-desktop-rootfs.tar
 	bash scripts/build-desktop-image.sh --export
 
+desktop-agent: ## Build the host-injected static desktop agent (host guest arch) → assets/<arch>/desktop-agent/
+	bash scripts/build-desktop-agent-static.sh
+
+desktop-agent-all: ## Build the static desktop agent for both x86_64 and aarch64 guests (needs Docker)
+	for arch in x86_64 aarch64; do \
+	    ARCH=$$arch bash scripts/build-desktop-agent-static.sh; \
+	done
+
 run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
 	bash scripts/run.sh
 
@@ -99,7 +107,7 @@ test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and dri
 VERSION   ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo v0.1.0-dev)
 DIST_NAME := vmette-$(VERSION)-universal-apple-darwin
 
-dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers + LICENSE
+dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with universal binaries + both guest arch assets/helpers (+ desktop agents if pre-built) + LICENSE
 	rm -rf dist
 	mkdir -p dist/staging/$(DIST_NAME)/{bin,lib,include,assets,share/vmette/guest}
 	cp target/universal/release/vmette     dist/staging/$(DIST_NAME)/bin/
@@ -117,6 +125,13 @@ dist: universal guest-assets-all header ## Produce dist/$(DIST_NAME).tar.gz with
 	        mkdir -p dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch; \
 	        cp assets/$$arch/alpine-rootfs/usr/local/bin/vsock-send dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch/; \
 	        cp assets/$$arch/alpine-rootfs/usr/local/bin/vsock-runner dist/staging/$(DIST_NAME)/share/vmette/guest/$$arch/; \
+	    fi; \
+	    if [[ -f assets/$$arch/desktop-agent/vmette-desktop-agent ]]; then \
+	        mkdir -p dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent; \
+	        cp assets/$$arch/desktop-agent/vmette-desktop-agent  dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/; \
+	        cp assets/$$arch/desktop-agent/vmette-desktop-run.sh dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/; \
+	        chmod +x dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/vmette-desktop-agent \
+	                 dist/staging/$(DIST_NAME)/assets/$$arch/desktop-agent/vmette-desktop-run.sh; \
 	    fi; \
 	done
 	if [[ -s assets/vmlinuz-virt && -s assets/initramfs-vmette ]]; then \
