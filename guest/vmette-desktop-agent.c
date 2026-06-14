@@ -255,6 +255,17 @@ static void click_button(unsigned button) {
     XFlush(g_dpy);
 }
 
+// Success reply that echoes the *resulting* pointer position, so the host/agent
+// can verify where a move/click actually landed (a window manager can constrain
+// the pointer, so the request coords aren't always the truth). Falls back to a
+// bare ok if the pointer can't be queried.
+static int send_pointer(int fd, uint32_t req_id) {
+    Window r, c; int rx, ry, wx, wy; unsigned int mask;
+    if (!XQueryPointer(g_dpy, g_root, &r, &c, &rx, &ry, &wx, &wy, &mask))
+        return send_ok(fd, req_id);
+    return send_coords(fd, req_id, rx, ry);
+}
+
 // Map a key-name token to a keysym, accepting common aliases.
 static KeySym name_to_keysym(const char *name) {
     if (!strcasecmp(name, "ctrl") || !strcasecmp(name, "control"))
@@ -997,16 +1008,16 @@ static int handle(int fd, uint32_t req_id, const char *json) {
     } else if (!strcmp(action, "mouse_move")) {
         json_int(json, "x", &x); json_int(json, "y", &y);
         move_pointer((int)x, (int)y);
-        return send_ok(fd, req_id);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "left_click")) {
-        click_button(1); return send_ok(fd, req_id);
+        click_button(1); return send_pointer(fd, req_id);
     } else if (!strcmp(action, "right_click")) {
-        click_button(3); return send_ok(fd, req_id);
+        click_button(3); return send_pointer(fd, req_id);
     } else if (!strcmp(action, "middle_click")) {
-        click_button(2); return send_ok(fd, req_id);
+        click_button(2); return send_pointer(fd, req_id);
     } else if (!strcmp(action, "double_click")) {
         click_button(1); usleep(50000); click_button(1);
-        return send_ok(fd, req_id);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "left_click_drag")) {
         json_int(json, "x", &x); json_int(json, "y", &y);
         XTestFakeButtonEvent(g_dpy, 1, True, CurrentTime);
@@ -1014,7 +1025,7 @@ static int handle(int fd, uint32_t req_id, const char *json) {
         move_pointer((int)x, (int)y);
         XTestFakeButtonEvent(g_dpy, 1, False, CurrentTime);
         XFlush(g_dpy);
-        return send_ok(fd, req_id);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "type")) {
         char text[8192];
         if (!json_str(json, "text", text, sizeof(text)))
@@ -1040,7 +1051,7 @@ static int handle(int fd, uint32_t req_id, const char *json) {
         else if (!strcmp(dir, "right")) button = 7;
         if (amount <= 0) amount = 1;
         for (long i = 0; i < amount; i++) click_button(button);
-        return send_ok(fd, req_id);
+        return send_pointer(fd, req_id);
     } else if (!strcmp(action, "wait")) {
         json_int(json, "ms", &ms);
         if (ms <= 0) return send_ok(fd, req_id);

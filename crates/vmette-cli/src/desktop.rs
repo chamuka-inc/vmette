@@ -141,7 +141,7 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
             let s = pos(&args, 0, "SESSION_ID");
             let x = parse_i32(&pos(&args, 1, "X"), "X");
             let y = parse_i32(&pos(&args, 2, "Y"), "Y");
-            action(&socket, &s, Action::MouseMove { x, y }).map(|_| None)
+            action(&socket, &s, Action::MouseMove { x, y }).map(|r| Some(landed(x, y, &r)))
         }
         "click" => cmd_click(&socket, &args, Action::LeftClick),
         "double-click" => cmd_click(&socket, &args, Action::DoubleClick),
@@ -419,14 +419,28 @@ fn cmd_cursor(socket: &Path, args: &[String]) -> Result<Option<String>, String> 
 }
 
 /// Move to X Y then click. Click actions fire at the current pointer position,
-/// so we position first for ergonomic `click X Y`.
+/// so we position first for ergonomic `click X Y`. Prints where the pointer
+/// actually landed (the agent echoes its resulting position), flagging a
+/// window-manager constraint when it differs from the request.
 fn cmd_click(socket: &Path, args: &[String], click: Action) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
     let x = parse_i32(&pos(args, 1, "X"), "X");
     let y = parse_i32(&pos(args, 2, "Y"), "Y");
     action(socket, &session, Action::MouseMove { x, y })?;
-    action(socket, &session, click)?;
-    Ok(None)
+    let reply = action(socket, &session, click)?;
+    Ok(Some(landed(x, y, &reply)))
+}
+
+/// Format a pointer action's landed position from the echoed `x`/`y`, matching
+/// the `cursor` command's `"X Y"` shape so output stays machine-parseable.
+fn landed(req_x: i32, req_y: i32, reply: &ActionReply) -> String {
+    match (reply.x, reply.y) {
+        (Some(ax), Some(ay)) if (ax, ay) != (req_x, req_y) => {
+            format!("{ax} {ay} (constrained; requested {req_x} {req_y})")
+        }
+        (Some(ax), Some(ay)) => format!("{ax} {ay}"),
+        _ => format!("{req_x} {req_y}"),
+    }
 }
 
 fn cmd_scroll(socket: &Path, args: &[String]) -> Result<Option<String>, String> {

@@ -257,18 +257,20 @@ A separate family that drives a **persistent** graphical desktop session
 launches the daemon automatically on first desktop use if it isn't already
 running. `desktop_start` returns a `session_id` to pass to the rest;
 `desktop_screenshot` returns a PNG **image content block** for the agent to
-look at. Full reference, protocol, and image build in
+look at, plus a **framebuffer note** stating the pixel dimensions — so the agent
+targets clicks in the screenshot's true coordinate space instead of guessing the
+scale of a downscaled rendering. Full reference, protocol, and image build in
 [`DESKTOP.md`](DESKTOP.md).
 
 | Tool | Input | Returns |
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?` | session id |
 | `desktop_view` | `session_id` | `vnc://host:port` — open a live VNC view a human can watch and drive (see [DESKTOP.md](DESKTOP.md#live-view-watch--drive-the-desktop)) |
-| `desktop_screenshot` | `session_id` | PNG image block |
-| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + PNG, once the screen has stopped changing and stayed still |
-| `desktop_what_changed` | `session_id` | note + PNG of the region changed since the last capture |
+| `desktop_screenshot` | `session_id` | framebuffer note (`framebuffer WxH; …`) + PNG image block |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + PNG, once the screen has stopped changing and stayed still |
+| `desktop_what_changed` | `session_id` | note + framebuffer note + PNG of the region changed since the last capture |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
-| `desktop_move` / `desktop_click` / `desktop_double_click` / `desktop_right_click` / `desktop_middle_click` | `session_id`, `x`, `y` | status |
+| `desktop_move` / `desktop_click` / `desktop_double_click` / `desktop_right_click` / `desktop_middle_click` | `session_id`, `x`, `y` | status (echoes where the pointer landed; flags `(constrained)` if the WM clamped it) |
 | `desktop_drag` | `session_id`, `x`, `y` | status — press-move-release from the current pointer to `(x, y)`: text selection, sliders, drag-and-drop, drawing |
 | `desktop_type` | `session_id`, `text` | status |
 | `desktop_key` | `session_id`, `keys` (e.g. `ctrl+c`) | status |

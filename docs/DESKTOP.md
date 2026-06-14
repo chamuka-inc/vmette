@@ -215,15 +215,15 @@ to be running; the MCP server connects to its socket. Override the socket with
 | Tool | Input | Returns |
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?`, `ca_certs?` | session id (text) |
-| `desktop_screenshot` | `session_id` | **PNG image content block** |
-| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | **PNG image content block** (once the screen stops changing) |
-| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture **plus a PNG image content block** of the fresh frame |
+| `desktop_screenshot` | `session_id` | a **framebuffer note** (`framebuffer WxH; …`) **plus a PNG image content block** |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + **PNG image content block** (once the screen stops changing) |
+| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture + framebuffer note **plus a PNG image content block** of the fresh frame |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
-| `desktop_move` | `session_id`, `x`, `y` | status text |
-| `desktop_click` | `session_id`, `x`, `y` | status text |
-| `desktop_double_click` | `session_id`, `x`, `y` | status text |
-| `desktop_right_click` | `session_id`, `x`, `y` | status text |
-| `desktop_middle_click` | `session_id`, `x`, `y` | status text |
+| `desktop_move` | `session_id`, `x`, `y` | status text (echoes where the pointer landed; flags `(constrained)`) |
+| `desktop_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
+| `desktop_double_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
+| `desktop_right_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
+| `desktop_middle_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
 | `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the current pointer position) |
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
@@ -239,10 +239,18 @@ to be running; the MCP server connects to its socket. Override the socket with
 
 `desktop_screenshot` returns an MCP image content block
 (`image/png`), which is what makes the loop consumable by a computer-use agent.
-`desktop_click` / `desktop_double_click` / `desktop_right_click` move the
-pointer to `(x, y)` first, then click (agent click actions fire at the current
-pointer position). `network=true` on `desktop_start` is subject to the server's
-`--allow-network` gate.
+Alongside the image it returns a **framebuffer note** (`framebuffer WxH; …
+origin top-left`): pointer/click coordinates are in that exact pixel space, so an
+agent reasoning over a downscaled rendering can map its target back to true
+coordinates instead of guessing the scale. `desktop_click` /
+`desktop_double_click` / `desktop_right_click` move the pointer to `(x, y)`
+first, then click (agent click actions fire at the current pointer position).
+Pointer actions (`desktop_move`/click/scroll/drag) **echo where the pointer
+actually landed** in their status text — if a window manager constrained the
+move, the reply reads `… landed at X Y (constrained)`, so a missed target is
+observable in one round-trip instead of requiring a follow-up screenshot.
+`network=true` on `desktop_start` is subject to the server's `--allow-network`
+gate.
 
 **Starting an app and seeing it: `desktop_launch`.** `desktop_exec` is
 fire-and-forget — it launches a command and returns immediately, leaving you to
@@ -294,8 +302,9 @@ One request object per connection; one reply object back.
 // → one action
 { "kind": "desktop_action", "session_id": "a1b2c3...",
   "action": { "action": "left_click" } }
-// ← { "kind": "action_result", "ok": true }
-//   screenshots add "png_base64"; cursor_position adds "x"/"y";
+// ← { "kind": "action_result", "ok": true, "x": 200, "y": 200 }
+//   screenshots add "png_base64"; cursor_position AND the pointer actions
+//   (move/click/scroll/drag) add "x"/"y" — the resulting pointer position;
 //   failures set "ok": false and "error".
 
 // → stop
@@ -314,8 +323,11 @@ Between the host `Session` and the in-guest agent the wire format is binary:
 ```
 
 The request header is an `Action`; the response header is a `ResponseHeader`
-(`ok`, `error?`, `x?`, `y?`, `payload_len`). Screenshots travel as a raw PNG
-payload after the header. See `crates/vmette/src/desktop.rs`.
+(`ok`, `error?`, `x?`, `y?`, `payload_len`). `x`/`y` carry the pointer position:
+`cursor_position` reports it, and every pointer action echoes the *resulting*
+position. Screenshots travel as a raw PNG payload after the header (its pixel
+dimensions are the coordinate space for all pointer actions). See
+`crates/vmette/src/desktop.rs`.
 
 ## Action reference
 
@@ -324,14 +336,14 @@ JSON shape is `{"action": "<name>", ...fields}`.
 
 | Action | Fields | Effect |
 |--------|--------|--------|
-| `screenshot` | — | Capture framebuffer → PNG payload. The mouse pointer is composited in (via XFixes), so the cursor shows in screenshots and the live view. |
+| `screenshot` | — | Capture framebuffer → PNG payload. The PNG's pixel size is the coordinate space for all pointer actions. The mouse pointer is composited in (via XFixes), so the cursor shows in screenshots and the live view. |
 | `cursor_position` | — | Report pointer `(x, y)` in the header. |
-| `mouse_move` | `x`, `y` | Absolute pointer move. |
-| `left_click` | — | Left click at current position. |
-| `right_click` | — | Right click at current position. |
-| `middle_click` | — | Middle click at current position. |
-| `double_click` | — | Double left click at current position. |
-| `left_click_drag` | `x`, `y` | Press, move to `(x, y)`, release. |
+| `mouse_move` | `x`, `y` | Absolute pointer move. Header echoes the resulting `(x, y)`. |
+| `left_click` | — | Left click at current position. Header echoes the click `(x, y)`. |
+| `right_click` | — | Right click at current position. Header echoes the click `(x, y)`. |
+| `middle_click` | — | Middle click at current position. Header echoes the click `(x, y)`. |
+| `double_click` | — | Double left click at current position. Header echoes the click `(x, y)`. |
+| `left_click_drag` | `x`, `y` | Press, move to `(x, y)`, release. Header echoes the resulting `(x, y)`. |
 | `type` | `text` | Type a UTF-8 string via synthetic key events. |
 | `key` | `keys` | Press a chord, e.g. `"ctrl+c"`, `"Return"`, `"alt+Tab"`. |
 | `scroll` | `x`, `y`, `direction`, `amount` | Scroll `amount` clicks (`up`/`down`/`left`/`right`). |

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Desktop click-targeting reliability: every desktop screenshot now returns a
+  **framebuffer note** (`framebuffer WxH; pointer/click coordinates are in this
+  pixel space, origin top-left`) alongside the PNG (`desktop_screenshot`,
+  `desktop_screenshot_when_settled`, `desktop_what_changed`), so an agent
+  reasoning over a downscaled rendering can map its target back to true
+  coordinates. Pointer actions (`desktop_move`/click/scroll/drag, and the
+  `vmette desktop move`/`click` CLI) now **echo where the pointer actually
+  landed** — the agent response header carries the resulting `x`/`y`, and the
+  MCP/CLI status reports a `(constrained)` landing when a window manager clamped
+  the move. The guest `ResponseHeader` `x`/`y` fields, previously set only by
+  `cursor_position`, are now also set by the pointer actions.
+
 - Desktop sessions can now run on **any** GUI rootfs — bring your own image
   (`vmette desktop start --image <any-image>` / `desktop_start`), it just has to
   provide an X server (Xvfb) and a window manager. The computer-use agent is no

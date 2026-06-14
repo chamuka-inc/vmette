@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
@@ -612,10 +613,10 @@ impl VmetteServer {
         let png = reply.png_base64.ok_or_else(|| {
             ErrorData::internal_error("screenshot reply had no PNG payload".to_string(), None)
         })?;
-        Ok(CallToolResult::success(vec![Content::image(
-            png,
-            "image/png".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            Content::text(framebuffer_note(&png)),
+            Content::image(png, "image/png".to_string()),
+        ]))
     }
 
     #[tool(
@@ -646,6 +647,7 @@ impl VmetteServer {
         };
         Ok(CallToolResult::success(vec![
             Content::text(note),
+            Content::text(framebuffer_note(&reply.png_base64)),
             Content::image(reply.png_base64, "image/png".to_string()),
         ]))
     }
@@ -668,6 +670,7 @@ impl VmetteServer {
         };
         Ok(CallToolResult::success(vec![
             Content::text(note),
+            Content::text(framebuffer_note(&reply.png_base64)),
             Content::image(reply.png_base64, "image/png".to_string()),
         ]))
     }
@@ -692,15 +695,16 @@ impl VmetteServer {
         &self,
         Parameters(args): Parameters<DesktopPointArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.action(
-            &args.session_id,
-            Action::MouseMove {
-                x: args.x,
-                y: args.y,
-            },
-        )
-        .await?;
-        Ok(ok_text(format!("moved to {} {}", args.x, args.y)))
+        let reply = self
+            .action(
+                &args.session_id,
+                Action::MouseMove {
+                    x: args.x,
+                    y: args.y,
+                },
+            )
+            .await?;
+        Ok(ok_text(landed_msg("moved to", args.x, args.y, &reply)))
     }
 
     #[tool(description = "Left-click at (x, y).")]
@@ -996,6 +1000,7 @@ impl VmetteServer {
         };
         Ok(CallToolResult::success(vec![
             Content::text(note),
+            Content::text(framebuffer_note(&settle.png_base64)),
             Content::image(settle.png_base64, "image/png".to_string()),
         ]))
     }
@@ -1044,8 +1049,8 @@ impl VmetteServer {
     ) -> Result<CallToolResult, ErrorData> {
         let label = click_label(&click);
         self.action(session_id, Action::MouseMove { x, y }).await?;
-        self.action(session_id, click).await?;
-        Ok(ok_text(format!("{label} at {x} {y}")))
+        let reply = self.action(session_id, click).await?;
+        Ok(ok_text(landed_msg(label, x, y, &reply)))
     }
 }
 
@@ -1102,6 +1107,56 @@ fn ok_text(msg: String) -> CallToolResult {
     CallToolResult::success(vec![Content::text(msg)])
 }
 
+/// Read a PNG's pixel dimensions from its IHDR without decoding the image. A
+/// PNG is an 8-byte signature, a 4-byte chunk length, the `IHDR` tag, then
+/// width and height as big-endian `u32` — so width sits at byte 16, height at
+/// 20. Only the first 24 bytes are needed, i.e. the first 32 base64 chars (a
+/// clean 4-char-aligned chunk that decodes to exactly 24 bytes).
+fn png_dims_from_b64(b64: &str) -> Option<(u32, u32)> {
+    let head: String = b64.chars().take(32).collect();
+    if head.len() < 32 {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(head)
+        .ok()?;
+    if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let h = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((w, h))
+}
+
+/// A text content block telling the agent the framebuffer's pixel dimensions
+/// and that pointer/click coordinates live in that space — so a model reasoning
+/// over a downscaled rendering can map its target back to true coordinates
+/// instead of guessing the scale.
+fn framebuffer_note(png_b64: &str) -> String {
+    match png_dims_from_b64(png_b64) {
+        Some((w, h)) => format!(
+            "framebuffer {w}x{h}; pointer/click coordinates are in this pixel space, \
+             origin top-left (0,0), x→right, y→down."
+        ),
+        None => "pointer/click coordinates are in framebuffer pixels, origin top-left (0,0)."
+            .to_string(),
+    }
+}
+
+/// Build a pointer-action success message that reports where the pointer
+/// *actually* landed (the agent echoes its resulting position in `x`/`y`).
+/// When the echo is present and differs from the request, the agent learns the
+/// window manager constrained the pointer — otherwise it confirms the hit.
+fn landed_msg(verb: &str, req_x: i32, req_y: i32, reply: &ActionReply) -> String {
+    match (reply.x, reply.y) {
+        (Some(ax), Some(ay)) if (ax, ay) != (req_x, req_y) => {
+            format!("{verb} {req_x} {req_y}; pointer landed at {ax} {ay} (constrained)")
+        }
+        (Some(ax), Some(ay)) => format!("{verb} {ax} {ay}"),
+        _ => format!("{verb} {req_x} {req_y}"),
+    }
+}
+
 /// Human-readable label for a click action, for the tool's success message.
 fn click_label(a: &Action) -> &'static str {
     match a {
@@ -1130,6 +1185,61 @@ fn format_reply(r: &RunReply) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_dims_reads_ihdr_width_height() {
+        // Minimal valid PNG header: 8-byte signature, IHDR length+tag, then a
+        // 1280x800 dimension pair (big-endian u32). Only the first 24 bytes are
+        // consulted, so the rest of a real PNG is irrelevant.
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        bytes.extend_from_slice(&[0, 0, 0, 13]); // IHDR length
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&1280u32.to_be_bytes());
+        bytes.extend_from_slice(&800u32.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 16]); // padding so encode is well-formed
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        assert_eq!(png_dims_from_b64(&b64), Some((1280, 800)));
+        let note = framebuffer_note(&b64);
+        assert!(note.contains("1280x800"), "note was: {note}");
+    }
+
+    #[test]
+    fn png_dims_rejects_non_png() {
+        assert_eq!(png_dims_from_b64("not-base64-or-png"), None);
+        assert_eq!(png_dims_from_b64(""), None);
+    }
+
+    #[test]
+    fn landed_msg_flags_constraint_and_confirms_hit() {
+        let hit = ActionReply {
+            ok: true,
+            error: None,
+            x: Some(200),
+            y: Some(200),
+            png_base64: None,
+            text: None,
+            exit_code: None,
+        };
+        assert_eq!(landed_msg("moved to", 200, 200, &hit), "moved to 200 200");
+        let clamped = ActionReply {
+            x: Some(150),
+            y: Some(180),
+            ..hit.clone()
+        };
+        assert_eq!(
+            landed_msg("moved to", 200, 200, &clamped),
+            "moved to 200 200; pointer landed at 150 180 (constrained)"
+        );
+        let no_echo = ActionReply {
+            x: None,
+            y: None,
+            ..hit
+        };
+        assert_eq!(
+            landed_msg("moved to", 200, 200, &no_echo),
+            "moved to 200 200"
+        );
+    }
 
     #[test]
     fn single_quote_handles_quotes_and_meta() {
