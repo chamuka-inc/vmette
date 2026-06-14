@@ -126,6 +126,18 @@ def main():
         check("click ok", "click at 200 200" in text_of(r))
         r = m.call_tool("desktop_cursor_position", {"session_id": sid}, timeout=60)
         check("cursor reports 200 200", text_of(r).strip() == "200 200", text_of(r).strip())
+
+        # Drag path: the guest agent drags with interpolated motion (so DnD
+        # targets recognize the gesture). desktop_drag starts at the current
+        # pointer and ends at (x,y) — confirm it runs and the pointer lands at
+        # the drag end. (A bare Xvfb+WM has no drop target, so this exercises the
+        # action round-trip + landing, not a full DnD drop.)
+        print("\n== drag path (move -> drag -> cursor_position)")
+        m.call_tool("desktop_move", {"session_id": sid, "x": 200, "y": 200}, timeout=60)
+        r = m.call_tool("desktop_drag", {"session_id": sid, "x": 520, "y": 360}, timeout=60)
+        check("drag ok", bool(text_of(r)))
+        r = m.call_tool("desktop_cursor_position", {"session_id": sid}, timeout=60)
+        check("drag landed at 520 360", text_of(r).strip() == "520 360", text_of(r).strip())
     finally:
         print("\n== desktop_stop")
         r = m.call_tool("desktop_stop", {"session_id": sid}, timeout=60)

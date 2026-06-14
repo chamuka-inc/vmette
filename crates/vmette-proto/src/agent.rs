@@ -168,6 +168,19 @@ mod tests {
     }
 
     #[test]
+    fn left_click_drag_round_trips() {
+        // The drag target's wire shape — the contract the CLI `drag` verb, the
+        // MCP `desktop_drag` tool, and the guest agent's interpolated drag all
+        // agree on. The agent reads `x`/`y` as the drag *end*; it starts at the
+        // current pointer.
+        let a = Action::LeftClickDrag { x: 640, y: 400 };
+        let j = serde_json::to_string(&a).unwrap();
+        assert_eq!(j, r#"{"action":"left_click_drag","x":640,"y":400}"#);
+        let back: Action = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
     fn scroll_direction_is_snake_case() {
         let a = Action::Scroll {
             x: 1,
