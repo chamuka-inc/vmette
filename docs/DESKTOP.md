@@ -21,11 +21,16 @@ daemon restart. (Explicit `--share`/share mounts are the deliberate exception:
 those are writable and shared with the host because you asked for them.)
 
 There is no Apple graphics window involved. The guest runs a headless X server
-(`Xvfb :99`) plus a lightweight window manager (`openbox`), and an in-guest C
-agent (`vmette-desktop-agent`) captures the framebuffer with `XGetImage` and
-injects input with `XTEST`. The agent speaks a small framed protocol over
-**vsock** — the same bidirectional channel vmette already wires up — so no
-network and no display server on the host are required.
+(`Xvfb :99`) plus a lightweight window manager (`openbox`), and a C agent
+(`vmette-desktop-agent`) captures the framebuffer with `XGetImage` and injects
+input with `XTEST`. The agent speaks a small framed protocol over **vsock** —
+the same bidirectional channel vmette already wires up — so no network and no
+display server on the host are required.
+
+The agent itself is supplied by **vmette** (a per-arch static binary it injects
+into the guest), not baked into the rootfs — so the desktop runs on any image
+that provides an X server + a window manager. See
+[Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
 ## Architecture
 
@@ -114,6 +119,59 @@ sessions left untouched for longer than the idle TTL (30 min).
    incantation lives with the browser, in the image, so `desktop_launch` and the
    CLI stay application-agnostic. Drop the `chromium` install line to shrink the
    image; the agent works without it (you can launch any X app).
+
+## Bring your own desktop rootfs
+
+The computer-use agent is **not** part of the rootfs image — vmette ships it and
+injects it at boot. So a desktop session runs on **any** rootfs that provides an
+**X server (`Xvfb`)** and a **window manager**; that is the entire contract. The
+bundled `vmette-desktop` image is just one convenient such rootfs (it also adds
+Chromium + fonts); you can equally point `--image` at a stock `debian + xvfb +
+openbox` image, your own GUI image, or an OCI ref:
+
+```sh
+vmette desktop start --image tar+file:///path/to/my-gui-rootfs.tar
+vmette desktop start --image my-registry/my-desktop:latest
+```
+
+How it works:
+
+- vmette builds a **per-arch, fully-static** `vmette-desktop-agent` (musl + a
+  from-source X client stack — `scripts/build-desktop-agent-static.sh`) into
+  `assets/<arch>/desktop-agent/`, beside a self-contained
+  `vmette-desktop-run.sh` startup. Being fully static, **one** agent binary runs
+  in any rootfs regardless of its libc (glibc or musl) — it carries its own libc
+  and X clients and needs nothing from the rootfs but the X server socket.
+
+  ```sh
+  bash scripts/build-desktop-agent-static.sh   # → assets/<arch>/desktop-agent/
+  ```
+
+- `vmetted` discovers that directory (`vmette_assets::resolve_agent_share`) and
+  mounts it into Agent-workload guests as the **read-only** `agent` virtio-fs
+  share. The guest's PID-1 init runs the injected `/mnt/agent/vmette-desktop-run.sh`,
+  which brings up `Xvfb` + a window manager (auto-detected: openbox / fluxbox /
+  icewm / …) and execs the static agent. The share is read-only so a guest can't
+  write back into vmette's host-side agent directory.
+
+- **Fallback / compatibility.** When the agent asset isn't present, the init
+  falls back to an agent baked into the rootfs at
+  `/usr/local/bin/vmette-desktop-entrypoint.sh` — which is what the bundled
+  `vmette-desktop` image ships, so it keeps working unchanged. When the asset
+  *is* present, the injected agent is used for every session (so a single,
+  host-version-matched agent runs everywhere).
+
+A minimal bring-your-own image needs only:
+
+```dockerfile
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb openbox \
+ && rm -rf /var/lib/apt/lists/*
+# add your apps (a browser, an editor, …); no vmette agent required.
+```
+
+The agent injects a host CA-cert policy for Chromium when `--ca-certs` is in
+play (best-effort), but otherwise makes no assumptions about the rootfs's apps.
 
 ## Use it (CLI)
 
