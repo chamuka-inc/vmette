@@ -199,9 +199,10 @@ impl Registry {
                 "resolving desktop image {}: {e}\n\
                  The default image is published publicly to GHCR, so this usually \
                  means no network / offline mode or a registry error. To run \
-                 without pulling, build the rootfs locally with `make desktop-image` \
-                 — it exports to assets/<arch>/vmette-desktop-rootfs.tar, which the CLI/MCP \
-                 then auto-discover (or pass --image / set $VMETTE_DESKTOP_IMAGE). \
+                 without pulling, point at a local GUI rootfs: pass --image / set \
+                 $VMETTE_DESKTOP_IMAGE (any image with Xvfb + a window manager — \
+                 the agent is host-injected), or drop a tarball at \
+                 assets/<arch>/vmette-desktop-rootfs.tar (auto-discovered). \
                  See docs/DESKTOP.md.",
                 params.image
             )

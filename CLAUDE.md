@@ -139,12 +139,17 @@ returns an MCP image content block. `--allow-network` gates outbound network.
   `build-desktop-agent-static.sh` (builds the static agent + `vmette-desktop-run.sh`
   into `assets/<arch>/desktop-agent/`, which the daemon discovers via
   `vmette_assets::resolve_agent_share` and injects as the `agent` virtio-fs share
-  so any GUI rootfs works), `build-desktop-image.sh`, `run.sh`, `install.sh`.
-- **`images/vmette-desktop/`**: `Dockerfile` + `entrypoint.sh` + `vmette-open`
-  for the bundled Debian-slim desktop rootfs (Xvfb + openbox + a baked-in agent),
-  and `vmette-desktop-run.sh` — the host-**injected** startup (shipped in the
-  `agent` share, run by the init's desktop branch) that brings up Xvfb + a WM and
-  execs the injected static agent, so a vmette-specific image isn't required.
+  so any GUI rootfs works), `run.sh`, `install.sh`.
+- **`images/vmette-desktop/`**: the **reference recipe** for the published default
+  desktop image (`vmette_assets::DEFAULT_DESKTOP_IMAGE`,
+  `ghcr.io/chamuka-inc/vmette-desktop:latest`) — `Dockerfile` + `entrypoint.sh` +
+  `vmette-open` for a Debian-slim rootfs (Xvfb + openbox + a baked-in agent). This
+  repo no longer auto-builds it (the published image is frozen and pulled on first
+  use); the recipe doubles as a bring-your-own template, since the agent is
+  host-injected and any GUI rootfs works. `vmette-desktop-run.sh` is the
+  host-**injected** startup (shipped in the `agent` share, run by the init's
+  desktop branch) that brings up Xvfb + a WM and execs the injected static agent,
+  so a vmette-specific image isn't required.
 
 **Important:** after editing `scripts/custom-init.sh`, rebuild the initramfs
 (`bash scripts/build-initramfs.sh`) — the live `assets/<arch>/initramfs-vmette` embeds a

@@ -50,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the previous in-rootfs `/.vmette-image-env` guest file is gone — image env now
   reaches the guest through the same channel as `--env`.
 
+### Removed
+
+- The repo no longer builds or publishes the desktop rootfs image. The
+  `make desktop-image` target, `scripts/build-desktop-image.sh`, and the
+  `desktop-image.yml` CI workflow are gone. Because the computer-use agent is now
+  host-injected, a vmette-specific image isn't required — `desktop start` defaults
+  to the (frozen) published `ghcr.io/chamuka-inc/vmette-desktop:latest` and you
+  customize by bringing your own GUI rootfs (`--image` / `$VMETTE_DESKTOP_IMAGE`).
+  The reference recipe stays in `images/vmette-desktop/` for forking. No runtime
+  behavior change: the default desktop still works with no setup.
+
 ### Fixed
 
 - The desktop `navigate` action (and `desktop_navigate`) now actually renders the

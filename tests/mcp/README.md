@@ -28,9 +28,10 @@ repo root is auto-detected; set `VMETTE_REPO` to run from a copy elsewhere.
 ```bash
 python3 tests/mcp/driver.py
 
-# desktop suite needs the browser rootfs tar (see desktop_e2e.py's docstring,
-# or build it with scripts/build-desktop-image.sh), then:
-DESKTOP_IMAGE=tar+file:///tmp/vmette-desktop-rootfs/rootfs-browser.tar \
+# desktop suite uses the published default image
+# (ghcr.io/chamuka-inc/vmette-desktop:latest) when DESKTOP_IMAGE is unset; or
+# point DESKTOP_IMAGE at your own GUI rootfs (Xvfb + a window manager):
+DESKTOP_IMAGE=tar+file:///tmp/my-desktop-rootfs.tar \
   python3 tests/mcp/desktop_e2e.py
 
 # ad-hoc:

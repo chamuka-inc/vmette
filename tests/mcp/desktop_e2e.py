@@ -17,7 +17,7 @@ tar. To (re)produce that tar from the browser image:
     docker export "$cid" -o /tmp/vmette-desktop-rootfs/rootfs-browser.tar
     docker rm "$cid"
 
-or build the image first with scripts/build-desktop-image.sh.
+or leave DESKTOP_IMAGE unset to use the published default image.
 """
 import base64
 import os

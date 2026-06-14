@@ -18,13 +18,17 @@
 ```sh
 make build                  # cargo build --release + codesign vmette
 make assets init guest-bin  # pull alpine kernel/initramfs/rootfs + repack
-make desktop-image          # build the desktop rootfs from source → assets/ (needs Docker)
 make test                   # cargo tests + end-to-end VM smoke
 ```
 
 `make run 'echo hi'` runs a one-shot guest with sensible defaults.
-`make desktop-image` exports the computer-use rootfs to
-`assets/<arch>/vmette-desktop-rootfs.tar`, which the CLI/MCP auto-discover.
+
+This repo doesn't build the desktop rootfs. `desktop start` defaults to the
+published image `ghcr.io/chamuka-inc/vmette-desktop:latest`
+(`vmette_assets::DEFAULT_DESKTOP_IMAGE`), pulled automatically on first use. The
+agent is host-injected, so any GUI rootfs (Xvfb + a window manager) works — bring
+your own via `--image <ref>` / `$VMETTE_DESKTOP_IMAGE`; `images/vmette-desktop/`
+is the reference recipe.
 
 ## Cutting a release
 
@@ -40,8 +44,8 @@ creds), then the lockstep version bump (workspace + the 7 internal dep pins) +
 `cargo update -w`, CHANGELOG `[Unreleased]` → `[VERSION]`, gates
 (`fmt`/`clippy -D warnings`/`test`), the `release: vX.Y.Z` commit + tag, and —
 behind a confirmation — `cargo publish` of the 7 libs in dep order followed by
-the `main` + tag push that fires `release.yml` (tarball/GitHub Release) and
-`desktop-image.yml`. Everything before publish is local and reversible; a
+the `main` + tag push that fires `release.yml` (tarball/GitHub Release).
+Everything before publish is local and reversible; a
 declined or failed run leaves the commit + tag for inspection (undo with
 `git reset --hard HEAD~1 && git tag -d vX.Y.Z`).
 

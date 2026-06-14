@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-image desktop-agent desktop-agent-all run shell test test-desktop test-view clean
+.PHONY: help build header universal dist publish release assets init guest-bin guest-assets-all desktop-agent desktop-agent-all run shell test test-desktop test-view clean
 
 help:
 	@awk -F':.*##' '/^[a-zA-Z_-]+:.*##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -77,9 +77,6 @@ guest-assets-all: ## Build boot assets + guest helpers for both x86_64 and aarch
 	    ARCH=$$arch bash scripts/build-vsock-send.sh; \
 	done
 
-desktop-image: ## Build the desktop rootfs from source → assets/<arch>/vmette-desktop-rootfs.tar
-	bash scripts/build-desktop-image.sh --export
-
 desktop-agent: ## Build the host-injected static desktop agent (host guest arch) → assets/<arch>/desktop-agent/
 	bash scripts/build-desktop-agent-static.sh
 
@@ -98,7 +95,7 @@ test:          ## Run cargo unit tests + end-to-end one-shot VM smoke
 	cargo test --workspace
 	bash tests/run.sh
 
-test-desktop:  ## End-to-end desktop smoke: boots a real Xvfb desktop VM via vmetted (builds the rootfs image once if missing)
+test-desktop:  ## End-to-end desktop smoke: boots a real Xvfb desktop VM via vmetted (pulls the published desktop image on first use)
 	bash tests/desktop.sh
 
 test-view:     ## End-to-end live-view (VNC) smoke: opens a desktop_view and drives it with an RFB client

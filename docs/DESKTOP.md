@@ -62,63 +62,39 @@ sessions left untouched for longer than the idle TTL (30 min).
    vmetted &
    ```
 
-2. **The desktop rootfs image.** You don't have to build anything: vmette pulls
-   the published image from `ghcr.io/chamuka-inc/vmette-desktop:latest`
-   automatically on first use (the image is public; CI publishes it on every
-   release tag). The first `desktop start` extracts it and caches it under
-   `~/Library/Caches/vmette/oci/`; later starts are cache hits.
+2. **A desktop rootfs.** You don't have to build anything: with no `--image`,
+   vmette pulls the published default `ghcr.io/chamuka-inc/vmette-desktop:latest`
+   automatically on first use (the image is public). The first `desktop start`
+   extracts it and caches it under `~/Library/Caches/vmette/oci/`; later starts
+   are cache hits. That image is a convenience default (Xvfb + openbox + chromium
+   + fonts) — **this repo no longer builds it**; the agent is host-injected (see
+   [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs)), so any GUI
+   image works and you customize by bringing your own, not by rebuilding ours.
 
-   Building locally is **optional** — it's the path for hacking on the image or
-   running offline. `make desktop-image` rebuilds the agent and the chromium
-   flags from the current tree and writes the canonical asset, so a *dev* session
-   reflects your source rather than the published `:latest`:
-
-   ```sh
-  make desktop-image       # build images/vmette-desktop/ → assets/<arch>/vmette-desktop-rootfs.tar
-   ```
-
-  The export lands at `assets/<arch>/vmette-desktop-rootfs.tar`, which both clients
-   discover the same way they discover `vmlinuz-virt` / `initramfs-vmette`
-   (`$VMETTE_ASSETS_DIR`, `./assets`, `<install prefix>/assets`) and which
-   **takes precedence** over the registry — no env var, no manual `docker
-   export`, no per-call `--image` needed.
-
-   **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring
-   how kernel/initramfs are resolved):
+   **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring how
+   kernel/initramfs are resolved):
 
    1. explicit `--image REF` (CLI) / `image` arg (MCP) — wins
    2. `$VMETTE_DESKTOP_IMAGE` (any rootfs spec, e.g. a `tar+file://` or OCI ref)
-  3. discovered `assets/<arch>/vmette-desktop-rootfs.tar` → `tar+file://…`
-   4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — public registry image (the
-      zero-setup default when no local asset is present)
+   3. a locally-provided `assets/<arch>/vmette-desktop-rootfs.tar` (e.g. a
+      `docker export` of your own GUI image) → `tar+file://…`
+   4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — the published default when no
+      local asset is present
 
    Because resolution is client-side, `$VMETTE_DESKTOP_IMAGE` is read from the
    **client** process (your shell for `vmette desktop start`, the `vmette-mcp`
    server for `desktop_start`) — not the daemon.
 
-   **Docker: needed to *build*, not to *run*.** vmette itself never shells out to
-   Docker — its OCI provider is a self-contained registry client, which is why
-  tier 4 works out of the box on a machine without Docker. `make desktop-image`
-  uses Docker only to *build* the rootfs locally. The default Docker platform
-  matches the guest architecture (`linux/arm64` on Apple Silicon,
-  `linux/amd64` on Intel), and `--platform` can override it.
-
-   To push the image to a registry instead (a deliberate, separate step):
-
-   ```sh
-   bash scripts/build-desktop-image.sh --push           # docker login ghcr.io first
-   bash scripts/build-desktop-image.sh --tag my/desktop:dev --export
-   ```
-
-   The image bundles `xvfb`, `openbox`, `x11-utils`, base fonts, the compiled
-   `vmette-desktop-agent`, and an entrypoint that starts `Xvfb`, the WM (with a
-   neutral root colour so an idle desktop isn't pure black), then the agent. It
-   also ships `chromium` plus an `/etc/chromium.d/` flags file so a bare
-   `chromium <url>` renders under the headless software-GL guest (`--no-sandbox`,
-   `--use-gl=swiftshader`, `--disable-dev-shm-usage`, …) — the browser
-   incantation lives with the browser, in the image, so `desktop_launch` and the
-   CLI stay application-agnostic. Drop the `chromium` install line to shrink the
-   image; the agent works without it (you can launch any X app).
+   **No Docker needed to run.** vmette never shells out to Docker — its OCI
+   provider is a self-contained registry client, so the published default works
+   out of the box on a machine without Docker. The reference recipe for that
+   image (and a starting point for your own) lives in `images/vmette-desktop/`
+   (`Dockerfile` + `entrypoint.sh` + `vmette-open`): `xvfb`, `openbox`,
+   `x11-utils`, fonts, `chromium` with an `/etc/chromium.d/` flags file (so a
+   bare `chromium <url>` renders under the headless software-GL guest:
+   `--no-sandbox`, `--use-gl=swiftshader`, `--start-maximized`, …). It is no
+   longer auto-built — `docker build images/vmette-desktop/` if you want to fork
+   it.
 
 ## Bring your own desktop rootfs
 

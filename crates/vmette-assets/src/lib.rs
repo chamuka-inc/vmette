@@ -13,28 +13,26 @@
 //! The release tarball ships `vmlinuz-virt` and `initramfs-vmette` under
 //! `<prefix>/assets`, so a `curl | install.sh` user boots without flags.
 //!
-//! The desktop (Agent) workload needs one more input: the desktop rootfs
-//! image. Unlike the kernel/initramfs it is *provider-resolved* (a `tar+file://`
-//! / OCI spec, not a direct path), so [`resolve_desktop_image`] returns a spec
-//! string rather than a path — but it is discovered through the *same* search,
-//! so a locally built `vmette-desktop-rootfs.tar` in `assets/` takes precedence
-//! over the published registry image, letting a dev session reflect the current
-//! tree. This lives here, not in the daemon, because both clients already share
-//! this crate and the daemon takes a concrete `image` in its request (like
-//! kernel/initramfs).
+//! The desktop (Agent) workload needs one more input: a desktop rootfs. Unlike
+//! the kernel/initramfs it is *provider-resolved* (a `tar+file://` / OCI spec,
+//! not a direct path), so [`resolve_desktop_image`] returns a spec string rather
+//! than a path — but it is discovered through the *same* search, so a
+//! locally-provided `vmette-desktop-rootfs.tar` in `assets/` takes precedence
+//! over the published default image. (The agent is host-injected, so any GUI
+//! rootfs works; that local tar is a bring-your-own override, not something this
+//! repo builds.) This lives here, not in the daemon, because both clients
+//! already share this crate and the daemon takes a concrete `image` in its
+//! request (like kernel/initramfs).
 
 use std::path::{Path, PathBuf};
 
 use vmette_proto::ShareMount;
 
-/// Canonical filename of the locally built desktop rootfs export. Produced by
-/// `make desktop-image` (`scripts/build-desktop-image.sh --export`) from the
-/// current `images/vmette-desktop/` source, so it always embodies the source
-/// in the tree — no stale-registry guessing.
-///
-/// MUST match `DEFAULT_EXPORT` in `scripts/build-desktop-image.sh` (the script
-/// writes the file; this discovers it). Renaming one without the other silently
-/// breaks discovery.
+/// Canonical filename of a locally-provided desktop rootfs export, discovered in
+/// `assets/<arch>/` as a bring-your-own override of the published default image
+/// (e.g. `docker create … && docker export … > assets/<arch>/vmette-desktop-rootfs.tar`
+/// of your own GUI image). Present → used as `tar+file://…`; absent → the
+/// published default. This repo no longer builds it.
 pub const DESKTOP_ROOTFS_ASSET: &str = "vmette-desktop-rootfs.tar";
 
 /// Env var that pins the desktop rootfs spec, overriding the discovered local

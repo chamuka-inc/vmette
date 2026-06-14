@@ -32,12 +32,12 @@ MOVE_Y=250
 # --- bootstrap prereqs ----------------------------------------------------
 [[ -s "$KERNEL"    ]] || bash "$HERE/scripts/fetch-assets.sh"
 [[ -s "$INITRAMFS" ]] || bash "$HERE/scripts/build-initramfs.sh"
-if [[ ! -s "$IMAGE_TAR" ]]; then
-    echo "→ desktop rootfs image missing; building from source (one-time, Docker)…"
-    bash "$HERE/scripts/build-desktop-image.sh" --export "$IMAGE_TAR" || {
-        echo "FATAL: could not build the desktop rootfs image (need Docker)." >&2
-        exit 1
-    }
+# The desktop rootfs isn't built by this repo; use a local tar if present, else
+# the published default image (pulled on first use).
+if [[ -s "$IMAGE_TAR" ]]; then
+    IMG_ARGS=(--image "tar+file://$IMAGE_TAR")
+else
+    IMG_ARGS=()
 fi
 
 # --- build + sign the code under test (always, from source) ---------------
@@ -75,7 +75,7 @@ echo
 echo "=== vmette live view smoke ($(date +%H:%M:%S)) ==="
 
 SESSION="$("$VMETTE" desktop --socket "$SOCK" start \
-    --image "tar+file://$IMAGE_TAR" --size "$SIZE" \
+    "${IMG_ARGS[@]}" --size "$SIZE" \
     --kernel "$KERNEL" --initramfs "$INITRAMFS" 2>/dev/null)"
 [[ -n "$SESSION" ]]; check "start desktop → session id"
 
