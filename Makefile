@@ -82,7 +82,7 @@ desktop-agent: ## Build the host-injected static desktop agent (host guest arch)
 
 desktop-agent-all: ## Cross-compile the static desktop agent for both x86_64 and aarch64 guests (no Docker)
 	for arch in x86_64 aarch64; do \
-	    ARCH=$$arch bash scripts/build-desktop-agent-static.sh; \
+	    ARCH=$$arch bash scripts/build-desktop-agent-static.sh || exit 1; \
 	done
 
 run: init guest-bin   ## Build + sign vmette, boot guest, run default probe
