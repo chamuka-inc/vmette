@@ -38,9 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-contained `vmette-desktop-run.sh` startup — as the read-only `agent`
   virtio-fs share. Being static (musl + a from-source X client stack), one agent
   binary runs in any rootfs regardless of its libc. The release tarball ships
-  the agent per guest arch (`assets/<arch>/desktop-agent/`, built on Linux CI),
-  so installed users get the injected path by default; `make desktop-agent`
-  builds it locally for dev. When the asset isn't present, the guest falls back
+  the agent per guest arch (`assets/<arch>/desktop-agent/`, cross-compiled on the
+  macOS release runner with a musl toolchain — no Docker), so installed users get
+  the injected path by default; `make desktop-agent` builds it locally for dev.
+  When the asset isn't present, the guest falls back
   to an agent baked into the image, so the bundled `vmette-desktop` image keeps
   working unchanged.
 
