@@ -294,7 +294,10 @@ frame rather than a blank mid-load one — the same hold backs
 
 `desktop_drag` presses at the **current** pointer position and releases at
 `(x, y)`, so call `desktop_move` first to set the start of the drag — the
-target you pass is only where the drag ends.
+target you pass is only where the drag ends. The drag uses **interpolated
+motion** (a stream of intermediate steps plus a dwell over the drop zone), so it
+works on drag-and-drop targets that gate on the gesture — reordering lists,
+sliders, a pivot-table field layout — not just text selection.
 
 ### Computer-use tips / limitations
 
