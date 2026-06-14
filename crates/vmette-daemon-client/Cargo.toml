@@ -6,6 +6,10 @@ edition     .workspace = true
 rust-version.workspace = true
 license     .workspace = true
 repository  .workspace = true
+# Internal transport shared by the `vmette` CLI and `vmette-mcp` (both binaries,
+# both publish=false). Not part of the public library surface, and no published
+# crate depends on it — so it is not published to crates.io.
+publish = false
 
 [lib]
 name = "vmette_daemon_client"
