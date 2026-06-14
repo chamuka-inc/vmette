@@ -180,6 +180,7 @@ vmette desktop exec-capture "$SID" 'cat /etc/os-release'   # run a command, prin
 
 vmette desktop move  "$SID" 640 400
 vmette desktop click "$SID" 640 400
+vmette desktop drag  "$SID" 200 200 600 400  # press at (200,200), drag to (600,400)
 vmette desktop type  "$SID" 'echo hello'
 vmette desktop key   "$SID" 'Return'
 vmette desktop scroll "$SID" 640 400 down 3
@@ -343,7 +344,7 @@ JSON shape is `{"action": "<name>", ...fields}`.
 | `right_click` | — | Right click at current position. Header echoes the click `(x, y)`. |
 | `middle_click` | — | Middle click at current position. Header echoes the click `(x, y)`. |
 | `double_click` | — | Double left click at current position. Header echoes the click `(x, y)`. |
-| `left_click_drag` | `x`, `y` | Press, move to `(x, y)`, release. Header echoes the resulting `(x, y)`. |
+| `left_click_drag` | `x`, `y` | Press, drag to `(x, y)` with **interpolated motion** (so drag-and-drop targets recognize the gesture), release. Header echoes the resulting `(x, y)`. |
 | `type` | `text` | Type a UTF-8 string via synthetic key events. |
 | `key` | `keys` | Press a chord, e.g. `"ctrl+c"`, `"Return"`, `"alt+Tab"`. |
 | `scroll` | `x`, `y`, `direction`, `amount` | Scroll `amount` clicks (`up`/`down`/`left`/`right`). |

@@ -42,6 +42,7 @@ fn desktop_usage() -> ! {
            click       SESSION_ID X Y                 left-click at X Y\n\
            double-click SESSION_ID X Y                double left-click at X Y\n\
            right-click SESSION_ID X Y                 right-click at X Y\n\
+           drag        SESSION_ID FX FY TX TY         press at (FX,FY), drag to (TX,TY), release\n\
            type        SESSION_ID TEXT                type a string\n\
            key         SESSION_ID CHORD               press a chord, e.g. 'ctrl+c'\n\
            set-clipboard SESSION_ID TEXT              put TEXT on the clipboard\n\
@@ -146,6 +147,7 @@ pub fn run(mut args: Vec<String>) -> ExitCode {
         "click" => cmd_click(&socket, &args, Action::LeftClick),
         "double-click" => cmd_click(&socket, &args, Action::DoubleClick),
         "right-click" => cmd_click(&socket, &args, Action::RightClick),
+        "drag" => cmd_drag(&socket, &args),
         "type" => {
             let s = pos(&args, 0, "SESSION_ID");
             let text = pos(&args, 1, "TEXT");
@@ -429,6 +431,21 @@ fn cmd_click(socket: &Path, args: &[String], click: Action) -> Result<Option<Str
     action(socket, &session, Action::MouseMove { x, y })?;
     let reply = action(socket, &session, click)?;
     Ok(Some(landed(x, y, &reply)))
+}
+
+/// Press at (FX,FY), drag to (TX,TY), release — a complete one-shot drag for
+/// drag-and-drop UIs (reordering, pivot-table layout, sliders). Positions at the
+/// start first, since `LeftClickDrag` begins at the current pointer. The agent
+/// emits interpolated motion so the gesture crosses the target's drag threshold.
+fn cmd_drag(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
+    let session = pos(args, 0, "SESSION_ID");
+    let fx = parse_i32(&pos(args, 1, "FROM_X"), "FROM_X");
+    let fy = parse_i32(&pos(args, 2, "FROM_Y"), "FROM_Y");
+    let tx = parse_i32(&pos(args, 3, "TO_X"), "TO_X");
+    let ty = parse_i32(&pos(args, 4, "TO_Y"), "TO_Y");
+    action(socket, &session, Action::MouseMove { x: fx, y: fy })?;
+    let reply = action(socket, &session, Action::LeftClickDrag { x: tx, y: ty })?;
+    Ok(Some(landed(tx, ty, &reply)))
 }
 
 /// Format a pointer action's landed position from the echoed `x`/`y`, matching

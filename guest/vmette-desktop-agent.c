@@ -255,6 +255,36 @@ static void click_button(unsigned button) {
     XFlush(g_dpy);
 }
 
+// Drag from the current pointer position to (tx, ty) with *interpolated* motion.
+// A single press -> jump -> release reads as a click that happened to end far
+// away; real drag-and-drop targets (LibreOffice's pivot layout, file managers,
+// list reordering) gate the drag on crossing a movement threshold AND seeing a
+// stream of intermediate motion events, then dwelling over the drop zone. So we
+// press, emit many small steps with short waits so the app's DnD loop registers
+// the gesture and highlights the drop target, dwell, then release.
+static void drag_pointer(int tx, int ty) {
+    Window r, c; int sx, sy, wx, wy; unsigned int mask;
+    if (!XQueryPointer(g_dpy, g_root, &r, &c, &sx, &sy, &wx, &wy, &mask)) {
+        sx = tx; sy = ty; // no start known: fall back to a direct move
+    }
+    XTestFakeButtonEvent(g_dpy, 1, True, CurrentTime);
+    XFlush(g_dpy);
+    usleep(60000); // let the button-press settle before motion begins
+    const int steps = 24;
+    for (int i = 1; i <= steps; i++) {
+        int x = sx + (tx - sx) * i / steps;
+        int y = sy + (ty - sy) * i / steps;
+        XTestFakeMotionEvent(g_dpy, g_screen, x, y, CurrentTime);
+        XFlush(g_dpy);
+        usleep(12000); // ~12ms/step so the target's DnD handler processes motion
+    }
+    XTestFakeMotionEvent(g_dpy, g_screen, tx, ty, CurrentTime);
+    XFlush(g_dpy);
+    usleep(90000); // dwell over the drop zone so it arms before release
+    XTestFakeButtonEvent(g_dpy, 1, False, CurrentTime);
+    XFlush(g_dpy);
+}
+
 // Success reply that echoes the *resulting* pointer position, so the host/agent
 // can verify where a move/click actually landed (a window manager can constrain
 // the pointer, so the request coords aren't always the truth). Falls back to a
@@ -1020,11 +1050,7 @@ static int handle(int fd, uint32_t req_id, const char *json) {
         return send_pointer(fd, req_id);
     } else if (!strcmp(action, "left_click_drag")) {
         json_int(json, "x", &x); json_int(json, "y", &y);
-        XTestFakeButtonEvent(g_dpy, 1, True, CurrentTime);
-        XFlush(g_dpy);
-        move_pointer((int)x, (int)y);
-        XTestFakeButtonEvent(g_dpy, 1, False, CurrentTime);
-        XFlush(g_dpy);
+        drag_pointer((int)x, (int)y);
         return send_pointer(fd, req_id);
     } else if (!strcmp(action, "type")) {
         char text[8192];

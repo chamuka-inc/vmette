@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Desktop drag-and-drop now works on gesture-gated targets (pivot-table layout,
+  list reordering, sliders, file managers). The guest agent's `left_click_drag`
+  previously did a single press → jump → release, which DnD targets read as a
+  click that ended elsewhere; it now emits **interpolated motion** (press, a
+  stream of small steps, a dwell over the drop zone, release) so the drag crosses
+  the target's recognition threshold. New `vmette desktop drag SESSION FX FY TX TY`
+  CLI command exposes it (the MCP `desktop_drag` tool already did).
+
 - Desktop click-targeting reliability: every desktop screenshot now returns a
   **framebuffer note** (`framebuffer WxH; pointer/click coordinates are in this
   pixel space, origin top-left`) alongside the PNG (`desktop_screenshot`,
