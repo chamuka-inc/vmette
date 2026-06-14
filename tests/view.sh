@@ -58,7 +58,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$VMETTED" --socket "$SOCK" --vmette "$VMETTE" >/dev/null 2>&1 &
+"$VMETTED" --socket "$SOCK" >/dev/null 2>&1 &
 VMETTED_PID=$!
 for _ in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
 [[ -S "$SOCK" ]] || { echo "FATAL: vmetted did not bind $SOCK" >&2; exit 1; }

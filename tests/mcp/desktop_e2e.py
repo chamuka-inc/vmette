@@ -10,14 +10,11 @@ settle, and returns the frame. The Chromium incantation (software GL,
 the mouse input path. All over the MCP desktop_* tools, the same surface a
 computer-use agent would use.
 
-Image: override with DESKTOP_IMAGE. Default is the local browser rootfs
-tar. To (re)produce that tar from the browser image:
-
-    cid=$(docker create --platform linux/amd64 vmette-desktop:browser)
-    docker export "$cid" -o /tmp/vmette-desktop-rootfs/rootfs-browser.tar
-    docker rm "$cid"
-
-or leave DESKTOP_IMAGE unset to use the published default image.
+Image: leave DESKTOP_IMAGE unset (the default) to let vmette resolve the desktop
+image the same way the CLI/MCP do — auto-discover a local
+assets/<arch>/vmette-desktop-rootfs.tar (build one with `make desktop-image`),
+else pull the published DEFAULT_DESKTOP_IMAGE. Set DESKTOP_IMAGE to pin a
+specific rootfs, e.g. `tar+file:///path/to/rootfs.tar` or an OCI ref.
 """
 import base64
 import os
@@ -26,9 +23,10 @@ import time
 
 from driver import MCP, text_of, check, PASS, FAIL
 
-IMAGE = os.environ.get(
-    "DESKTOP_IMAGE", "tar+file:///tmp/vmette-desktop-rootfs/rootfs-browser.tar"
-)
+# Unset → let vmette resolve the default desktop image: it auto-discovers a
+# local assets/<arch>/vmette-desktop-rootfs.tar, else pulls the published
+# DEFAULT_DESKTOP_IMAGE. Set DESKTOP_IMAGE to pin a specific rootfs ref.
+IMAGE = os.environ.get("DESKTOP_IMAGE")
 QUERY = os.environ.get("DESKTOP_QUERY", "Apple Virtualization framework")
 URL = "https://duckduckgo.com/?q=" + QUERY.replace(" ", "+")
 
@@ -57,7 +55,7 @@ def shot(m, sid, path):
 
 
 def preflight():
-    if IMAGE.startswith("tar+file://"):
+    if IMAGE and IMAGE.startswith("tar+file://"):
         p = IMAGE[len("tar+file://"):]
         if not os.path.exists(p):
             print(f"✗ browser rootfs tar not found: {p}", file=sys.stderr)
@@ -73,10 +71,12 @@ def main():
                              "clientInfo": {"name": "desk", "version": "0"}})
     m.notify("notifications/initialized")
 
-    print(f"== desktop_start (browser rootfs + Xvfb, network on; up to 8 min)\n   image={IMAGE}")
+    print(f"== desktop_start (browser rootfs + Xvfb, network on; up to 8 min)\n   image={IMAGE or '(server default)'}")
     t0 = time.time()
-    r = m.call_tool("desktop_start", {"image": IMAGE, "size": "1280x800", "network": True},
-                    timeout=480)
+    start_args = {"size": "1280x800", "network": True}
+    if IMAGE:
+        start_args["image"] = IMAGE
+    r = m.call_tool("desktop_start", start_args, timeout=480)
     if "error" in r:
         check("desktop_start", False, str(r["error"])[:160]); m.close(); sys.exit(1)
     sid = text_of(r).strip()

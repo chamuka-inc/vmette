@@ -5,15 +5,21 @@ of vmette. Like [`tests/run.sh`](../run.sh), these boot **real VMs**, so they
 need a codesigned macOS build and (for the network/desktop suites) outbound
 network. They are not part of `cargo test` and run on demand.
 
-## Build first
+## Build + sign
 
-```bash
-cargo build --release -p vmette-mcp -p vmette-cli
-```
+The harness rebuilds and re-signs the binaries under test **from source on
+startup** (like `tests/desktop.sh`), so a stale or unsigned binary can never
+satisfy the gates — no manual build step is needed. It compiles `vmette-mcp`,
+`vmette-cli`, and `vmette-daemon`, then codesigns `vmette-mcp`, `vmetted`, and
+`vmette` with the virtualization entitlement: `vmette-mcp` boots one-shot VMs
+**in-process** and auto-spawns `vmetted` (also in-process) for the desktop
+tools, so each binary needs `com.apple.security.virtualization`.
 
 The harness launches `target/release/vmette-mcp --allow-network` and points it
 at `target/release/vmette` (override with `VMETTE_MCP_BIN` / `VMETTE_BIN`). The
-repo root is auto-detected; set `VMETTE_REPO` to run from a copy elsewhere.
+repo root is auto-detected; set `VMETTE_REPO` to run from a copy elsewhere. When
+`VMETTE_MCP_BIN` points outside the repo, the auto build+sign is skipped (you
+own building/signing it); `VMETTE_SKIP_BUILD=1` also skips it.
 
 ## Suites
 
