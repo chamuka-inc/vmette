@@ -83,24 +83,9 @@ longer than the idle TTL (30 min).
 
    **No Docker needed to run.** vmette never shells out to Docker — its OCI
    provider is a self-contained registry client, so the published default works
-   out of the box on a machine without Docker. The reference recipe for that
-   image (and a starting point for your own) lives in `images/vmette-desktop/`
-   (`Dockerfile` + `entrypoint.sh` + `vmette-open`): `xvfb`, `openbox`,
-   `x11-utils`, fonts, `chromium` with an `/etc/chromium.d/` flags file (so a
-   bare `chromium <url>` renders under the headless software-GL guest:
-   `--no-sandbox`, `--use-gl=swiftshader`, `--start-maximized`, …).
-
-   **Building the image** (Docker required) is only for customizing the rootfs
-   or republishing the default; `scripts/build-desktop-image.sh` wraps it:
-
-   ```sh
-   make desktop-image                          # → assets/<arch>/vmette-desktop-rootfs.tar (local, host arch)
-   scripts/build-desktop-image.sh --push       # republish the default — full amd64+arm64 manifest
-   ```
-
-   A bare `--push` always rebuilds **both** architectures into one manifest
-   (arm64 builds under qemu, bundled with Docker Desktop), so a publish can never
-   leave one arch stale.
+   out of the box on a machine without Docker. Building or customizing that image
+   (Docker required) is covered in
+   [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
 ## Bring your own desktop rootfs
 
@@ -246,10 +231,12 @@ agent reasoning over a downscaled rendering can map its target back to true
 coordinates instead of guessing the scale. `desktop_click` /
 `desktop_double_click` / `desktop_right_click` move the pointer to `(x, y)`
 first, then click (agent click actions fire at the current pointer position).
-Pointer actions (`desktop_move`/click/scroll/drag) **echo where the pointer
-actually landed** in their status text — if a window manager constrained the
-move, the reply reads `… landed at X Y (constrained)`, so a missed target is
-observable in one round-trip instead of requiring a follow-up screenshot.
+`desktop_move` and the click tools **echo where the pointer actually landed**
+in their status text — if a window manager constrained the move, the reply reads
+`… landed at X Y (constrained)`, so a missed target is observable in one
+round-trip instead of requiring a follow-up screenshot. `desktop_scroll` returns
+a fixed `scrolled` and `desktop_drag` a fixed `dragged to X Y` (the requested
+target), neither echoing the landed position.
 `network=true` on `desktop_start` is subject to the server's `--allow-network`
 gate.
 
@@ -324,7 +311,9 @@ dimensions are the coordinate space for all pointer actions). See
 ## Action reference
 
 Actions mirror the Anthropic computer-use tool so the MCP layer maps 1:1.
-JSON shape is `{"action": "<name>", ...fields}`.
+JSON shape is `{"action": "<name>", ...fields}`. This is the raw vsock Action
+vocabulary — a superset of what the CLI and MCP expose, so a row here (e.g.
+`wait`) need not have a matching `desktop` subcommand or `desktop_*` tool.
 
 | Action | Fields | Effect |
 |--------|--------|--------|

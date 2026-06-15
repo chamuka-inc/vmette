@@ -9,9 +9,7 @@ directly, use the [MCP server](MCP.md); for one-off commands, the [CLI](CLI.md).
 the same protocol:
 
 - **Stateless runs** — one guest run per connection, booted **in-process**
-  via a capture-aware `vmette::Session` (the schema below). A warm-snapshot
-  pool to replace the per-request cold boot is a planned future optimization
-  (Apple Silicon); it is not yet implemented.
+  via a capture-aware `vmette::Session` (the schema below).
 - **Stateful desktop sessions** — `desktop_*` requests that drive a
   persistent in-process VM held across connections (see
   [Desktop session requests](#desktop-session-requests)).
@@ -97,7 +95,7 @@ that needs guest env vars must bake them into the `exec` command itself
 
 Newline-delimited JSON frames. The run lane emits three kinds
 (`stdout`/`exit`/`error`); a fourth, `stderr`, exists in the protocol but is
-unused by this lane:
+unused by this lane (guest stderr is folded into `stdout`):
 
 ```json
 {"kind":"stdout","data":"hello world\n"}
@@ -107,9 +105,8 @@ unused by this lane:
 
 The in-process run lane captures the guest's combined output on one clean
 console and emits it as a stream of `stdout` frames, terminated by a single
-`exit` (or `error` on a daemon-side failure). Guest stderr is folded into
-`stdout`; the `stderr` frame remains in the protocol for compatibility but
-is **not** emitted for guest stderr by this lane.
+`exit` (or `error` on a daemon-side failure). The `stderr` frame remains in the
+protocol for compatibility but is never emitted by this lane.
 
 ### Client examples
 
@@ -170,8 +167,8 @@ Each request is still one JSON object per connection, tagged by `kind`:
 |--------|-----------|-------|
 | `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`; omitted → 1280x800), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
 | `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}`. `text?` carries the clipboard (`get_clipboard`) or combined stdout/stderr (`exec_capture`); `exit_code?` carries the `exec_capture` status (absent if it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md). |
-| `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; daemon default ~500 ms) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
-| `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved; `png_base64` is just the cropped changed region — the full frame only when nothing changed) |
+| `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; daemon default 500 ms, `DEFAULT_SETTLE_HOLD_MS`) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
+| `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved; `png_base64` is just the cropped changed region — the full frame is returned when nothing changed, or when the crop would be degenerate) |
 | `desktop_view` | `session_id` | `{"kind":"view","addr":"127.0.0.1:PORT"}` — opens (or returns) a live VNC view on a per-session loopback port; idempotent. See [`DESKTOP.md`](DESKTOP.md#live-view-watch--drive-the-desktop). |
 | `desktop_stop` | `session_id` | `{"kind":"stopped"}` |
 

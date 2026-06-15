@@ -41,7 +41,7 @@ install boots with no asset flags.
 
 | Flag | Argument | Description |
 |------|----------|-------------|
-| `--rootfs-ro` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). A no-op for block-image rootfs, which is always read-only (see [Rootfs providers](#rootfs-providers)). |
+| `--rootfs-ro` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). No effect on block-image rootfs — see [Rootfs providers](#rootfs-providers). |
 | `--offline` | — | Forbid network access. Cache miss surfaces as an immediate failure; useful on flaky networks or air-gapped environments. Applied to whichever provider resolves the spec. |
 
 ## Workload
@@ -156,8 +156,8 @@ Run `vmette providers` to print the live registry.
 The `dir`/`tar`/`oci` providers deliver a host **directory** shared over
 virtio-fs. The `squashfs` provider instead returns a **block image** attached
 read-only as virtio-blk slot 0 (`/dev/vda`) under a tmpfs overlay, so the
-rootfs is immutable and the same base can back many concurrent sessions
-(`--rootfs-ro` is therefore a silent no-op for it). Because a block rootfs has no host-writable surface,
+rootfs is immutable and the same base can back many concurrent sessions, so
+`--rootfs-ro` is a silent no-op for it. Because a block rootfs has no host-writable surface,
 exit-code propagation rides a small auto-attached `ctl` virtio-fs share instead
 of `/.vmette-exit` on the rootfs.
 
@@ -171,12 +171,11 @@ of `/.vmette-exit` on the rootfs.
 | `oci` | `~/Library/Caches/vmette/oci/<sanitized-ref>__<digest>/rootfs/` plus `refs/<sanitized-ref>.digest` |
 
 The OCI provider keeps a 1-hour soft TTL on `refs/<ref>.digest` mtime; a
-fresh ref entry skips the registry roundtrip entirely. `--offline` short-
-circuits that further — no network at all, even for digest verification.
-The squashfs provider applies the same offline rule and downloads remote
-images with a streaming size cap (`VMETTE_SQUASHFS_MAX_BYTES`, default
-4 GiB). The tar provider has the equivalent cap on extracted size
-(`VMETTE_TAR_MAX_BYTES`).
+fresh ref entry skips the registry roundtrip entirely. `--offline` forbids the
+network for every fetching provider — no registry roundtrip, no digest
+verification, no remote download. Remote fetches are size-capped: squashfs and
+tar stream under `VMETTE_SQUASHFS_MAX_BYTES` (default 4 GiB) and
+`VMETTE_TAR_MAX_BYTES` respectively.
 
 ### Private OCI registries
 

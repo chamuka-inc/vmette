@@ -9,8 +9,7 @@ network. vmette gives that work somewhere safe to happen instead: a real,
 hardware-isolated Linux VM that boots in ~1 second, sees only what you share in,
 and disappears when it's done. Send the agent's untrusted work there — or lock
 the agent down so the VM is its *only* way to run code — and nothing it executes
-can reach your files, tokens, or network. Your code and secrets never leave the
-device.
+ever touches your real machine.
 
 <p align="center">
   <img src="vmette-demo.gif" alt="vmette booting a Linux guest, propagating its exit code to the host, and enforcing default-deny networking until --net is passed" width="800">
@@ -63,8 +62,7 @@ sandboxed machine as a set of tools (`execute`, `fetch_url`, `workspace_*`, `des
 agent runs *through these tools* happens inside the VM, confined as above. Note it
 *adds* the sandbox alongside the host's own tools; in Claude Code the agent still has
 native Bash that runs on your Mac, so to make the VM its *only* way to run code, restrict
-those too (e.g. deny the Bash tool). For the full security model see
-[`docs/MCP.md`](docs/MCP.md).
+those too (e.g. deny the Bash tool).
 
 **Claude Code** — one command, no config file:
 
@@ -121,8 +119,8 @@ agent share one display. The same capability is exposed to agents through the MC
 > `~/Library/Caches/vmette/oci/`), so the MCP and CLI desktop paths work out of the
 > box — no Docker needed. The computer-use agent is host-injected (a static binary
 > vmette ships), so any GUI image works. Resolution order: `--image` →
-> `$VMETTE_DESKTOP_IMAGE` → local `assets/<arch>/vmette-desktop-rootfs.tar` → the
-> published `ghcr.io/chamuka-inc/vmette-desktop` image. See `docs/DESKTOP.md`.
+> `$VMETTE_DESKTOP_IMAGE` → local `assets/<arch>/vmette-desktop-rootfs.tar` → that
+> published default. See `docs/DESKTOP.md`.
 
 See [`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol, action
 reference, and image build.
@@ -209,7 +207,7 @@ fn main() {
     //   use vmette::provider::{DirProvider, Registry};
     //   Registry::new().with(DirProvider::new()).with(/* … */);
     let registry = vmette_providers::default_registry();
-    let ctx = Context::new(std::env::var_os("HOME").unwrap_or_default());
+    let ctx = Context::new(vmette_assets::default_cache_root()); // $HOME/Library/Caches/vmette
     let artifact = registry.resolve("alpine:3.20", &ctx).unwrap();
 
     let mut cfg = Config::new("./assets/aarch64/vmlinuz-virt", "./assets/aarch64/initramfs-vmette");
@@ -225,6 +223,7 @@ fn main() {
 [dependencies]
 vmette           = "0.10"
 vmette-providers = "0.10"  # default_registry(); pulls in the oci/tar/squashfs providers
+vmette-assets    = "0.10"  # default_cache_root() + boot-asset discovery helpers
 ```
 
 See [`crates/vmette/examples/minimal.rs`](crates/vmette/examples/minimal.rs) and

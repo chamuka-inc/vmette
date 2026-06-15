@@ -37,11 +37,8 @@ fn main() -> Result<(), vmette::Error> {
     cfg.vsock_port = VsockPort::Auto;
     cfg.timeout_seconds = Some(30);
 
-    // run() blocks until guest poweroff, then returns Ok(RunOutput)
-    // carrying the guest's exit code (124 on timeout, 0 on a requested
-    // stop, 1 on a guest error). It never exits the process — the caller
-    // chooses the process exit code. Err is for setup failures (snapshot
-    // unsupported, config invalid, VM failed to start).
+    // blocks until poweroff; returns RunOutput with the guest exit code
+    // (see the RunOutput reference below for the full contract).
     let out = vmette::run(&cfg)?;
     std::process::exit(out.exit_code);
 }
@@ -89,10 +86,14 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
 - `Error` (thiserror): `InvalidConfig`, `StartFailed`, `RestoreFailed`,
   `SaveFailed`, `SnapshotUnsupported`, `Timeout`, `Vsock`, `Io`.
 - `RunOutput { exit_code: i32, output: String }` — returned by `run()` (and
-  `Session::wait_captured`). `output` carries the guest's captured combined
-  stdout+stderr when the session ran with `Config::capture_output` (empty for
-  the interactive `run()` path, which streams to the terminal; truncated past
-  ~1 MiB with a marker).
+  `Session::wait_captured`). `run()` blocks until guest poweroff, then returns
+  `Ok(RunOutput)` carrying the guest's exit code (124 on timeout, 0 on a
+  requested stop, 1 on a guest error); it never exits the process — the caller
+  chooses the process exit code. `Err` is for setup failures (snapshot
+  unsupported, config invalid, VM failed to start). `output` carries the guest's
+  captured combined stdout+stderr when the session ran with
+  `Config::capture_output` (empty for the interactive `run()` path, which streams
+  to the terminal; truncated past ~1 MiB with a marker).
 
 ### Rootfs providers
 
@@ -210,7 +211,7 @@ dylib's.
 | `void vmette_config_set_scratch_mib(cfg, uint64_t);` | ephemeral ext4 scratch disk (MiB) for the writable overlay upper; `0` disables (RAM-backed tmpfs). No effect with a read-only rootfs. |
 | `void vmette_config_set_build_snapshot(cfg, path);` | Not yet implemented (see Snapshot section). |
 | `void vmette_config_set_resume_snapshot(cfg, path);` | Not yet implemented (see Snapshot section); `vmette_run` returns `SnapshotUnsupported` before validating the config. |
-| `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Same blocking contract as Rust `run()` (see top of this doc); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
+| `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Same blocking contract as Rust `run()` (see the `RunOutput` reference above); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
 | `int32_t vmette_run_output_exit_code(out);` | |
 | `void vmette_run_output_free(out);` | |
 | `const char *vmette_version(void);` | Static; do not free. |

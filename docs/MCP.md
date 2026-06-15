@@ -5,9 +5,10 @@ Any MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose
 custom clients) gets a set of tools — `execute`, `fetch_url`, `workspace_*`,
 `desktop_*` — whose every effect lands inside a Linux microVM, never on your
 host: a real shell, filesystem, and (optionally) network that are *not* your
-machine — all default-deny (see [Security model](#security-model)). Most tools
-boot a fresh VM per call; the `desktop_*` family drives a persistent graphical
-desktop session.
+machine. The VM runs on Apple's `Virtualization.framework`, so the boundary is
+the hypervisor — not a container or a `chroot` — and all host access is
+default-deny (see [Security model](#security-model)). Most tools boot a fresh VM
+per call; the `desktop_*` family drives a persistent graphical desktop session.
 
 > **What this does — and doesn't — contain.** `vmette-mcp` *adds* a sandbox to
 > the agent's toolbox; it doesn't replace the host's own tools (in Claude Code,
@@ -17,9 +18,8 @@ desktop session.
 > tools too — e.g. disable Claude Code's Bash tool via permissions, or use a host
 > that exposes only vmette.
 
-The VM runs on Apple's `Virtualization.framework`, so the isolation boundary is
-the hypervisor, not a container or a `chroot`. The MCP server itself is
-long-lived — it dies when the client closes its stdio connection.
+The MCP server itself is long-lived — it dies when the client closes its stdio
+connection.
 
 ## Install
 
@@ -154,7 +154,7 @@ binary path as `command` and the flags as `args`.
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
 | `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. |
-| `--ca-certs DIR` | `$VMETTE_CA_CERTS`, else `~/.config/vmette/certs` | Host directory of `.crt`/`.pem` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
+| `--ca-certs DIR` | explicit flag > `$VMETTE_CA_CERTS` > `~/.config/vmette/certs` | Host directory of `.crt`/`.pem` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
 
 `vmette-mcp` writes structured logs (tracing) to **stderr**. `stdout`
 is reserved for MCP frames; anything written there desyncs the client.
@@ -179,7 +179,7 @@ persists between calls.
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
 | `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp`. Set this when a build/extract would exceed the RAM-backed overlay (`No space left on device`); created sparse per call, discarded when the call returns. Omit for light work. |
 
-Returns: `exit: N\n\nstdout:\n...\n\nstderr:\n...`
+Returns: `exit: N\n\nstdout:\n...` with a trailing `\n\nstderr:\n...` block only when stderr is non-empty (the in-process lane usually leaves it empty).
 
 ### `fetch_url`
 
@@ -416,6 +416,6 @@ What the server **does not** isolate:
 | `workspace_create` returns "workspace cap reached" | Destroy idle workspaces or raise `--workspace-cap`. |
 | `desktop_*` tools fail with "connect … failed (is vmetted running?)" | The daemon failed to auto-spawn (it's normally started on first desktop use). Check that `vmetted` is on your `PATH` and codesigned; inspect its stderr by starting it manually (`vmetted &`). |
 | `desktop_start` returns "session cap reached" | Stop an idle desktop session, or wait for idle eviction (30 min). |
-| `cargo`/`node`/etc. "not found" in a toolchain image | The image's configured `Env` (incl. `PATH`) is applied automatically. If the image was extracted by an older vmette it lacks the env file — clear its cache (`rm -rf ~/Library/Caches/vmette/oci/<image>`) so it re-extracts. |
+| `cargo`/`node`/etc. "not found" in a toolchain image | The image's configured `Env` (incl. `PATH`) is applied automatically. If the image was extracted by an older vmette it lacks the env file — clear the provider cache (`rm -rf ~/Library/Caches/vmette/oci`) so it re-extracts (the on-disk dir is `oci/<sanitized-ref>__<digest>/`, not the bare ref). |
 | `No space left on device` mid-build | The guest's writable `/` is a RAM-backed tmpfs overlay (~half the guest RAM). Route large writes to the workspace mount (`/mnt/work`) — e.g. `CARGO_HOME` and the build target dir — rather than the rootfs. |
 | Linker error: `cannot find …rcgu.o` during a native compile | Heavy parallel codegen writing many object files to the virtio-fs share can race. Build with a single codegen unit: `RUSTFLAGS="-C codegen-units=1"` (or the equivalent for your toolchain). |
