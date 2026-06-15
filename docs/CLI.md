@@ -8,7 +8,7 @@ agents.
 vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]
 vmette quickstart                               # boot a hello-world VM to verify the install
 vmette providers                                # list registered providers
-vmette desktop <command> [options]              # drive a persistent desktop session
+vmette desktop <command> [options]              # desktop computer use (via vmetted)
 vmette --version                                # print version (also -V or the bare `version` subcommand)
 ```
 
@@ -173,7 +173,7 @@ of `/.vmette-exit` on the rootfs.
 |----------|----------------|
 | `dir` | none — your directory is used in place |
 | `squashfs` | `squashfs+file://` used in place; `squashfs+http(s)://` cached at `~/Library/Caches/vmette/squashfs/<key>.sqfs` |
-| `tar` | `~/Library/Caches/vmette/tar/<sanitized-url>/` |
+| `tar` | `~/Library/Caches/vmette/tar/<sanitized-url>__<urlhash>/` |
 | `oci` | `~/Library/Caches/vmette/oci/<sanitized-ref>__<digest>/rootfs/` plus `refs/<sanitized-ref>.digest` |
 
 The OCI provider keeps a 1-hour soft TTL on `refs/<ref>.digest` mtime; a

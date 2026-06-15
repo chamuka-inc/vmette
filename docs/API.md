@@ -124,8 +124,8 @@ cfg.set_rootfs_artifact(artifact, /*force_read_only=*/ false);
 
 To pull from a private OCI registry, inject credentials programmatically
 with `OciProvider::with_auth(resolver)`, or rely on the default resolver
-(`VMETTE_OCI_TOKEN` / `VMETTE_OCI_AUTH_<HOST>` → `~/.docker/config.json` →
-anonymous).
+(per-host `VMETTE_OCI_AUTH_<HOST>` → `VMETTE_OCI_TOKEN` → `~/.docker/config.json`
+→ anonymous).
 
 `RootfsProvider` is the trait third-party code implements to teach
 vmette about new rootfs sources (S3 buckets, internal artifactories,
@@ -133,16 +133,14 @@ custom build pipelines). See [the tar provider crate]
 (../crates/vmette-provider-tar/src/lib.rs) for a ~150-line reference
 implementation.
 
-### Snapshot (Apple Silicon only)
+### Snapshot — not yet implemented
 
-```rust
-#[cfg(target_arch = "aarch64")]
-fn warm() -> Result<(), vmette::Error> {
-    let cfg = build_config();
-    vmette::run(&Config { build_snapshot: Some("snap.bin".into()), ..cfg })?;
-    Ok(())
-}
-```
+Snapshot save/restore is **not implemented**. The `Config` fields
+(`build_snapshot`, `resume_snapshot`) and C setters exist, but the underlying
+objc2 save/restore flow hasn't landed: both paths unconditionally return
+`Err(Error::SnapshotUnsupported)` (`SnapshotUnsupported` status in C) on **every
+architecture**, including Apple Silicon. Calling `run()` with either field set
+always errors today. Do not build against this surface yet.
 
 ## C ABI
 
@@ -162,10 +160,7 @@ int main(int argc, char **argv) {
     vmette_config_set_mem_mib(cfg, 512);
 
     vmette_run_output_t *out = NULL;
-    VmetteStatus rc = vmette_run(cfg, &out);
-    /* vmette_run blocks until the guest powers off, then returns
-     * normally — it does not exit the host process. On Ok it writes a
-     * run-output handle to *out; read the guest's exit code from it. */
+    VmetteStatus rc = vmette_run(cfg, &out);   /* same blocking contract as Rust run() above */
     if (rc != Ok) {
         fprintf(stderr, "vmette_run: status %d\n", (int)rc);
         return 1;
@@ -213,9 +208,9 @@ dylib's.
 | `void vmette_config_set_vcpus(cfg, uint8_t);` | not clamped; a value VZ rejects (e.g. 0) surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_mem_mib(cfg, uint64_t);` | not clamped; a value VZ rejects surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_scratch_mib(cfg, uint64_t);` | ephemeral ext4 scratch disk (MiB) for the writable overlay upper; `0` disables (RAM-backed tmpfs). No effect with a read-only rootfs. |
-| `void vmette_config_set_build_snapshot(cfg, path);` | Apple Silicon only; see snapshot section. |
-| `void vmette_config_set_resume_snapshot(cfg, path);` | Apple Silicon only; requires an exec command. |
-| `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Blocks until poweroff, then returns normally (does not exit the host process); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
+| `void vmette_config_set_build_snapshot(cfg, path);` | Not yet implemented — `vmette_run` returns `SnapshotUnsupported`. See snapshot section. |
+| `void vmette_config_set_resume_snapshot(cfg, path);` | Not yet implemented — `vmette_run` returns `SnapshotUnsupported` before validating the config. See snapshot section. |
+| `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Same blocking contract as Rust `run()` (see top of this doc); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
 | `int32_t vmette_run_output_exit_code(out);` | |
 | `void vmette_run_output_free(out);` | |
 | `const char *vmette_version(void);` | Static; do not free. |

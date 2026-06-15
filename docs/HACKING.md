@@ -2,7 +2,8 @@
 
 ## Toolchain
 
-- macOS 11+ (tested on 14.7 Intel)
+- macOS 11+ (the Virtualization.framework availability floor; CI runs on
+  `macos-14`)
 - Xcode Command Line Tools (`xcode-select --install`)
 - Rust stable + cross targets:
   ```sh
@@ -56,15 +57,23 @@ make release VERSION=0.5.0             # cut it (prompts before the irreversible
 make release VERSION=0.5.0 YES=1       # skip the prompt (unattended)
 ```
 
-`scripts/release.sh` runs the whole playbook: preflight (on `main`, clean tree,
-in sync with origin, version newer, tag free, `[Unreleased]` non-empty, crates.io
-creds), then the lockstep version bump (workspace + the 7 internal dep pins) +
-`cargo update -w`, CHANGELOG `[Unreleased]` → `[VERSION]`, gates
-(`fmt`/`clippy -D warnings`/`test`), the `release: vX.Y.Z` commit + tag, and —
-behind a confirmation — `cargo publish` of the 7 libs in dep order followed by
-the `main` + tag push that fires `release.yml` (tarball/GitHub Release).
-Everything before publish is local and reversible; a
-declined or failed run leaves the commit + tag for inspection (undo with
+`scripts/release.sh` runs the whole playbook as a pipeline:
+
+- **preflight** — on `main`, clean tree, in sync with origin, version newer, tag
+  free, `[Unreleased]` non-empty, crates.io creds present.
+- **bump + CHANGELOG** — lockstep version bump (workspace version + all 8
+  internal dep pins) + `cargo update -w`, then promote CHANGELOG
+  `[Unreleased]` → `[VERSION]`.
+- **gates** — `fmt` / `clippy -D warnings` / `test`.
+- **commit + tag** — the `release: vX.Y.Z` commit + tag (local, reversible).
+- **confirm** — pause for an explicit `y` (skipped with `YES=1`) before the
+  irreversible steps.
+- **publish** — `cargo publish` of the 7 published libs in dep order.
+- **push** — `main` + tag push, which fires `release.yml` (tarball/GitHub
+  Release).
+
+Everything before publish is local and reversible; a declined or failed run
+leaves the commit + tag for inspection (undo with
 `git reset --hard HEAD~1 && git tag -d vX.Y.Z`).
 
 ## Layout reminder
@@ -91,9 +100,9 @@ tests/                           cargo unit tests live in-crate; smoke runner he
 
 ```sh
 cargo build --release -p vmette
-# Produces:
-#   target/release/libvmette.dylib   (cdylib, ~390 KB)
-#   target/release/libvmette.a       (staticlib, ~30 MB unstripped)
+# Produces (release profile sets `strip = true`, so these are stripped):
+#   target/release/libvmette.dylib   (cdylib)
+#   target/release/libvmette.a       (staticlib)
 #   target/release/libvmette.rlib    (Rust-callable)
 # Header is regenerated only under the `regenerate-header` feature
 # (cargo build -p vmette --features regenerate-header, or `make header`):

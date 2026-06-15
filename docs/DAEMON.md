@@ -43,18 +43,28 @@ Line-delimited JSON. One request per connection.
 
 ### Request
 
+Only `kernel`, `initramfs`, `rootfs`, and `exec` are required:
+
 ```json
 {
   "kernel": "/abs/path/vmlinuz-virt",
   "initramfs": "/abs/path/initramfs-vmette",
   "rootfs": "/abs/path/alpine-rootfs",
+  "exec": "echo hi; exit 17"
+}
+```
+
+Every other field is optional and shown below with its default; omit any you
+don't need (the daemon owns the one true default — see the prose after):
+
+```json
+{
   "rootfs_ro": false,
   "offline": false,
   "shares": [
     { "tag": "host", "path": "/abs/path/host_dir" }
   ],
   "disks": [ "/abs/path/disk.img" ],
-  "exec": "echo hi; exit 17",
   "net": false,
   "switch_root": false,
   "vsock_port": 0,
@@ -88,7 +98,7 @@ that needs guest env vars must bake them into the `exec` command itself
 
 Newline-delimited JSON frames. The run lane emits three kinds
 (`stdout`/`exit`/`error`); a fourth, `stderr`, exists in the protocol but is
-unused by this lane (see below):
+unused by this lane:
 
 ```json
 {"kind":"stdout","data":"hello world\n"}
@@ -161,7 +171,7 @@ Each request is still one JSON object per connection, tagged by `kind`:
 |--------|-----------|-------|
 | `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
 | `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}`. `text?` carries the clipboard (`get_clipboard`) or combined stdout/stderr (`exec_capture`); `exit_code?` carries the `exec_capture` status (absent if it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md). |
-| `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; small default, larger for launches) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
+| `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; daemon default ~500 ms) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
 | `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved) |
 | `desktop_view` | `session_id` | `{"kind":"view","addr":"127.0.0.1:PORT"}` — opens (or returns) a live VNC view on a per-session loopback port; idempotent. See [`DESKTOP.md`](DESKTOP.md#live-view-watch--drive-the-desktop). |
 | `desktop_stop` | `session_id` | `{"kind":"stopped"}` |

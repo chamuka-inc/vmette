@@ -10,14 +10,13 @@ where you opt in (see [Security model](#security-model)). Most tools boot a fres
 VM per call; the `desktop_*` family drives a persistent graphical desktop
 session.
 
-> **What this does — and doesn't — contain.** Adding `vmette-mcp` *adds* a
-> sandbox to the agent's toolbox; it does **not** replace the host's own tools.
-> In Claude Code the agent still has native Bash / Read / Write that run directly
-> on your Mac, and the model picks which tool to call — it won't automatically
-> prefer the sandbox. So `vmette-mcp` is where *you* (or the agent) put risky
-> work, not an automatic cage around the whole agent. To make the VM the agent's
-> **only** way to execute code, restrict the host tools too — e.g. disable Claude
-> Code's Bash tool via permissions, or use a host that exposes only vmette.
+> **What this does — and doesn't — contain.** `vmette-mcp` *adds* a sandbox to
+> the agent's toolbox; it doesn't replace the host's own tools (in Claude Code,
+> native Bash / Read / Write still run on your Mac), and the model chooses which
+> tool to call, so it's where you put risky work rather than an automatic cage.
+> To make the VM the agent's **only** way to execute code, restrict the host
+> tools too — e.g. disable Claude Code's Bash tool via permissions, or use a host
+> that exposes only vmette.
 
 The VM runs on Apple's `Virtualization.framework`, so the isolation boundary is
 the hypervisor, not a container or a `chroot`. The MCP server itself is
@@ -52,7 +51,6 @@ flags needed. Common flags (all optional):
   `network: true` calls are refused, not silently run offline).
 - `--default-image <ref>` — image used by `workspace_create` (and thus
   `workspace_run`) when a call doesn't name one (default `alpine:3.20`).
-  Does **not** affect `execute`, which always picks its image from `language`.
 - `--workspace-cap <n>` — max concurrent live workspaces (default 8).
 
 ### Claude Code (CLI)
@@ -156,7 +154,7 @@ binary path as `command` and the flags as `args`.
 | `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
-| `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. The daemon is started automatically on first desktop use if it isn't already running. |
+| `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. |
 | `--ca-certs DIR` | `$VMETTE_CA_CERTS`, else `~/.config/vmette/certs` | Host directory of `.crt`/`.pem` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
 
 `vmette-mcp` writes structured logs (tracing) to **stderr**. `stdout`
@@ -176,7 +174,7 @@ persists between calls.
 
 | Input | Type | Notes |
 |-------|------|-------|
-| `language` | string | `python`, `node`, or `shell`. Maps to `python:3.12-alpine`, `node:20-alpine`, `alpine:3.20`. This mapping is fixed; `--default-image` does **not** apply to `execute` (it only sets the `workspace_create` default). |
+| `language` | string | `python`, `node`, or `shell`. Maps to `python:3.12-alpine`, `node:20-alpine`, `alpine:3.20`. This mapping is fixed; `--default-image` does **not** apply (see the [CLI flags](#cli-flags) table). |
 | `code` | string | Source — quoting is handled, embedded `'`, `$`, backticks all safe. |
 | `network` | bool, default false | Requires `--allow-network` server-side. |
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
@@ -187,8 +185,7 @@ Returns: `exit: N\n\nstdout:\n...\n\nstderr:\n...`
 ### `fetch_url`
 
 HTTP(S) GET via a Python urllib script inside a microVM. Always runs in
-`python:3.12-alpine` (not affected by `--default-image`). Requires
-`--allow-network`.
+`python:3.12-alpine`. Requires `--allow-network`.
 
 | Input | Type | Notes |
 |-------|------|-------|
@@ -262,7 +259,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_start` | `image?`, `size?` (default `1280x800`), `network?`, `ca_certs?` (host CA dir mounted at `/mnt/certs`, mirrors `--ca-certs` per-session) | session id |
 | `desktop_view` | `session_id` | `vnc://host:port` — open a live VNC view a human can watch and drive (see [DESKTOP.md](DESKTOP.md#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | framebuffer note (`framebuffer WxH; …`) + PNG image block |
-| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + PNG, once the screen has stopped changing and stayed still |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` (default 10000 ms) | note + framebuffer note + PNG, once the screen has stopped changing and stayed still |
 | `desktop_what_changed` | `session_id` | note + framebuffer note + PNG of the region changed since the last capture |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` / `desktop_click` / `desktop_double_click` / `desktop_right_click` / `desktop_middle_click` | `session_id`, `x`, `y` | status (echoes where the pointer landed; flags `(constrained)` if the WM clamped it) |
@@ -415,7 +412,7 @@ What the server **does not** isolate:
 | Every tool call returns exit 1 with `start failed` | Codesigning lost. The MCP server boots VMs in-process, so **it** must carry the virtualization entitlement: re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime $(which vmette-mcp)`. |
 | `fetch_url` returns "this MCP server was started without --allow-network" | Add `--allow-network` to your client config and restart the host. |
 | `workspace_create` returns "workspace cap reached" | Destroy idle workspaces or raise `--workspace-cap`. |
-| `desktop_*` tools fail with "connect … failed (is vmetted running?)" | Start the daemon (`vmetted &`); the desktop tools route through it. |
+| `desktop_*` tools fail with "connect … failed (is vmetted running?)" | The daemon failed to auto-spawn (it's normally started on first desktop use). Check that `vmetted` is on your `PATH` and codesigned; inspect its stderr by starting it manually (`vmetted &`). |
 | `desktop_start` returns "session cap reached" | Stop an idle desktop session, or wait for idle eviction (30 min). |
 | `cargo`/`node`/etc. "not found" in a toolchain image | The image's configured `Env` (incl. `PATH`) is applied automatically. If the image was extracted by an older vmette it lacks the env file — clear its cache (`rm -rf ~/Library/Caches/vmette/oci/<image>`) so it re-extracts. |
 | `No space left on device` mid-build | The guest's writable `/` is a RAM-backed tmpfs overlay (~half the guest RAM). Route large writes to the workspace mount (`/mnt/work`) — e.g. `CARGO_HOME` and the build target dir — rather than the rootfs. |

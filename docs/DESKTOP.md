@@ -56,8 +56,11 @@ longer than the idle TTL (30 min).
 
 ## Prerequisites
 
-1. **The daemon must be running.** All desktop access (CLI and MCP) routes
-   through `vmetted`:
+1. **The daemon.** All desktop access (CLI and MCP) routes through `vmetted`,
+   but you don't normally start it yourself: both clients auto-spawn it on
+   first desktop access (the CLI on the default socket, the MCP server always).
+   Run it manually only when you point `--socket` at a daemon you manage
+   yourself:
 
    ```sh
    vmetted &
@@ -96,20 +99,17 @@ longer than the idle TTL (30 min).
    bare `chromium <url>` renders under the headless software-GL guest:
    `--no-sandbox`, `--use-gl=swiftshader`, `--start-maximized`, …).
 
-   **Building the image is optional** (Docker required) — only to customize the
-   rootfs or republish the default. `scripts/build-desktop-image.sh` wraps it:
+   **Building the image** (Docker required) is only for customizing the rootfs
+   or republishing the default; `scripts/build-desktop-image.sh` wraps it:
 
    ```sh
    make desktop-image                          # → assets/<arch>/vmette-desktop-rootfs.tar (local, host arch)
-   scripts/build-desktop-image.sh --export     # same, explicit
-   scripts/build-desktop-image.sh --tag my-registry/my-desktop:latest --push   # publish your own
    scripts/build-desktop-image.sh --push       # republish the default — full amd64+arm64 manifest
    ```
 
    A bare `--push` always rebuilds **both** architectures into one manifest
    (arm64 builds under qemu, bundled with Docker Desktop), so a publish can never
-   leave one arch stale. `--export` (the `make` target) writes the local
-   `tar+file://` rootfs the CLI/MCP auto-discover ahead of the registry default.
+   leave one arch stale.
 
 ## Bring your own desktop rootfs
 
@@ -202,7 +202,8 @@ hold still). Either tuning flag implies `--settle`.
 
 `--ca-certs DIR` mounts a host directory of `.crt` / `.pem` enterprise CA
 certificates at `/mnt/certs`. At desktop boot the guest installs them into the
-system trust store (generically, in the initramfs init) and the desktop image
+system trust store (generically, in the initramfs init) and the desktop startup
+(the injected `vmette-desktop-run.sh`, and the bundled image's entrypoint)
 additionally writes Chromium's managed `CACertificates` policy, so browser
 automation works behind TLS-inspecting proxies without
 `--ignore-certificate-errors`. When `--ca-certs` is omitted it falls back to the
@@ -243,7 +244,7 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_exec` | `session_id`, `command` | status text (fire-and-forget) |
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` | the command's combined stdout/stderr + exit code (runs to completion) |
 | `desktop_navigate` | `session_id`, `url` | status text — opens `url` in the browser with no shell and no synthetic keystrokes |
-| `desktop_launch` | `session_id`, `command`, `wait_ms?` | **PNG image content block** (the app's first painted frame) |
+| `desktop_launch` | `session_id`, `command`, `wait_ms?` | status note + framebuffer note + **PNG image content block** (the app's first settled frame) |
 | `desktop_stop` | `session_id` | status text |
 
 `desktop_screenshot` returns an MCP image content block
@@ -360,10 +361,12 @@ A running session can be watched — and optionally driven — by a human over
 live view and returns a loopback address:
 
 ```text
-desktop_view { "session_id": "…" }  →  vnc://127.0.0.1:5901
+desktop_view { "session_id": "…" }  →  vnc://127.0.0.1:<ephemeral>
 ```
 
-Open it with any VNC client — on macOS, `open vnc://127.0.0.1:5901` launches
+The port is an ephemeral loopback port assigned per session (`5901` here is
+illustrative). Open the returned address with any VNC client — on macOS,
+`open vnc://127.0.0.1:5901` launches
 Screen Sharing; [TigerVNC](https://tigervnc.org/) and other standard viewers
 work too.
 
