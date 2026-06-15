@@ -3,9 +3,6 @@
 Reference docs for each surface of vmette. See the
 [project README](../README.md) for the overview and install instructions.
 
-Agent-facing surfaces come first (MCP, desktop), then the CLI, then the
-embedder surfaces (library, daemon).
-
 | Doc | Covers |
 |-----|--------|
 | [MCP.md](MCP.md) | `vmette-mcp` — the Model Context Protocol server. Give Claude Code/Cursor a sandboxed machine. **Start here.** |
@@ -17,7 +14,7 @@ embedder surfaces (library, daemon).
 
 ## Workspace at a glance
 
-vmette is a Cargo workspace of eleven crates (full layout in [HACKING.md](HACKING.md)):
+vmette is a Cargo workspace of crates (full layout in [HACKING.md](HACKING.md)):
 the wire contracts live in `vmette-proto`, the VZ wrapper and public API in
 `vmette`, and the rootfs providers in the `vmette-provider-*` crates, aggregated
 by `vmette-providers`. The `vmette`, `vmetted`, and `vmette-mcp` binaries come

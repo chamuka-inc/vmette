@@ -7,15 +7,11 @@ one-shot path — the VM stays alive across many actions until you explicitly
 stop it.
 
 A computer-use agent gets its own real desktop that is *not* your machine: the
-desktop rootfs is mounted read-only on the host and overlaid with a per-session
-tmpfs in the guest, so anything a session writes — browser profile and cache,
-cookies, downloads, `/etc` edits — lives only in that session and is discarded
-when it stops. The boundary is the hypervisor; the screen the agent sees and the
-input it injects stay inside the guest, two sessions never see each other's
-state, and nothing persists across a daemon restart. It reaches your host
-filesystem or network only where you explicitly grant it — `--share`/share
-mounts are the deliberate exception: those are writable and shared with the host
-because you asked for them.
+desktop rootfs is mounted read-only and overlaid with a per-session tmpfs in the
+guest, so everything a session writes is discarded when it stops. The boundary is
+the hypervisor. The sole host grant on the desktop path is the read-only
+`--ca-certs` mount (with a machine-wide fallback, also read-only); there is no
+`--share` flag for desktop sessions.
 
 There is no Apple graphics window involved. The guest runs a headless X server
 (`Xvfb :99`) plus a lightweight window manager (`openbox`), and a C agent
@@ -288,7 +284,7 @@ One request object per connection; one reply object back.
   "image": "tar+file:///abs/assets/aarch64/vmette-desktop-rootfs.tar", // required; client-resolved
   "size": "1280x800",                                          // optional
   "net": false, "offline": false,
-  "vcpus": 2, "mem_mib": 2048,                                  // optional; daemon defaults shown
+  "vcpus": 2, "mem_mib": 2048,                                  // optional; omitted by the CLI → daemon defaults (2 vCPU / 2048 MiB)
   "shares": [{"tag":"certs", "path":"/abs/company-cas"}] } // optional (example is non-exhaustive)
 // ← { "kind": "session", "session_id": "a1b2c3..." }
 

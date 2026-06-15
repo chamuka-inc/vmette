@@ -5,10 +5,9 @@ Any MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose
 custom clients) gets a set of tools — `execute`, `fetch_url`, `workspace_*`,
 `desktop_*` — whose every effect lands inside a Linux microVM, never on your
 host: a real shell, filesystem, and (optionally) network that are *not* your
-machine. Host filesystem and network are default-deny — the agent gets them only
-where you opt in (see [Security model](#security-model)). Most tools boot a fresh
-VM per call; the `desktop_*` family drives a persistent graphical desktop
-session.
+machine — all default-deny (see [Security model](#security-model)). Most tools
+boot a fresh VM per call; the `desktop_*` family drives a persistent graphical
+desktop session.
 
 > **What this does — and doesn't — contain.** `vmette-mcp` *adds* a sandbox to
 > the agent's toolbox; it doesn't replace the host's own tools (in Claude Code,
@@ -302,14 +301,18 @@ surprises:
   the page viewport starts *below* the browser chrome (roughly the toolbar
   height), so a coordinate that looks right in the page is off by that offset.
   Take a `desktop_screenshot` and calibrate against what's actually on screen.
-- **Typing goes to the focused widget, and success is not delivery.**
-  `desktop_type` / `desktop_key` deliver keystrokes to whatever currently has
-  focus — click *inside* the target window first (an absolute coordinate that
-  lands outside the window will focus the root and silently drop the input).
-  Their `ok` status only means the X server accepted the synthetic event, **not**
-  that a focused widget received it — X/XTEST exposes no delivery signal. Always
-  confirm the effect with a follow-up `desktop_screenshot` (e.g. that your text
-  actually appeared at the prompt) rather than trusting the `ok`.
+- **Focus matters: typing, key chords, and clipboard copy all go to the focused
+  widget.** `desktop_type`, `desktop_key`, and `ctrl+a`/`ctrl+c` deliver to
+  whatever currently has keyboard focus — `desktop_click` *inside* the target
+  window (or document) first. An absolute coordinate that lands outside it
+  focuses the root and silently drops the input; right after a page loads, focus
+  is usually the toolbar/address bar, not the document, so a copy grabs nothing
+  and you read back empty.
+- **Success is not delivery.** The `ok` status from `desktop_type` / `desktop_key`
+  only means the X server accepted the synthetic event, **not** that a focused
+  widget received it — X/XTEST exposes no delivery signal. Always confirm the
+  effect with a follow-up `desktop_screenshot` (e.g. that your text actually
+  appeared at the prompt) rather than trusting the `ok`.
 - **Typing is one synthetic keystroke at a time.** Fine for form fields and
   shell commands; slow for very large blobs. To put a big file into the guest,
   write it with `desktop_exec` (e.g. a here-doc) rather than typing it.
@@ -327,12 +330,10 @@ surprises:
   focus races, no autocomplete surprises. It returns once navigation starts, so
   follow it with `desktop_screenshot_when_settled` to wait for the page to paint.
   The session must have been started with `network=true`.
-- **Copying text out needs the document focused first.** `desktop_get_clipboard`
-  reads exactly what `ctrl+c` placed on the clipboard — but `ctrl+a`/`ctrl+c` go
-  to whatever has keyboard focus, and right after a page loads that is usually
-  the toolbar/address bar, not the document, so the copy grabs nothing and you
-  read back empty. `desktop_click` a point inside the content first to focus it,
-  *then* `desktop_key 'ctrl+a'`, `desktop_key 'ctrl+c'`, and `desktop_get_clipboard`.
+- **Copying text out reads the clipboard exactly.** `desktop_get_clipboard`
+  reads exactly what `ctrl+c` placed on the clipboard. Focus the document first
+  (see "Focus matters" above), *then* `desktop_key 'ctrl+a'`,
+  `desktop_key 'ctrl+c'`, and `desktop_get_clipboard`.
 - **Settle ignores sub-tile pixel noise.** `desktop_what_changed` and the
   settle logic compare in tiles, so a tiny visual change — a single counter
   digit ticking, a small checkmark appearing — can read as "nothing changed."

@@ -60,11 +60,10 @@ make test               # cargo unit + end-to-end VM smoke
 
 `vmette-mcp` is a Model Context Protocol server that hands any MCP-aware agent host a
 sandboxed machine as a set of tools (`execute`, `fetch_url`, `workspace_*`, `desktop_*`). Work the
-agent runs *through these tools* happens inside the VM — never on your host filesystem
-(unless you share a directory in), with no network egress (unless you start the server
-with `--allow-network`). Note it *adds* the sandbox alongside the host's own tools; in
-Claude Code the agent still has native Bash that runs on your Mac, so to make the VM
-its *only* way to run code, restrict those too (e.g. deny the Bash tool). See
+agent runs *through these tools* happens inside the VM, confined as above. Note it
+*adds* the sandbox alongside the host's own tools; in Claude Code the agent still has
+native Bash that runs on your Mac, so to make the VM its *only* way to run code, restrict
+those too (e.g. deny the Bash tool). For the full security model see
 [`docs/MCP.md`](docs/MCP.md).
 
 **Claude Code** — one command, no config file:
@@ -141,7 +140,7 @@ vmette --rootfs python:3.12-alpine \
 The exit code propagates to the host. The kernel and initramfs are auto-discovered
 (the release tarball ships them under `$PREFIX/assets`; from a checkout vmette finds
 `./assets`). Override with `--kernel` / `--initramfs` or `$VMETTE_ASSETS_DIR`. First
-run pulls + extracts the image (alpine:3.20 ≈ 30 s); subsequent runs are cache hits
+run pulls + extracts the image (python:3.12-alpine ≈ 30 s); subsequent runs are cache hits
 (~3 s), cached at `~/Library/Caches/vmette/oci/`.
 
 One `--rootfs` flag, four sources — a local directory, an OCI ref, a tarball URL, or a
@@ -201,18 +200,15 @@ The library accepts a directory path; resolution from a spec (OCI ref, tarball U
 goes through the provider registry first.
 
 ```rust
-use vmette::provider::{Context, DirProvider, Registry};
+use vmette::provider::Context;
 use vmette::Config;
-use vmette_provider_oci::OciProvider;
-use vmette_provider_squashfs::SquashfsProvider;
-use vmette_provider_tar::TarProvider;
 
 fn main() {
-    let registry = Registry::new()
-        .with(DirProvider::new())
-        .with(SquashfsProvider::new())
-        .with(TarProvider::new())
-        .with(OciProvider::new());
+    // The standard registry, in the load-bearing resolution order the CLI and
+    // daemon use. To customize, hand-build one instead:
+    //   use vmette::provider::{DirProvider, Registry};
+    //   Registry::new().with(DirProvider::new()).with(/* … */);
+    let registry = vmette_providers::default_registry();
     let ctx = Context::new(std::env::var_os("HOME").unwrap_or_default());
     let artifact = registry.resolve("alpine:3.20", &ctx).unwrap();
 
@@ -227,10 +223,8 @@ fn main() {
 
 ```toml
 [dependencies]
-vmette                   = "0.10"
-vmette-provider-oci      = "0.10"
-vmette-provider-tar      = "0.10"  # optional
-vmette-provider-squashfs = "0.10"  # optional
+vmette           = "0.10"
+vmette-providers = "0.10"  # default_registry(); pulls in the oci/tar/squashfs providers
 ```
 
 See [`crates/vmette/examples/minimal.rs`](crates/vmette/examples/minimal.rs) and

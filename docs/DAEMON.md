@@ -168,7 +168,7 @@ Each request is still one JSON object per connection, tagged by `kind`:
 
 | `kind` | Key fields | Reply |
 |--------|-----------|-------|
-| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
+| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`; omitted → 1280x800), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
 | `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}`. `text?` carries the clipboard (`get_clipboard`) or combined stdout/stderr (`exec_capture`); `exit_code?` carries the `exec_capture` status (absent if it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md). |
 | `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; daemon default ~500 ms) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
 | `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved; `png_base64` is just the cropped changed region — the full frame only when nothing changed) |

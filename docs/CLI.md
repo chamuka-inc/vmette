@@ -41,11 +41,8 @@ install boots with no asset flags.
 
 | Flag | Argument | Description |
 |------|----------|-------------|
-| `--rootfs-ro` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). |
+| `--rootfs-ro` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). A no-op for block-image rootfs, which is always read-only (see [Rootfs providers](#rootfs-providers)). |
 | `--offline` | — | Forbid network access. Cache miss surfaces as an immediate failure; useful on flaky networks or air-gapped environments. Applied to whichever provider resolves the spec. |
-
-`--rootfs-ro` is a silent no-op for block-image rootfs (e.g. squashfs): they are
-always mounted read-only with a tmpfs overlay, so vmette only prints a note.
 
 ## Workload
 
@@ -70,7 +67,7 @@ writable overlay to back).
 |------|----------|-------------|
 | `--timeout` | N | Force-stop the VM after N seconds; host exits 124. |
 | `--cmdline` | STR | Override the base kernel cmdline. Default: `console=hvc0 quiet`. |
-| `--vsock-port` | N | `-1`: disable vsock device entirely. `0`: auto-pick 50000–59999 (default). `>0`: explicit port. The chosen port is exported into the guest's exec env as `VMETTE_VSOCK_PORT`. |
+| `--vsock-port` | N | `-1`: disable vsock device entirely. `0`: auto-pick 50000–59999 (default). `>0`: explicit port. The chosen port reaches the guest as `VMETTE_VSOCK_PORT` (see [Guest environment](#guest-environment)). |
 | `--vcpus` | N | Default 1. |
 | `--mem-mib` | N | Default 512. |
 | `--quiet` | | Suppress the `[vmette]` launcher banner and the `guest stopped`/`timeout` status lines on stderr. Errors are still printed, the exit code is unchanged, and guest console output on stdout is untouched. Useful when scripting or capturing output (the MCP server passes this internally). |
@@ -138,10 +135,8 @@ running the workload (the desktop image additionally writes Chromium's managed
 3. `~/.config/vmette/certs` (used only when it exists and is a directory)
 
 When none apply, no share is attached (the common case — trusting an extra CA is
-opt-in and weakens isolation). One-off runs consult `$VMETTE_CA_CERTS` /
-`~/.config/vmette/certs` automatically, so a configured machine-wide CA is
-trusted with no flag; an explicit `--share certs=…` wins. This mirrors how
-[`DESKTOP.md`](DESKTOP.md) describes `--ca-certs`.
+opt-in and weakens isolation). An explicit `--share certs=…` always wins. See
+[`DESKTOP.md`](DESKTOP.md) for `--ca-certs`.
 
 ## Rootfs providers
 
@@ -160,9 +155,9 @@ Run `vmette providers` to print the live registry.
 
 The `dir`/`tar`/`oci` providers deliver a host **directory** shared over
 virtio-fs. The `squashfs` provider instead returns a **block image** attached
-read-only as virtio-blk slot 0 (`/dev/vda`) under a tmpfs overlay (see
-[Rootfs](#rootfs)), so the rootfs is immutable and the same base can back many
-concurrent sessions. Because a block rootfs has no host-writable surface,
+read-only as virtio-blk slot 0 (`/dev/vda`) under a tmpfs overlay, so the
+rootfs is immutable and the same base can back many concurrent sessions
+(`--rootfs-ro` is therefore a silent no-op for it). Because a block rootfs has no host-writable surface,
 exit-code propagation rides a small auto-attached `ctl` virtio-fs share instead
 of `/.vmette-exit` on the rootfs.
 

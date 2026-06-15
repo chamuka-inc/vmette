@@ -108,6 +108,13 @@ Two **deliberately separate** subsystems:
   registry feeds it decoded screenshot frames to decide when the screen has
   quiesced and which regions are still moving. Lives here because the daemon is
   its only consumer (`Rect` comes from `vmette-proto`).
+- **Live VNC view** (`rfb.rs` + `view.rs`): the `desktop_view` path. `rfb.rs` is
+  the pure RFB/VNC protocol codec (handshake/`ServerInit`, diff two `Screenshot`
+  captures into Raw-encoded `FramebufferUpdate` rectangles, map RFB
+  pointer/key events onto the agent `Action` vocabulary — no VZ/objc2);
+  `view.rs`'s `ViewServer` binds a per-session loopback TCP listener on an
+  OS-assigned ephemeral port and serves each VNC client with a reader+writer
+  thread pair reusing the session's existing capture/input capabilities.
 
 ## MCP server — `crates/vmette-mcp/src/`
 

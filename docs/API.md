@@ -5,7 +5,7 @@ building your own agent host or sandbox tooling on top of the same VM primitive.
 
 Two surfaces:
 
-1. **Rust** — `vmette` crate, idiomatic types, `pub use` re-exports.
+1. **Rust** — `vmette` crate, idiomatic types exposed at the crate root.
 2. **C** — `vmette.h` (cbindgen-generated, checked in), opaque
    pointers, paired `*_new` / `*_free`.
 
@@ -131,17 +131,16 @@ with `OciProvider::with_auth(Arc::new(resolver))` (it takes
 `RootfsProvider` is the trait third-party code implements to teach
 vmette about new rootfs sources (S3 buckets, internal artifactories,
 custom build pipelines). See [the tar provider crate]
-(../crates/vmette-provider-tar/src/lib.rs) for a ~150-line reference
+(../crates/vmette-provider-tar/src/lib.rs) for a self-contained reference
 implementation.
 
 ### Snapshot — not yet implemented
 
-Snapshot save/restore is **not implemented**. The `Config` fields
-(`build_snapshot`, `resume_snapshot`) and C setters exist, but the underlying
-objc2 save/restore flow hasn't landed: both paths unconditionally return
-`Err(Error::SnapshotUnsupported)` (`SnapshotUnsupported` status in C) on **every
-architecture**, including Apple Silicon. Calling `run()` with either field set
-always errors today. Do not build against this surface yet.
+Both `build_snapshot` and `resume_snapshot` currently cause `run()` to return
+`Err(Error::SnapshotUnsupported)` (`SnapshotUnsupported` status in C) on every
+architecture, including Apple Silicon. The C setters and `Config` fields exist
+but the underlying save/restore flow has not landed — do not build against this
+surface yet.
 
 ## C ABI
 
@@ -161,7 +160,7 @@ int main(int argc, char **argv) {
     vmette_config_set_mem_mib(cfg, 512);
 
     vmette_run_output_t *out = NULL;
-    VmetteStatus rc = vmette_run(cfg, &out);   /* same blocking contract as Rust run() above */
+    VmetteStatus rc = vmette_run(cfg, &out);   /* see Reference */
     if (rc != Ok) {
         fprintf(stderr, "vmette_run: status %d\n", (int)rc);
         return 1;

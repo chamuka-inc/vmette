@@ -23,7 +23,7 @@
 
 ```sh
 make build                  # cargo build --release + codesign vmette/vmetted/vmette-mcp
-make assets init guest-bin  # pull alpine kernel/initramfs/rootfs + repack
+make assets init guest-bin  # assets: pull kernel/initramfs/rootfs · init: repack initramfs · guest-bin: build vsock helpers
 make test                   # cargo tests + end-to-end VM smoke
 ```
 
@@ -61,10 +61,10 @@ make release VERSION=0.5.0 YES=1       # skip the prompt (unattended)
 
 - **preflight** — on `main`, clean tree, in sync with origin, version newer, tag
   free, `[Unreleased]` non-empty, crates.io creds present.
-- **bump + CHANGELOG** — lockstep version bump (workspace version + all 8
-  internal version pins: the 7 published libs + `vmette-daemon-client`, which is
-  pinned but `publish = false`, so `release.sh`'s own progress text says 7) +
-  `cargo update -w`, then promote CHANGELOG
+- **bump + CHANGELOG** — lockstep bump of the workspace version and all 8
+  internal `path` pins (the 7 published libs plus the `publish = false`
+  `vmette-daemon-client`); the script's progress line counts only the 7 it
+  publishes. Then `cargo update -w` and promote CHANGELOG
   `[Unreleased]` → `[VERSION]`.
 - **gates** — `fmt` / `clippy -D warnings` / `test`.
 - **commit + tag** — the `release: vX.Y.Z` commit + tag (local, reversible).
