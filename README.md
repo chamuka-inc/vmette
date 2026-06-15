@@ -59,7 +59,7 @@ make test               # cargo unit + end-to-end VM smoke
 ## Give your agent a sandbox (MCP)
 
 `vmette-mcp` is a Model Context Protocol server that hands any MCP-aware agent host a
-sandboxed machine as a set of tools (`execute`, `workspace_*`, `desktop_*`). Work the
+sandboxed machine as a set of tools (`execute`, `fetch_url`, `workspace_*`, `desktop_*`). Work the
 agent runs *through these tools* happens inside the VM — never on your host filesystem
 (unless you share a directory in), with no network egress (unless you start the server
 with `--allow-network`). Note it *adds* the sandbox alongside the host's own tools; in
@@ -85,11 +85,10 @@ command. JSON example (Claude Desktop's
 }}}
 ```
 
-The server ships an `execute` tool, `fetch_url`, a `workspace_*` family (each call
-boots a fresh microVM), and a `desktop_*` family for computer use.
+Each `workspace_*` and `execute` call boots a fresh microVM.
 
-Per-host setup snippets (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose) plus
-the full tool reference and security model: [`docs/MCP.md`](docs/MCP.md).
+Full tool reference, per-host configs, and the security model:
+[`docs/MCP.md`](docs/MCP.md).
 
 ## Give your agent a desktop (computer use)
 

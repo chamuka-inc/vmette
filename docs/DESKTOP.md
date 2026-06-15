@@ -6,19 +6,16 @@ move/click/type, screenshot again. This is the opposite of the headless
 one-shot path — the VM stays alive across many actions until you explicitly
 stop it.
 
-The relief is the same as the rest of vmette: a computer-use agent gets its own
-real desktop to click around in that is *not* your machine. The boundary is the
-hypervisor, the screen the agent sees and the input it injects stay inside the
-guest, and it reaches your host filesystem or network only where you explicitly
-grant it.
-
-Each session is also isolated **from every other session**: the desktop rootfs
-is mounted read-only on the host and overlaid with a per-session tmpfs in the
-guest, so anything a session writes — browser profile and cache, cookies,
-downloads, `/etc` edits — lives only in that session and is discarded when it
-stops. Two sessions never see each other's state, and nothing persists across a
-daemon restart. (Explicit `--share`/share mounts are the deliberate exception:
-those are writable and shared with the host because you asked for them.)
+A computer-use agent gets its own real desktop that is *not* your machine: the
+desktop rootfs is mounted read-only on the host and overlaid with a per-session
+tmpfs in the guest, so anything a session writes — browser profile and cache,
+cookies, downloads, `/etc` edits — lives only in that session and is discarded
+when it stops. The boundary is the hypervisor; the screen the agent sees and the
+input it injects stay inside the guest, two sessions never see each other's
+state, and nothing persists across a daemon restart. It reaches your host
+filesystem or network only where you explicitly grant it — `--share`/share
+mounts are the deliberate exception: those are writable and shared with the host
+because you asked for them.
 
 There is no Apple graphics window involved. The guest runs a headless X server
 (`Xvfb :99`) plus a lightweight window manager (`openbox`), and a C agent
@@ -71,10 +68,8 @@ longer than the idle TTL (30 min).
    automatically on first use (the image is public). The first `desktop start`
    extracts it and caches it under `~/Library/Caches/vmette/oci/`; later starts
    are cache hits. That image is a convenience default (Xvfb + openbox + chromium
-   + fonts) — **the repo does not auto-build it; it's pulled on first use**.
-   `scripts/build-desktop-image.sh` remains for republishing or customizing it,
-   but the usual path is to bring your own GUI image rather than rebuild ours; see
-   [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
+   + fonts); the usual path is to bring your own GUI image rather than rebuild
+   ours, see [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
    **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring how
    kernel/initramfs are resolved):
@@ -217,9 +212,9 @@ Global: `--socket PATH` overrides the daemon socket (default
 
 ## Use it (AI agents via MCP)
 
-`vmette-mcp` exposes the desktop tools to any MCP host. They require `vmetted`
-to be running; the MCP server connects to its socket. Override the socket with
-`--socket PATH`.
+`vmette-mcp` exposes the desktop tools to any MCP host. They route through
+`vmetted`, which the MCP server auto-spawns on first desktop access (override the
+socket with `--socket PATH`).
 
 | Tool | Input | Returns |
 |------|-------|---------|
@@ -234,7 +229,7 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_double_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
 | `desktop_right_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
 | `desktop_middle_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
-| `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the current pointer position) |
+| `desktop_drag` | `session_id`, `x`, `y` | status text (presses the left button, moves to `(x, y)`, releases — the drag starts at the **current** pointer position, so precede it with `desktop_move` to set the origin; contrast the CLI's all-in-one `drag FX FY TX TY`) |
 | `desktop_type` | `session_id`, `text` | status text |
 | `desktop_key` | `session_id`, `keys` | status text |
 | `desktop_get_clipboard` | `session_id` | the clipboard text, exact (empty if unset — click the content to focus it before `ctrl+a`/`ctrl+c`, or the copy grabs nothing) |
@@ -275,10 +270,10 @@ tool, so a bare `chromium <url>` renders.
 so follow it with `desktop_screenshot_when_settled` to wait for the page to
 paint.
 
-**`desktop_exec_capture`** blocks every other desktop action until the command
-returns or hits its timeout (the in-guest agent is single-threaded), so keep it
-to short, terminating commands and use `desktop_exec` / `desktop_launch` for GUI
-apps.
+**`desktop_exec_capture`** runs the command to completion; the session serializes
+desktop actions, so a long capture delays the next request until it returns or
+hits its timeout. Keep it to short, terminating commands and use `desktop_exec` /
+`desktop_launch` for GUI apps.
 
 ## Protocol
 
@@ -293,7 +288,8 @@ One request object per connection; one reply object back.
   "image": "tar+file:///abs/assets/aarch64/vmette-desktop-rootfs.tar", // required; client-resolved
   "size": "1280x800",                                          // optional
   "net": false, "offline": false,
-  "shares": [{"tag":"certs", "path":"/abs/company-cas"}] } // optional
+  "vcpus": 2, "mem_mib": 2048,                                  // optional; daemon defaults shown
+  "shares": [{"tag":"certs", "path":"/abs/company-cas"}] } // optional (example is non-exhaustive)
 // ← { "kind": "session", "session_id": "a1b2c3..." }
 
 // → one action

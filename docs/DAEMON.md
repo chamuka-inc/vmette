@@ -34,8 +34,9 @@ Logs are structured JSON on stderr (tracing-subscriber). Filter with
 RUST_LOG=vmetted=debug vmetted
 ```
 
-`SIGTERM` / `SIGINT` drains in-flight connections and removes the
-socket file before exit.
+`SIGTERM` / `SIGINT` stops accepting new connections, tears down any live
+desktop sessions, and removes the socket file before exit. (In-flight stateless
+runs are not gracefully drained — they are dropped on exit.)
 
 ## Protocol
 
@@ -82,12 +83,10 @@ don't need (the daemon owns the one true default — see the prose after):
 `tar+file://…`, `squashfs+file://…`). See
 [`CLI.md`](CLI.md#rootfs-providers) for the shipped providers.
 
-`rootfs_ro`, `offline`, `shares`, `disks`, `timeout_seconds`, `net`,
-`switch_root` are optional. `vsock_port` is `-1` (disable) / `0`
-(auto) / `>0` (fixed), defaulting to `0`. `vcpus` defaults to 1,
-`mem_mib` to 512. `scratch_mib` (MiB) attaches an ephemeral ext4 scratch
-disk as the writable overlay upper (the CLI's `--scratch`); omit or `null`
-for the RAM-backed tmpfs overlay.
+`vsock_port` is tri-state: `-1` (disable) / `0` (auto) / `>0` (fixed).
+`scratch_mib` (MiB) attaches an ephemeral ext4 scratch disk as the writable
+overlay upper (the CLI's `--scratch`); omit or `null` for the RAM-backed tmpfs
+overlay.
 
 The daemon run schema has no `env` field — the CLI's `--env KEY=VALUE`
 (and `Config.env`) is not yet wired through `vmetted`. A daemon client
@@ -172,7 +171,7 @@ Each request is still one JSON object per connection, tagged by `kind`:
 | `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
 | `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}`. `text?` carries the clipboard (`get_clipboard`) or combined stdout/stderr (`exec_capture`); `exit_code?` carries the `exec_capture` status (absent if it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md). |
 | `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; daemon default ~500 ms) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
-| `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved) |
+| `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved; `png_base64` is just the cropped changed region — the full frame only when nothing changed) |
 | `desktop_view` | `session_id` | `{"kind":"view","addr":"127.0.0.1:PORT"}` — opens (or returns) a live VNC view on a per-session loopback port; idempotent. See [`DESKTOP.md`](DESKTOP.md#live-view-watch--drive-the-desktop). |
 | `desktop_stop` | `session_id` | `{"kind":"stopped"}` |
 

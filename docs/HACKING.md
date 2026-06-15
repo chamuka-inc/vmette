@@ -62,7 +62,9 @@ make release VERSION=0.5.0 YES=1       # skip the prompt (unattended)
 - **preflight** — on `main`, clean tree, in sync with origin, version newer, tag
   free, `[Unreleased]` non-empty, crates.io creds present.
 - **bump + CHANGELOG** — lockstep version bump (workspace version + all 8
-  internal dep pins) + `cargo update -w`, then promote CHANGELOG
+  internal version pins: the 7 published libs + `vmette-daemon-client`, which is
+  pinned but `publish = false`, so `release.sh`'s own progress text says 7) +
+  `cargo update -w`, then promote CHANGELOG
   `[Unreleased]` → `[VERSION]`.
 - **gates** — `fmt` / `clippy -D warnings` / `test`.
 - **commit + tag** — the `release: vX.Y.Z` commit + tag (local, reversible).
@@ -221,7 +223,7 @@ After editing `scripts/custom-init.sh`, rebuild the initramfs
 `.github/workflows/release.yml` runs on tag push (`v*`):
 1. macos-14 runner, Rust stable + both cross targets, plus the prebuilt messense
    `x86_64-`/`aarch64-unknown-linux-musl` toolchains (for the static guest
-   helpers + desktop agent — no Docker)
+   helpers + desktop agent)
 2. `make universal` → fat binaries
 3. `make dist` → tarball + SHA256SUMS
 4. `softprops/action-gh-release` uploads artifacts + `scripts/install.sh`

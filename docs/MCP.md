@@ -263,7 +263,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_what_changed` | `session_id` | note + framebuffer note + PNG of the region changed since the last capture |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` / `desktop_click` / `desktop_double_click` / `desktop_right_click` / `desktop_middle_click` | `session_id`, `x`, `y` | status (echoes where the pointer landed; flags `(constrained)` if the WM clamped it) |
-| `desktop_drag` | `session_id`, `x`, `y` | status — press-move-release from the current pointer to `(x, y)`: text selection, sliders, drag-and-drop, drawing |
+| `desktop_drag` | `session_id`, `x`, `y` | status — drag to `(x, y)`; see the prose below for the "move first" requirement |
 | `desktop_type` | `session_id`, `text` | status |
 | `desktop_key` | `session_id`, `keys` (e.g. `ctrl+c`) | status |
 | `desktop_get_clipboard` | `session_id` | the clipboard text (exact; empty if unset) — read text out of a GUI app without OCR |
@@ -271,7 +271,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_paste` | `session_id`, `text` | status — set the clipboard then Ctrl+V; fast, lossless input vs `desktop_type` |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
 | `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status — fire-and-forget; no output captured (see [tips](#computer-use-tips--limitations) for `exec` vs `exec_capture`) |
-| `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
+| `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (defaults ~15s, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
 | `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | note + PNG of the app's first settled frame |
 | `desktop_stop` | `session_id` | status |
@@ -398,8 +398,9 @@ What the server **does not** isolate:
   `apk add` / `pip install` in one `workspace_run` is **not** present
   in the next call.
 - **OCI image-pull TTL is 1 hour.** A tag like `:latest` may refetch
-  the manifest on first call past the TTL; use `--offline` (via the
-  `vmette` CLI directly) to pin.
+  the manifest on first call past the TTL. The TTL is owned by the OCI
+  provider, not `vmette-mcp` (the server has no `--offline` flag); pin a
+  tag by digest, or use the `vmette` CLI's `--offline` directly.
 - **No streaming output.** Each tool call returns once the guest exits.
   Long-running tasks should respect `timeout` and write progress to
   the workspace dir for `workspace_read` polling.
@@ -409,7 +410,7 @@ What the server **does not** isolate:
 | Symptom | Likely cause |
 |---------|--------------|
 | Server fails: `kernel not found` | Assets not installed. Run `install.sh` or build them: `bash scripts/fetch-assets.sh && bash scripts/build-initramfs.sh`. |
-| Every tool call returns exit 1 with `start failed` | Codesigning lost. The MCP server boots VMs in-process, so **it** must carry the virtualization entitlement: re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime $(which vmette-mcp)`. |
+| Tool calls fail with an MCP error mentioning `vmette session start` failed | Codesigning lost. The MCP server boots VMs in-process, so **it** must carry the virtualization entitlement: re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime $(which vmette-mcp)`. |
 | `fetch_url` returns "this MCP server was started without --allow-network" | Add `--allow-network` to your client config and restart the host. |
 | `workspace_create` returns "workspace cap reached" | Destroy idle workspaces or raise `--workspace-cap`. |
 | `desktop_*` tools fail with "connect … failed (is vmetted running?)" | The daemon failed to auto-spawn (it's normally started on first desktop use). Check that `vmetted` is on your `PATH` and codesigned; inspect its stderr by starting it manually (`vmetted &`). |

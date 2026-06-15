@@ -439,10 +439,10 @@ fn cmd_click(socket: &Path, args: &[String], click: Action) -> Result<Option<Str
 /// emits interpolated motion so the gesture crosses the target's drag threshold.
 fn cmd_drag(socket: &Path, args: &[String]) -> Result<Option<String>, String> {
     let session = pos(args, 0, "SESSION_ID");
-    let fx = parse_i32(&pos(args, 1, "FROM_X"), "FROM_X");
-    let fy = parse_i32(&pos(args, 2, "FROM_Y"), "FROM_Y");
-    let tx = parse_i32(&pos(args, 3, "TO_X"), "TO_X");
-    let ty = parse_i32(&pos(args, 4, "TO_Y"), "TO_Y");
+    let fx = parse_i32(&pos(args, 1, "FX"), "FX");
+    let fy = parse_i32(&pos(args, 2, "FY"), "FY");
+    let tx = parse_i32(&pos(args, 3, "TX"), "TX");
+    let ty = parse_i32(&pos(args, 4, "TY"), "TY");
     action(socket, &session, Action::MouseMove { x: fx, y: fy })?;
     let reply = action(socket, &session, Action::LeftClickDrag { x: tx, y: ty })?;
     Ok(Some(landed(tx, ty, &reply)))

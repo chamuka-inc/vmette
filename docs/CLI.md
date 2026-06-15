@@ -83,8 +83,7 @@ writable overlay to back).
 | `--resume-snapshot` | PATH | Restore from PATH, send `--exec` via vsock, drain output. Requires `--exec`. |
 | `--guest-vsock-port` | N | Port the guest's vsock-runner listens on (default 1025). |
 
-On Intel, snapshot flags exit 1 with the error `snapshot/restore is not
-supported on this architecture (Apple Silicon only)`.
+On Intel, snapshot flags exit 1 (snapshot/restore is Apple-Silicon-only).
 
 ## Desktop sessions (`vmette desktop`)
 
