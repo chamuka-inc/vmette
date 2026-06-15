@@ -2650,7 +2650,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vmette"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64",
  "block2",
@@ -2672,14 +2672,14 @@ dependencies = [
 
 [[package]]
 name = "vmette-assets"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "vmette-proto",
 ]
 
 [[package]]
 name = "vmette-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64",
  "libc",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-daemon"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2712,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-daemon-client"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -2722,7 +2722,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-mcp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2747,7 +2747,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-proto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2755,7 +2755,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-provider-oci"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64",
  "flate2",
@@ -2772,7 +2772,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-provider-squashfs"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
@@ -2782,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-provider-tar"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "flate2",
  "tar",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "vmette-providers"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "vmette",
  "vmette-provider-oci",
