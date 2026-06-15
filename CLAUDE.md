@@ -175,7 +175,7 @@ returns an MCP image content block. `--allow-network` gates outbound network.
 - **Snapshot/restore is Apple-Silicon-only** (returns `SnapshotUnsupported` on
   Intel).
 - **Desktop sessions are software-rendered (Xvfb, no GPU)** — fine for agentic
-  GUI control / UI testing, not video/WebGL/3D. Each is a live ~1–2 GB VM.
+  GUI control / UI testing, not video/WebGL/3D. Each is a live 2 GB (2048 MiB) VM.
 - The guest connects **out** to the host vsock listener (same direction as
   `vsock-runner.c`), avoiding the arm64-only host→guest connect.
 

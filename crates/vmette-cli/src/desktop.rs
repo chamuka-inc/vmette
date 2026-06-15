@@ -52,7 +52,7 @@ fn desktop_usage() -> ! {
            exec        SESSION_ID COMMAND             launch a shell command in the guest\n\
            exec-capture SESSION_ID COMMAND [--timeout-ms N]   run a command and print its output\n\
            navigate    SESSION_ID URL                 open URL in the desktop browser (no shell)\n\
-           view        SESSION_ID                     open a live VNC view; prints vnc://HOST:PORT\n\
+           view        SESSION_ID                     open a live VNC view; prints vnc://127.0.0.1:PORT\n\
            stop        SESSION_ID                     tear the session down\n\
          \n\
          global:\n\
