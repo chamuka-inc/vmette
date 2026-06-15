@@ -148,7 +148,7 @@ binary path as `command` and the flags as `args`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--default-image REF` | `alpine:3.20` | Rootfs used when `workspace_create` doesn't name one. `execute` is unaffected — it always maps `language` to a fixed image (see the `execute` table). |
+| `--default-image REF` | `alpine:3.20` | Rootfs used when `workspace_create` doesn't name one. Does not affect `execute` (see its `language` row). |
 | `--allow-network` | off | Permits tool calls with `network=true` (the project's only default-deny network/filesystem gate — see also [Security model](#security-model)). Without it, `fetch_url` always fails and any `execute`/`workspace_create` call requesting `network=true` is rejected with an error (the field is not silently ignored). |
 | `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
@@ -272,7 +272,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status — fire-and-forget; no output captured (see [tips](#computer-use-tips--limitations) for `exec` vs `exec_capture`) |
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (defaults ~15s, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
 | `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
-| `desktop_launch` | `session_id`, `command`, `wait_ms?` | note + PNG of the app's first settled frame |
+| `desktop_launch` | `session_id`, `command`, `wait_ms?` (first-paint budget, default 60000 ms) | note + PNG of the app's first settled frame |
 | `desktop_stop` | `session_id` | status |
 
 `desktop_launch` is the one-call "start an app and see it" tool: it backgrounds

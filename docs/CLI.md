@@ -70,7 +70,7 @@ writable overlay to back).
 | `--vsock-port` | N | `-1`: disable vsock device entirely. `0`: auto-pick 50000–59999 (default). `>0`: explicit port. The chosen port reaches the guest as `VMETTE_VSOCK_PORT` (see [Guest environment](#guest-environment)). |
 | `--vcpus` | N | Default 1. |
 | `--mem-mib` | N | Default 512. |
-| `--quiet` | | Suppress the `[vmette]` launcher banner and the `guest stopped`/`timeout` status lines on stderr. Errors are still printed, the exit code is unchanged, and guest console output on stdout is untouched. Useful when scripting or capturing output (the MCP server passes this internally). |
+| `--quiet` | | Suppress the `[vmette]` launcher banner and the `guest stopped`/`timeout` status lines on stderr. Errors are still printed, the exit code is unchanged, and guest console output on stdout is untouched. Useful when scripting or capturing output. (The MCP server and daemon don't shell out to the CLI; they get the same clean capture in-process via `Config::capture_output`.) |
 
 ## Snapshot (Apple Silicon only)
 

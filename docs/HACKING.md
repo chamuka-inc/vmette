@@ -27,8 +27,9 @@ make assets init guest-bin  # assets: pull kernel/initramfs/rootfs · init: repa
 make test                   # cargo tests + end-to-end VM smoke
 ```
 
-`make run` boots a one-shot guest with a default probe; pass a custom command
-via `bash scripts/run.sh 'echo hi'`.
+`make run` boots a one-shot guest with a default probe; it depends on `init
+guest-bin` (so it fetches assets, repacks the initramfs, and builds the guest
+helpers first). Pass a custom command via `bash scripts/run.sh 'echo hi'`.
 
 `desktop start` defaults to the published image
 `ghcr.io/chamuka-inc/vmette-desktop:latest`
@@ -145,7 +146,15 @@ smoke runner re-codesigns unconditionally. If you see
 > Invalid virtual machine configuration. The process doesn't have the
 > "com.apple.security.virtualization" entitlement.
 
-re-run `codesign --sign - --force --entitlements entitlements.plist --options=runtime target/release/vmette`.
+re-sign every binary that boots a VM in-process — `vmette`, `vmetted`, and
+`vmette-mcp` all need the entitlement (or just run `make build`):
+
+```sh
+for b in vmette vmetted vmette-mcp; do
+  codesign --sign - --force --entitlements entitlements.plist \
+    --options=runtime "target/release/$b"
+done
+```
 
 ## Asset pipeline
 

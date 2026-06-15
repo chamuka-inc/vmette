@@ -30,10 +30,8 @@ server, so any MCP-aware agent host gets a sandboxed machine with one line of co
 | Cost                 | usage-metered (per-second / CPU)    | free                   | **free, on-device**                 |
 | Boot time            | sub-second + a network round-trip   | ~sub-second            | **~1 second, local**                |
 
-The cloud sandboxes are just as well-isolated — the catch isn't isolation or speed,
-it's that the work runs on someone else's machine, reached over the network, with a
-usage meter running across a long agent loop. vmette keeps that real isolation
-on-device, without the round-trip or the meter.
+The cloud sandboxes are just as well-isolated — vmette's difference is keeping that
+isolation on-device, without the network round-trip or the usage meter.
 
 ## Install
 
@@ -115,7 +113,7 @@ agent share one display. The same capability is exposed to agents through the MC
 > **The desktop rootfs.** The desktop needs a GUI rootfs — an X server (Xvfb) and a
 > window manager — separate from the headless paths. You don't have to build anything:
 > `vmette desktop start` pulls the published default image from
-> `ghcr.io/chamuka-inc/vmette-desktop` automatically on first use (then cached under
+> `ghcr.io/chamuka-inc/vmette-desktop:latest` automatically on first use (then cached under
 > `~/Library/Caches/vmette/oci/`), so the MCP and CLI desktop paths work out of the
 > box — no Docker needed. The computer-use agent is host-injected (a static binary
 > vmette ships), so any GUI image works. Resolution order: `--image` →
@@ -266,7 +264,8 @@ vmetted &
 ```
 
 Listens on `~/Library/Caches/vmette/vmette.sock`. Speaks line-delimited JSON: client
-sends one request object, daemon streams `stdout` / `stderr` / `exit` frames. Useful
+sends one request object, daemon streams `stdout` frames (guest stdout and stderr
+combined) followed by a terminal `exit` frame. Useful
 for amortizing per-invocation cost or driving many runs from a long-lived caller; it
 also owns the stateful desktop session registry and the live VNC view.
 

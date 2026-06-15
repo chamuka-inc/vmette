@@ -93,7 +93,7 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
   unsupported, config invalid, VM failed to start). `output` carries the guest's
   captured combined stdout+stderr when the session ran with
   `Config::capture_output` (empty for the interactive `run()` path, which streams
-  to the terminal; truncated past ~1 MiB with a marker).
+  to the terminal; truncated past 1 MiB with a marker).
 
 ### Rootfs providers
 

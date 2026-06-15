@@ -203,7 +203,7 @@ socket with `--socket PATH`).
 | `desktop_view` | `session_id` | `vnc://host:port` loopback address for a VNC client (see [Live view](#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | a **framebuffer note** (`framebuffer WxH; …`) **plus a PNG image content block** |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` (default 10000) | note + framebuffer note + **PNG image content block** (once the screen stops changing) |
-| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture + framebuffer note **plus a PNG image content block** of the fresh frame |
+| `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture + framebuffer note **plus a PNG image content block** of the changed region — a crop, so the framebuffer note reflects the crop's pixel size, not the display size (the full frame is returned only when nothing changed) |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` | `session_id`, `x`, `y` | status text (echoes where the pointer landed; flags `(constrained)`) |
 | `desktop_click` | `session_id`, `x`, `y` | status text (echoes the click position) |
