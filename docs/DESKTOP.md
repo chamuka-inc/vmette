@@ -169,8 +169,9 @@ vmette desktop stop "$SID"                   # tear it down
 ```
 
 `start` options: `--image REF`, `--size WxH`, `--net`, `--offline`,
-`--ca-certs DIR`, `--kernel PATH`, `--initramfs PATH` (kernel/initramfs default to
-`assets/<arch>/vmlinuz-virt` and `assets/<arch>/initramfs-vmette` when run from the repo).
+`--ca-certs DIR`, `--kernel PATH`, `--initramfs PATH` (kernel/initramfs are
+auto-discovered via `vmette_assets::require_asset` — searching `$VMETTE_ASSETS_DIR`,
+`./assets/<arch>`, then the install prefix — when not given).
 
 `screenshot` options: `--out FILE` (required), and `--settle` to wait until the
 screen stops changing before capturing — tunable with `--timeout-ms N` (give up
@@ -220,7 +221,7 @@ socket with `--socket PATH`).
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status text |
 | `desktop_exec` | `session_id`, `command` | status text (fire-and-forget) |
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` | the command's combined stdout/stderr + exit code (runs to completion) |
-| `desktop_navigate` | `session_id`, `url` | status text — opens `url` in the browser with no shell and no synthetic keystrokes |
+| `desktop_navigate` | `session_id`, `url` | status text — opens `url` (a URL or a local file path) in the browser with no shell and no synthetic keystrokes |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | status note + framebuffer note + **PNG image content block** (the app's first settled frame) |
 | `desktop_stop` | `session_id` | status text |
 
@@ -230,8 +231,9 @@ Alongside the image it returns a **framebuffer note** (`framebuffer WxH; …
 origin top-left`): pointer/click coordinates are in that exact pixel space, so an
 agent reasoning over a downscaled rendering can map its target back to true
 coordinates instead of guessing the scale. `desktop_click` /
-`desktop_double_click` / `desktop_right_click` move the pointer to `(x, y)`
-first, then click (agent click actions fire at the current pointer position).
+`desktop_double_click` / `desktop_right_click` / `desktop_middle_click` move the
+pointer to `(x, y)` first, then click (agent click actions fire at the current
+pointer position).
 `desktop_move` and the click tools **echo where the pointer actually landed**
 in their status text — if a window manager constrained the move, the reply reads
 `… landed at X Y (constrained)`, so a missed target is observable in one
@@ -384,7 +386,7 @@ Properties:
   testing; not for video / WebGL / 3D.
 - **Slower boot than headless** — several seconds for the desktop image + Xvfb
   + WM + first app, versus ~1 s for a headless one-shot.
-- **Memory:** each session is a live VM holding a browser — **2 GB RAM (2048
-  MiB) and 2 vCPUs** by default. The daemon caps concurrent sessions.
+- **Memory:** each session is a live GUI VM — **2 GB RAM (2048 MiB) and 2
+  vCPUs** by default. The daemon caps concurrent sessions.
 - **Arch:** the desktop image and agent must match vmette's guest assets
   (`aarch64` on Apple Silicon, `x86_64` on Intel).

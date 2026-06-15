@@ -60,7 +60,7 @@ make release VERSION=0.5.0 YES=1       # skip the prompt (unattended)
 
 `scripts/release.sh` runs the whole playbook as a pipeline:
 
-- **preflight** — on `main`, clean tree, in sync with origin, version newer, tag
+- **preflight** — on macOS, on `main`, clean tree, in sync with origin, version newer, tag
   free, `[Unreleased]` non-empty, crates.io creds present.
 - **bump + CHANGELOG** — lockstep bump of the workspace version and all 8
   internal `path` pins (the 7 published libs plus the `publish = false`

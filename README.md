@@ -39,7 +39,8 @@ isolation on-device: no round-trip, no meter.
 curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
 ```
 
-Installs to `~/.local/share/vmette/`, symlinks `~/.local/bin/{vmette,vmetted,vmette-mcp}`.
+Installs to `~/.local/share/vmette/` (the C ABI lands at `lib/libvmette.dylib` +
+`include/vmette.h` there), symlinks `~/.local/bin/{vmette,vmetted,vmette-mcp}`.
 macOS-only (requires Apple's Virtualization.framework).
 
 <details>

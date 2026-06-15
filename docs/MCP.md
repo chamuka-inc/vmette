@@ -250,7 +250,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | Tool | Input | Returns |
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?` (default `1280x800`), `network?`, `ca_certs?` (host CA dir mounted at `/mnt/certs`, mirrors `--ca-certs` per-session) | session id |
-| `desktop_view` | `session_id` | `vnc://host:port` — open a live VNC view a human can watch and drive (see [DESKTOP.md](DESKTOP.md#live-view-watch--drive-the-desktop)) |
+| `desktop_view` | `session_id` | `vnc://127.0.0.1:port` (loopback) — open a live VNC view a human can watch and drive (see [DESKTOP.md](DESKTOP.md#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | framebuffer note (`framebuffer WxH; …`) + PNG image block |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` (default 10000 ms) | note + framebuffer note + PNG, once the screen has stopped changing and stayed still |
 | `desktop_what_changed` | `session_id` | note + framebuffer note + PNG of the region changed since the last capture |
