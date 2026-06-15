@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
             "-h" | "--help" => {
                 eprintln!(
                     "vmetted — UNIX socket dispatcher for vmette\n\n\
-                     usage: vmetted [--socket PATH] [--version]\n\n\
+                     usage: vmetted [--socket PATH] [--version|-V] [--help|-h]\n\n\
                      defaults:\n  \
                        --socket  $HOME/Library/Caches/vmette/vmette.sock\n"
                 );

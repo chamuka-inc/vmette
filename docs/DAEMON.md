@@ -93,9 +93,9 @@ that needs guest env vars must bake them into the `exec` command itself
 
 ### Response stream
 
-Newline-delimited JSON frames. The run lane emits three kinds
-(`stdout`/`exit`/`error`); a fourth, `stderr`, exists in the protocol but is
-unused by this lane (guest stderr is folded into `stdout`):
+Newline-delimited JSON frames. The run lane captures the guest's combined
+output on one clean console and streams it as `stdout` frames, terminated by a
+single `exit` (or `error` on a daemon-side failure):
 
 ```json
 {"kind":"stdout","data":"hello world\n"}
@@ -103,10 +103,8 @@ unused by this lane (guest stderr is folded into `stdout`):
 {"kind":"error","message":"…"}
 ```
 
-The in-process run lane captures the guest's combined output on one clean
-console and emits it as a stream of `stdout` frames, terminated by a single
-`exit` (or `error` on a daemon-side failure). The `stderr` frame remains in the
-protocol for compatibility but is never emitted by this lane.
+A fourth kind, `stderr`, exists in the protocol for compatibility but is never
+emitted by this lane (guest stderr is folded into `stdout`).
 
 ### Client examples
 

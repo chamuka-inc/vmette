@@ -9,7 +9,7 @@ Reference docs for each surface of vmette. See the
 | [DESKTOP.md](DESKTOP.md) | Persistent GUI desktop sessions for computer-use agents. |
 | [CLI.md](CLI.md) | The `vmette` command — run a one-off command in a sandbox; flags, `--rootfs` specs, examples. |
 | [API.md](API.md) | *Embed it:* the Rust library (`vmette` crate) and the C ABI (`vmette.h`). |
-| [DAEMON.md](DAEMON.md) | *Embed it:* `vmetted` — the long-lived UNIX-socket dispatcher and its wire protocol. |
+| [DAEMON.md](DAEMON.md) | *Embed it:* `vmetted` — the long-lived UNIX-socket dispatcher (stateless runs plus persistent desktop sessions with a live VNC view) and its wire protocol. |
 | [HACKING.md](HACKING.md) | Building from source, the workspace layout, and debugging. |
 
 ## Workspace at a glance

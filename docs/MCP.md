@@ -179,7 +179,7 @@ persists between calls.
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
 | `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp`. Set this when a build/extract would exceed the RAM-backed overlay (`No space left on device`); created sparse per call, discarded when the call returns. Omit for light work. |
 
-Returns: `exit: N\n\nstdout:\n...` with a trailing `\n\nstderr:\n...` block only when stderr is non-empty (the in-process lane usually leaves it empty).
+Returns: `exit: N\n\nstdout:\n...` — the guest's stdout and stderr arrive folded into the one captured stream, so there is no separate `stderr:` block.
 
 ### `fetch_url`
 
@@ -270,7 +270,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_paste` | `session_id`, `text` | status — set the clipboard then Ctrl+V; fast, lossless input vs `desktop_type` |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
 | `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status — fire-and-forget; no output captured (see [tips](#computer-use-tips--limitations) for `exec` vs `exec_capture`) |
-| `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (defaults ~15s, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
+| `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (forwarded verbatim; the guest applies a ~15s default, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
 | `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` (first-paint budget, default 60000 ms) | note + PNG of the app's first settled frame |
 | `desktop_stop` | `session_id` | status |
@@ -370,10 +370,10 @@ What the server **does** isolate:
   `http` and `https` schemes. `file://`, `ftp://`, `data://`,
   `gopher://`, etc. are refused. Caps the returned body to
   `max_bytes` (default 20 000).
-- All tool output (stdout + stderr from the guest, plus vmette's
-  banner on stderr) is bounded at 1 MiB per stream. A runaway guest
-  is truncated with a clear marker; the long-lived MCP server cannot
-  be OOMed by adversarial guest output.
+- Captured guest output (stdout and stderr arrive folded into one clean
+  stream) is bounded at 1 MiB. A runaway guest is truncated with a clear
+  marker (`[output truncated at 1048576 bytes]`); the long-lived MCP server
+  cannot be OOMed by adversarial guest output.
 
 What the server **does not** isolate:
 

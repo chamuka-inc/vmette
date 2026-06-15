@@ -20,9 +20,8 @@ input with `XTEST`. The agent speaks a small framed protocol over **vsock** —
 the same bidirectional channel vmette already wires up — so no network and no
 display server on the host are required.
 
-The agent itself is supplied by **vmette** (a per-arch static binary it injects
-into the guest), not baked into the rootfs — so the desktop runs on any image
-that provides an X server + a window manager. See
+The agent itself is supplied by **vmette**, not baked into the rootfs, so the
+desktop runs on any image with an X server + a window manager — see
 [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
 ## Architecture
@@ -71,15 +70,13 @@ longer than the idle TTL (30 min).
    kernel/initramfs are resolved):
 
    1. explicit `--image REF` (CLI) / `image` arg (MCP) — wins
-   2. `$VMETTE_DESKTOP_IMAGE` (any rootfs spec, e.g. a `tar+file://` or OCI ref)
+   2. `$VMETTE_DESKTOP_IMAGE` (any rootfs spec, e.g. a `tar+file://` or OCI ref) —
+      read from the **client** process (your shell for `vmette desktop start`, the
+      `vmette-mcp` server for `desktop_start`), not the daemon
    3. a locally-provided `assets/<arch>/vmette-desktop-rootfs.tar` (e.g. a
       `docker export` of your own GUI image) → `tar+file://…`
    4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — the published default when no
       local asset is present
-
-   Resolution is client-side, so `$VMETTE_DESKTOP_IMAGE` is read from the
-   **client** process (your shell for `vmette desktop start`, the `vmette-mcp`
-   server for `desktop_start`) — not the daemon.
 
    **No Docker needed to run.** vmette never shells out to Docker — its OCI
    provider is a self-contained registry client, so the published default works
@@ -271,7 +268,7 @@ One request object per connection; one reply object back.
   "image": "tar+file:///abs/assets/aarch64/vmette-desktop-rootfs.tar", // required; client-resolved
   "size": "1280x800",                                          // optional
   "net": false, "offline": false,
-  "vcpus": 2, "mem_mib": 2048,                                  // optional; omitted by the CLI → daemon defaults (2 vCPU / 2048 MiB)
+  "vcpus": 2, "mem_mib": 2048,                                  // optional; omitted by both clients (CLI and MCP) → daemon defaults (2 vCPU / 2048 MiB)
   "shares": [{"tag":"certs", "path":"/abs/company-cas"}] } // optional (example is non-exhaustive)
 // ← { "kind": "session", "session_id": "a1b2c3..." }
 

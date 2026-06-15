@@ -80,7 +80,9 @@ command. JSON example (Claude Desktop's
 }}}
 ```
 
-Each `workspace_*` and `execute` call boots a fresh microVM.
+Each `execute` and `workspace_run` call boots a fresh microVM; a workspace is a
+persistent host directory mounted into each run, so files survive across calls
+(`workspace_create`/`write`/`read`/`destroy` are host-side directory ops).
 
 Full tool reference, per-host configs, and the security model:
 [`docs/MCP.md`](docs/MCP.md).

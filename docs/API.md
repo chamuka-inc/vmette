@@ -209,8 +209,8 @@ dylib's.
 | `void vmette_config_set_vcpus(cfg, uint8_t);` | not clamped; a value VZ rejects (e.g. 0) surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_mem_mib(cfg, uint64_t);` | not clamped; a value VZ rejects surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_scratch_mib(cfg, uint64_t);` | ephemeral ext4 scratch disk (MiB) for the writable overlay upper; `0` disables (RAM-backed tmpfs). No effect with a read-only rootfs. |
-| `void vmette_config_set_build_snapshot(cfg, path);` | Not yet implemented (see Snapshot section). |
-| `void vmette_config_set_resume_snapshot(cfg, path);` | Not yet implemented (see Snapshot section); `vmette_run` returns `SnapshotUnsupported` before validating the config. |
+| `void vmette_config_set_build_snapshot(cfg, path);` | Not yet implemented (see Snapshot section); with either snapshot field set, `vmette_run` returns `SnapshotUnsupported` before validating the config. |
+| `void vmette_config_set_resume_snapshot(cfg, path);` | Not yet implemented (see Snapshot section); same `SnapshotUnsupported` behavior as `set_build_snapshot`. |
 | `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Same blocking contract as Rust `run()` (see the `RunOutput` reference above); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
 | `int32_t vmette_run_output_exit_code(out);` | |
 | `void vmette_run_output_free(out);` | |
