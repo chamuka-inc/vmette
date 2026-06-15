@@ -84,6 +84,8 @@ command. JSON example (Claude Desktop's
 Each `execute` and `workspace_run` call boots a fresh microVM; a workspace is a
 persistent host directory mounted into each run, so files survive across calls
 (`workspace_create`/`write`/`read`/`destroy` are host-side directory ops).
+`execute` picks its image from the requested `language`; `--default-image` only
+sets the rootfs for `workspace_create`.
 
 Full tool reference, per-host configs, and the security model:
 [`docs/MCP.md`](docs/MCP.md).
@@ -296,7 +298,7 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
   return `VmetteStatus::SnapshotUnsupported`. The daemon's snapshot-warm-pool is a
   planned optimization, not yet implemented.
 - **Desktop sessions are software-rendered and live in the daemon.** Headless Xvfb
-  (no GPU); each session is a ~2 GB VM, capped and idle-evicted. Fine for agentic GUI
+  (no GPU); each session is a 2 GB (2048 MiB) VM, capped and idle-evicted. Fine for agentic GUI
   control and UI testing, not for video / WebGL / 3D. See
   [`docs/DESKTOP.md`](docs/DESKTOP.md).
 

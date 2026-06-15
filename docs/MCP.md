@@ -173,7 +173,7 @@ persists between calls.
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
 | `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp`. Set this when a build/extract would exceed the RAM-backed overlay (`No space left on device`); created sparse per call, discarded when the call returns. Omit for light work. |
 
-Returns: `exit: N\n\nstdout:\n...` — the guest's stdout and stderr arrive folded into the one captured stream, so a separate `stderr:` block normally does not appear.
+Returns: `exit: N\n\nstdout:\n...` — the guest's stdout and stderr arrive folded into the one captured stream, so a separate `stderr:` block does not appear (the in-process lane always leaves stderr empty).
 
 ### `fetch_url`
 
@@ -265,7 +265,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
 | `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status — fire-and-forget; no output captured (see [tips](#computer-use-tips--limitations) for `exec` vs `exec_capture`) |
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (forwarded verbatim; the guest applies a ~15s default, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
-| `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
+| `desktop_navigate` | `session_id`, `url` | status — open `url` (an http(s) URL or a local file path) in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` (first-paint budget, default 60000 ms) | note + PNG of the app's first settled frame |
 | `desktop_stop` | `session_id` | status — errors if the id is unknown (a stopped session is already gone), unlike the idempotent `workspace_destroy` |
 

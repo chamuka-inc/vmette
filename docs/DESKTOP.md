@@ -176,7 +176,7 @@ auto-discovered via `vmette_assets::require_asset` — searching `$VMETTE_ASSETS
 `screenshot` options: `--out FILE` (required), and `--settle` to wait until the
 screen stops changing before capturing — tunable with `--timeout-ms N` (give up
 after N ms; default 10000) and `--stable-hold-ms N` (how long the screen must
-hold still). Either tuning flag implies `--settle`.
+hold still; default 500). Either tuning flag implies `--settle`.
 
 `--ca-certs DIR` mounts a host directory of `.crt` / `.pem` / `.cer` enterprise CA
 certificates at `/mnt/certs`. At desktop boot the guest installs them into the
