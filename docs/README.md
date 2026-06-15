@@ -1,11 +1,10 @@
 # vmette documentation
 
-Reference docs for each surface of vmette — a hardware-isolated Linux microVM
-that lets you run your agent on your Mac without the anxiety. Start with the
+Reference docs for each surface of vmette. See the
 [project README](../README.md) for the overview and install instructions.
 
-The agent-facing surfaces come first; the embedder surfaces (library, daemon)
-follow.
+Agent-facing surfaces come first (MCP, desktop), then the CLI, then the
+embedder surfaces (library, daemon).
 
 | Doc | Covers |
 |-----|--------|

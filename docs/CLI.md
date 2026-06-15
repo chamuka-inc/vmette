@@ -9,7 +9,7 @@ vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]
 vmette quickstart                               # boot a hello-world VM to verify the install
 vmette providers                                # list registered providers
 vmette desktop <command> [options]              # drive a persistent desktop session
-vmette --version                                # print version (also -V)
+vmette --version                                # print version (also -V or the bare `version` subcommand)
 ```
 
 `quickstart` boots `alpine:3.20` (pulling it on first run), runs a hello-world
@@ -139,11 +139,10 @@ running the workload (the desktop image additionally writes Chromium's managed
 3. `~/.config/vmette/certs` (used only when it exists and is a directory)
 
 When none apply, no share is attached (the common case — trusting an extra CA is
-opt-in and weakens isolation). For **one-off runs** the env-var/default-dir
-source is consulted automatically on every `vmette --rootfs … --exec …`, so a
-configured machine-wide CA is trusted with no flag; an explicit `--share certs=…`
-takes precedence. This mirrors how [`DESKTOP.md`](DESKTOP.md) describes
-`--ca-certs`.
+opt-in and weakens isolation). One-off runs consult `$VMETTE_CA_CERTS` /
+`~/.config/vmette/certs` automatically, so a configured machine-wide CA is
+trusted with no flag; an explicit `--share certs=…` wins. This mirrors how
+[`DESKTOP.md`](DESKTOP.md) describes `--ca-certs`.
 
 ## Rootfs providers
 
@@ -161,12 +160,12 @@ shipped CLI registers four:
 Run `vmette providers` to print the live registry.
 
 The `dir`/`tar`/`oci` providers deliver a host **directory** shared over
-virtio-fs. The `squashfs` provider instead returns a **block image**: the
-`.sqfs` is attached read-only as virtio-blk slot 0 (`/dev/vda`) and the
-guest mounts it under a tmpfs overlay, so the rootfs is immutable and the
-same base can back many concurrent sessions. Because a block rootfs has no
-host-writable surface, exit-code propagation rides a small auto-attached
-`ctl` virtio-fs share instead of `/.vmette-exit` on the rootfs.
+virtio-fs. The `squashfs` provider instead returns a **block image** attached
+read-only as virtio-blk slot 0 (`/dev/vda`) under a tmpfs overlay (see
+[Rootfs](#rootfs)), so the rootfs is immutable and the same base can back many
+concurrent sessions. Because a block rootfs has no host-writable surface,
+exit-code propagation rides a small auto-attached `ctl` virtio-fs share instead
+of `/.vmette-exit` on the rootfs.
 
 ### Provider caches
 

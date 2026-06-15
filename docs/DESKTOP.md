@@ -50,8 +50,9 @@ strategy; desktop is purely additive and never touches the headless fast path.
 Sessions are owned by **vmetted**, not by the client connection that created
 them (each connection is one request). A session therefore outlives its creating
 connection and is freed only by `desktop_stop`, idle eviction, or daemon
-shutdown. The daemon caps concurrent sessions (each is a ~2 GB VM) and evicts
-sessions left untouched for longer than the idle TTL (30 min).
+shutdown. The daemon caps concurrent sessions (each is a live VM with **2 GB RAM
+(2048 MiB) and 2 vCPUs** by default) and evicts sessions left untouched for
+longer than the idle TTL (30 min).
 
 ## Prerequisites
 
@@ -67,8 +68,9 @@ sessions left untouched for longer than the idle TTL (30 min).
    automatically on first use (the image is public). The first `desktop start`
    extracts it and caches it under `~/Library/Caches/vmette/oci/`; later starts
    are cache hits. That image is a convenience default (Xvfb + openbox + chromium
-   + fonts) — **this repo no longer builds it**. You customize by bringing your
-   own GUI image, not by rebuilding ours; see
+   + fonts) — **the repo does not auto-build it; it's pulled on first use**.
+   `scripts/build-desktop-image.sh` remains for republishing or customizing it,
+   but the usual path is to bring your own GUI image rather than rebuild ours; see
    [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
    **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring how
@@ -173,7 +175,7 @@ vmette desktop screenshot "$SID" --out shot.png
 open shot.png                                # confirm a rendered desktop
 
 vmette desktop exec "$SID" 'xterm &'         # launch an app
-vmette desktop screenshot "$SID" --out shot2.png
+vmette desktop screenshot "$SID" --out shot2.png --settle  # wait for the screen to quiesce first
 
 vmette desktop navigate "$SID" https://example.com   # open a URL (no shell)
 vmette desktop exec-capture "$SID" 'cat /etc/os-release'   # run a command, print its output
@@ -192,6 +194,11 @@ vmette desktop stop "$SID"                   # tear it down
 `start` options: `--image REF`, `--size WxH`, `--net`, `--offline`,
 `--ca-certs DIR`, `--kernel PATH`, `--initramfs PATH` (kernel/initramfs default to
 `assets/<arch>/vmlinuz-virt` and `assets/<arch>/initramfs-vmette` when run from the repo).
+
+`screenshot` options: `--out FILE` (required), and `--settle` to wait until the
+screen stops changing before capturing — tunable with `--timeout-ms N` (give up
+after N ms; default 10000) and `--stable-hold-ms N` (how long the screen must
+hold still). Either tuning flag implies `--settle`.
 
 `--ca-certs DIR` mounts a host directory of `.crt` / `.pem` enterprise CA
 certificates at `/mnt/certs`. At desktop boot the guest installs them into the
@@ -218,7 +225,7 @@ to be running; the MCP server connects to its socket. Override the socket with
 | `desktop_start` | `image?`, `size?`, `network?`, `ca_certs?` | session id (text) |
 | `desktop_view` | `session_id` | `vnc://host:port` loopback address for a VNC client (see [Live view](#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | a **framebuffer note** (`framebuffer WxH; …`) **plus a PNG image content block** |
-| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + **PNG image content block** (once the screen stops changing) |
+| `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` (default 10000) | note + framebuffer note + **PNG image content block** (once the screen stops changing) |
 | `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture + framebuffer note **plus a PNG image content block** of the fresh frame |
 | `desktop_cursor_position` | `session_id` | `"x y"` |
 | `desktop_move` | `session_id`, `x`, `y` | status text (echoes where the pointer landed; flags `(constrained)`) |
@@ -254,36 +261,23 @@ observable in one round-trip instead of requiring a follow-up screenshot.
 `network=true` on `desktop_start` is subject to the server's `--allow-network`
 gate.
 
-**Starting an app and seeing it: `desktop_launch`.** `desktop_exec` is
-fire-and-forget — it launches a command and returns immediately, leaving you to
-poll for the window. `desktop_launch` is the one-call alternative: it
-backgrounds the command (redirecting its stdio to a guest log so a chatty app
-can't block before painting), waits for the screen to actually change and then
-settle, and returns that frame. It is **application-agnostic** — it knows
-nothing about browsers. You pass a complete command and supply whatever flags
-the app needs; e.g. `command: "chromium https://example.com"`,
-`"gimp /mnt/a.png"`, or `"xterm"`. The app-specific incantation a headless
-software-rendered guest requires (for the browser: `--no-sandbox`, software GL)
-lives in the **desktop image**, not in this tool — see below — so a bare
-`chromium <url>` renders. Network-dependent apps only reach the network when the
-session was started with `network=true`.
+**`desktop_launch`** is the one-call alternative to the fire-and-forget
+`desktop_exec`: it backgrounds the command (redirecting its stdio to a guest log
+so a chatty app can't block before painting), waits for the screen to change and
+settle, and returns that frame. It is **application-agnostic** — you pass a
+complete command and any flags the app needs (`"chromium https://example.com"`,
+`"gimp /mnt/a.png"`, `"xterm"`); the headless-guest incantation (for the
+browser: `--no-sandbox`, software GL) lives in the **desktop image**, not the
+tool, so a bare `chromium <url>` renders.
 
-**Navigating a browser: `desktop_navigate`.** Rather than focusing the address
-bar and typing (which races omnibox autocomplete and focus), `desktop_navigate`
-hands the URL straight to the browser's launcher with **no shell and no
-synthetic keystrokes**, so the URL is never word-split or interpreted. It is
-fire-and-forget — it returns once navigation starts, so follow it with
-`desktop_screenshot_when_settled` to wait for the page to paint. The desktop
-image ships a browser-agnostic `vmette-open` launcher, so a custom image can
-swap browsers without touching the agent.
+**`desktop_navigate`** is fire-and-forget — it returns once navigation *starts*,
+so follow it with `desktop_screenshot_when_settled` to wait for the page to
+paint.
 
-**Reading a command's output: `desktop_exec_capture`.** Unlike the
-fire-and-forget `desktop_exec`, this runs a short command to completion and
-returns its combined stdout/stderr plus exit code — for reading a file or
-probing state inside a desktop session without OCR'ing a screenshot. The
-in-guest agent is single-threaded, so it blocks other desktop actions until the
-command returns or hits its (bounded) timeout; keep it to short, terminating
-commands and use `desktop_exec` / `desktop_launch` to start GUI apps.
+**`desktop_exec_capture`** blocks every other desktop action until the command
+returns or hits its timeout (the in-guest agent is single-threaded), so keep it
+to short, terminating commands and use `desktop_exec` / `desktop_launch` for GUI
+apps.
 
 ## Protocol
 
@@ -405,10 +399,7 @@ Properties:
   testing; not for video / WebGL / 3D.
 - **Slower boot than headless** — several seconds for the desktop image + Xvfb
   + WM + first app, versus ~1 s for a headless one-shot.
-- **Memory:** each session is a live VM holding a browser; budget 1–2 GB RAM
-  and ≥2 vCPUs per session. The daemon caps concurrent sessions.
-- **Idle eviction:** sessions untouched for 30 minutes are force-stopped.
+- **Memory:** each session is a live VM holding a browser — **2 GB RAM (2048
+  MiB) and 2 vCPUs** by default. The daemon caps concurrent sessions.
 - **Arch:** the desktop image and agent must match vmette's guest assets
   (`aarch64` on Apple Silicon, `x86_64` on Intel).
-- **Live view is loopback-only and ~5 fps** (see [Live view](#live-view-watch--drive-the-desktop)):
-  enough to watch and drive the agent, not a video feed.

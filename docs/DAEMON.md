@@ -21,6 +21,8 @@ the same protocol:
 ```sh
 vmetted                                      # default socket
 vmetted --socket /tmp/vmette.sock            # override path
+vmetted --version                            # print version (also -V)
+vmetted --help                               # usage (also -h)
 ```
 
 Default socket: `$HOME/Library/Caches/vmette/vmette.sock`.
@@ -84,7 +86,9 @@ that needs guest env vars must bake them into the `exec` command itself
 
 ### Response stream
 
-Newline-delimited JSON frames. Three kinds:
+Newline-delimited JSON frames. The run lane emits three kinds
+(`stdout`/`exit`/`error`); a fourth, `stderr`, exists in the protocol but is
+unused by this lane (see below):
 
 ```json
 {"kind":"stdout","data":"hello world\n"}
@@ -155,8 +159,8 @@ Each request is still one JSON object per connection, tagged by `kind`:
 
 | `kind` | Key fields | Reply |
 |--------|-----------|-------|
-| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
-| `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}` (the capture-returning variants encode their result differently: `get_clipboard` returns the clipboard in `text`; `exec_capture` returns the command's combined stdout/stderr in `text` and its status in `exit_code` — `None`/absent when it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md) for the full `Action` vocabulary. |
+| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
+| `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}`. `text?` carries the clipboard (`get_clipboard`) or combined stdout/stderr (`exec_capture`); `exit_code?` carries the `exec_capture` status (absent if it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md). |
 | `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; small default, larger for launches) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
 | `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved) |
 | `desktop_view` | `session_id` | `{"kind":"view","addr":"127.0.0.1:PORT"}` — opens (or returns) a live VNC view on a per-session loopback port; idempotent. See [`DESKTOP.md`](DESKTOP.md#live-view-watch--drive-the-desktop). |

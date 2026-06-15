@@ -17,7 +17,7 @@ mechanical shim over the Rust one, defined in
 
 ```toml
 [dependencies]
-vmette = "0.10"   # not on crates.io — depend on the git repo or a checkout
+vmette = "0.10"
 ```
 
 ```rust
@@ -80,8 +80,10 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
 - `RootfsBlock { path, fstype }` — a filesystem image attached read-only as
   `/dev/vda` with a tmpfs overlay; the payload of `Rootfs::Block`.
 - `RootfsArtifact` — what a provider's `provide()` produces:
-  `Directory { path, read_only }` (virtio-fs share) or
-  `BlockImage { path, fstype }` (read-only block device + tmpfs overlay).
+  `Directory { path, read_only, image_env }` (virtio-fs share; `image_env`
+  carries the image's declared env, merged into the run as described under
+  `Config` above) or `BlockImage { path, fstype }` (read-only block device +
+  tmpfs overlay).
 - `BlockFs` — block-image filesystem tag; currently `Squashfs` only.
 - `ShareMount { tag, path }`.
 - `Error` (thiserror): `InvalidConfig`, `StartFailed`, `RestoreFailed`,

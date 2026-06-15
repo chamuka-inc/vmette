@@ -31,11 +31,10 @@ server, so any MCP-aware agent host gets a sandboxed machine with one line of co
 | Cost                 | usage-metered (per-second / CPU)    | free                   | **free, on-device**                 |
 | Boot time            | sub-second + a network round-trip   | ~sub-second            | **~1 second, local**                |
 
-The cloud sandboxes are fast and well-isolated — they boot the same kind of microVM in
-milliseconds. The catch isn't speed; it's that the work runs on someone else's machine,
-reached over the network, with a usage meter running across a long agent loop. A
-container is local and free but shares your kernel — one namespace away from the host.
-vmette is the on-device option that keeps the real isolation without the round-trip.
+The cloud sandboxes are just as well-isolated — the catch isn't isolation or speed,
+it's that the work runs on someone else's machine, reached over the network, with a
+usage meter running across a long agent loop. vmette keeps that real isolation
+on-device, without the round-trip or the meter.
 
 ## Install
 
@@ -160,7 +159,7 @@ vmette --rootfs squashfs+file:///tmp/base.sqfs      --exec 'ls /'
 
 Network is off until you ask (`--net`), virtio-fs shares only the host dirs you name,
 and the rootfs can attach read-only. Private OCI registries authenticate via env vars
-or `~/.docker/config.json` (`VMETTE_OCI_TOKEN`). Full flag list: `vmette --help` or
+or `~/.docker/config.json` (`VMETTE_OCI_AUTH_<HOST>=user:secret` or `VMETTE_OCI_TOKEN`). Full flag list: `vmette --help` or
 [`docs/CLI.md`](docs/CLI.md).
 
 The writable root is a RAM-backed overlay by default, so a heavy build or extract can
@@ -229,10 +228,10 @@ fn main() {
 
 ```toml
 [dependencies]
-vmette                   = "0.2"
-vmette-provider-oci      = "0.2"
-vmette-provider-tar      = "0.2"  # optional
-vmette-provider-squashfs = "0.2"  # optional
+vmette                   = "0.10"
+vmette-provider-oci      = "0.10"
+vmette-provider-tar      = "0.10"  # optional
+vmette-provider-squashfs = "0.10"  # optional
 ```
 
 See [`crates/vmette/examples/minimal.rs`](crates/vmette/examples/minimal.rs) and

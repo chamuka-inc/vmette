@@ -19,11 +19,9 @@ session.
 > **only** way to execute code, restrict the host tools too — e.g. disable Claude
 > Code's Bash tool via permissions, or use a host that exposes only vmette.
 
-Each tool call boots a fresh kernel via Apple's `Virtualization.framework`
-(~1 second), runs the agent's request, and tears down the VM on return — so the
-isolation boundary is the hypervisor, not a container or a `chroot`. The MCP
-server itself is long-lived — it dies when the client closes its stdio
-connection.
+The VM runs on Apple's `Virtualization.framework`, so the isolation boundary is
+the hypervisor, not a container or a `chroot`. The MCP server itself is
+long-lived — it dies when the client closes its stdio connection.
 
 ## Install
 
@@ -53,7 +51,7 @@ flags needed. Common flags (all optional):
 - `--allow-network` — permit guest egress; omit for default-deny (then
   `network: true` calls are refused, not silently run offline).
 - `--default-image <ref>` — image used by `workspace_create` (and thus
-  `workspace_run`) when a call doesn't name one (e.g. `python:3.12-alpine`).
+  `workspace_run`) when a call doesn't name one (default `alpine:3.20`).
   Does **not** affect `execute`, which always picks its image from `language`.
 - `--workspace-cap <n>` — max concurrent live workspaces (default 8).
 
@@ -261,7 +259,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 
 | Tool | Input | Returns |
 |------|-------|---------|
-| `desktop_start` | `image?`, `size?`, `network?` | session id |
+| `desktop_start` | `image?`, `size?` (default `1280x800`), `network?`, `ca_certs?` (host CA dir mounted at `/mnt/certs`, mirrors `--ca-certs` per-session) | session id |
 | `desktop_view` | `session_id` | `vnc://host:port` — open a live VNC view a human can watch and drive (see [DESKTOP.md](DESKTOP.md#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | framebuffer note (`framebuffer WxH; …`) + PNG image block |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + PNG, once the screen has stopped changing and stayed still |
