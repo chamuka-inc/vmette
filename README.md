@@ -40,7 +40,7 @@ curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/instal
 ```
 
 Installs to `~/.local/share/vmette/`, symlinks `~/.local/bin/{vmette,vmetted,vmette-mcp}`.
-macOS-only (any version with VZ — i.e. 11+; tested on 14.7 Intel).
+macOS-only (requires Apple's Virtualization.framework).
 
 <details>
 <summary>Or build from source</summary>

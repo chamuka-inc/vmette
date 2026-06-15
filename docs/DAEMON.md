@@ -86,9 +86,8 @@ don't need (the daemon owns the one true default — see the prose after):
 overlay upper (the CLI's `--scratch`); omit or `null` for the RAM-backed tmpfs
 overlay.
 
-The daemon run schema has no `env` field — the CLI's `--env KEY=VALUE`
-(and `Config.env`) is not yet wired through `vmetted`. A daemon client
-that needs guest env vars must bake them into the `exec` command itself
+The daemon run schema has no `env` field (the CLI's `--env` / `Config.env` is
+not yet wired through `vmetted`); bake env vars into `exec` instead
 (e.g. `exec: "FOO=bar mycmd"`).
 
 ### Response stream
@@ -163,7 +162,7 @@ Each request is still one JSON object per connection, tagged by `kind`:
 
 | `kind` | Key fields | Reply |
 |--------|-----------|-------|
-| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`; omitted → 1280x800), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
+| `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`; omitted → 1280x800), `net?`, `offline?`, `shares?` (`[{tag,path}]`, mounted at `/mnt/<tag>`), `vcpus?` (default 2), `mem_mib?` (default 2048) | `{"kind":"session","session_id":"…"}` |
 | `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}`. `text?` carries the clipboard (`get_clipboard`) or combined stdout/stderr (`exec_capture`); `exit_code?` carries the `exec_capture` status (absent if it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md). |
 | `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; daemon default 500 ms) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
 | `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved; `png_base64` is the cropped changed region, or the full frame when nothing changed or the crop is degenerate) |

@@ -318,7 +318,8 @@ pub unsafe extern "C" fn vmette_config_set_scratch_mib(cfg: *mut vmette_config_t
 }
 
 /// Path to a snapshot file to write after the guest signals ready.
-/// Apple Silicon only — see VmetteStatus::SnapshotUnsupported.
+/// Not yet implemented: returns VmetteStatus::SnapshotUnsupported on every
+/// architecture (including Apple Silicon).
 ///
 /// # Safety
 /// See the module-level safety contract.
@@ -331,7 +332,8 @@ pub unsafe extern "C" fn vmette_config_set_build_snapshot(
     c.build_snapshot = cstr_to_pathbuf(path);
 }
 
-/// Path to a previously-saved snapshot to restore. Apple Silicon only.
+/// Path to a previously-saved snapshot to restore. Not yet implemented:
+/// returns VmetteStatus::SnapshotUnsupported on every architecture.
 ///
 /// # Safety
 /// See the module-level safety contract.

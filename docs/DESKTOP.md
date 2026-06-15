@@ -177,7 +177,7 @@ screen stops changing before capturing — tunable with `--timeout-ms N` (give u
 after N ms; default 10000) and `--stable-hold-ms N` (how long the screen must
 hold still). Either tuning flag implies `--settle`.
 
-`--ca-certs DIR` mounts a host directory of `.crt` / `.pem` enterprise CA
+`--ca-certs DIR` mounts a host directory of `.crt` / `.pem` / `.cer` enterprise CA
 certificates at `/mnt/certs`. At desktop boot the guest installs them into the
 system trust store (generically, in the initramfs init) and the desktop startup
 (the injected `vmette-desktop-run.sh`, and the bundled image's entrypoint)
@@ -328,7 +328,7 @@ vocabulary — a superset of what the CLI and MCP expose, so a row here (e.g.
 | `left_click_drag` | `x`, `y` | Press, drag to `(x, y)` with **interpolated motion** (so drag-and-drop targets recognize the gesture), release. Header echoes the resulting `(x, y)`. |
 | `type` | `text` | Type a UTF-8 string via synthetic key events. |
 | `key` | `keys` | Press a chord, e.g. `"ctrl+c"`, `"Return"`, `"alt+Tab"`. |
-| `scroll` | `x`, `y`, `direction`, `amount` | Scroll `amount` clicks (`up`/`down`/`left`/`right`). |
+| `scroll` | `x`, `y`, `direction`, `amount` | Scroll `amount` clicks (`up`/`down`/`left`/`right`) at `(x, y)`. Header echoes the resulting `(x, y)`. |
 | `set_clipboard` | `text` | Own the `CLIPBOARD` + `PRIMARY` selections with `text`. |
 | `get_clipboard` | — | Read clipboard text; returned as the response payload (UTF-8). |
 | `wait` | `ms` | Sleep guest-side to let the UI settle. |

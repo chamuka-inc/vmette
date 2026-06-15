@@ -166,7 +166,9 @@ done
 
 `scripts/build-initramfs.sh` extracts busybox from the netboot
 initramfs, swaps in the apk's module tree, injects
-`scripts/custom-init.sh` as `/init`, and repacks via `cpio + gzip`.
+`scripts/custom-init.sh` as `/init`, and repacks via `cpio + gzip`. The live
+`initramfs-vmette` embeds a *copy* of `custom-init.sh`, so rerun this after
+editing it.
 
 `scripts/build-vsock-send.sh` cross-compiles `guest/vsock-send.c` and
 `guest/vsock-runner.c` statically with musl, drops them at
@@ -204,10 +206,8 @@ drops them into the distro anchor dirs, running `update-ca-certificates` /
 distro-agnostic. It is **opt-in**: with no directory configured, nothing is
 mounted and guest isolation is unchanged. The same step runs for the desktop
 image too, which layers its own Chromium managed-policy (`CACertificates`) on
-top of this shared system-trust step.
-
-After editing `scripts/custom-init.sh`, rebuild the initramfs
-(`bash scripts/build-initramfs.sh`) — the live `initramfs-vmette` embeds a copy.
+top of this shared system-trust step. (Editing `custom-init.sh` requires
+rebuilding the initramfs — see [Asset pipeline](#asset-pipeline).)
 
 ## Common issues
 

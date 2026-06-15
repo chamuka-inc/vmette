@@ -144,11 +144,11 @@ binary path as `command` and the flags as `args`.
 |------|---------|-------------|
 | `--default-image REF` | `alpine:3.20` | Rootfs used when `workspace_create` doesn't name one. Does not affect `execute` (see its `language` row). |
 | `--allow-network` | off | Permits tool calls with `network=true` (the project's only default-deny network/filesystem gate — see also [Security model](#security-model)). Without it, `fetch_url` always fails and any `execute`/`workspace_create` call requesting `network=true` is rejected with an error (the field is not silently ignored). |
-| `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
+| `--workspace-cap N` | `8` | Maximum concurrent open workspaces (per server process). Prevents an agent from spamming `workspace_create` and exhausting disk. |
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
 | `--socket PATH` | `~/Library/Caches/vmette/vmette.sock` | vmetted socket for the `desktop_*` tools. |
-| `--ca-certs DIR` | explicit flag > `$VMETTE_CA_CERTS` > `~/.config/vmette/certs` | Host directory of `.crt`/`.pem` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
+| `--ca-certs DIR` | explicit flag > `$VMETTE_CA_CERTS` > `~/.config/vmette/certs` | Host directory of `.crt`/`.pem`/`.cer` CA certificates trusted inside **every** guest (`execute`, `fetch_url`, `workspace_run`, and the `desktop_*` default), so HTTPS works behind a TLS-inspecting proxy / enterprise CA. Opt-in: nothing is mounted when unset and the default dir is absent. On macOS, `scripts/export-macos-ca-certs.sh` stages the keychain roots there. See [HACKING.md](HACKING.md#trusting-a-host-ca-in-every-guest). |
 
 `vmette-mcp` writes structured logs (tracing) to **stderr**. `stdout`
 is reserved for MCP frames; anything written there desyncs the client.
@@ -173,7 +173,7 @@ persists between calls.
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
 | `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp`. Set this when a build/extract would exceed the RAM-backed overlay (`No space left on device`); created sparse per call, discarded when the call returns. Omit for light work. |
 
-Returns: `exit: N\n\nstdout:\n...` — the guest's stdout and stderr arrive folded into the one captured stream, so there is no separate `stderr:` block.
+Returns: `exit: N\n\nstdout:\n...` — the guest's stdout and stderr arrive folded into the one captured stream, so a separate `stderr:` block normally does not appear.
 
 ### `fetch_url`
 
@@ -267,7 +267,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (forwarded verbatim; the guest applies a ~15s default, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
 | `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` (first-paint budget, default 60000 ms) | note + PNG of the app's first settled frame |
-| `desktop_stop` | `session_id` | status — errors if the id is unknown or already stopped (unlike the idempotent `workspace_destroy`) |
+| `desktop_stop` | `session_id` | status — errors if the id is unknown (a stopped session is already gone), unlike the idempotent `workspace_destroy` |
 
 `desktop_launch` is the one-call "start an app and see it" tool: it backgrounds
 the command, waits for the window to paint, then for the screen to **settle and

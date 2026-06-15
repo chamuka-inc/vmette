@@ -108,7 +108,7 @@ vmette desktop scroll      SESSION_ID X Y DIR AMOUNT      scroll (DIR: up|down|l
 vmette desktop exec        SESSION_ID COMMAND             launch a shell command in the guest
 vmette desktop exec-capture SESSION_ID COMMAND [--timeout-ms N]   run a command and print its output
 vmette desktop navigate    SESSION_ID URL                 open URL in the desktop browser (no shell)
-vmette desktop view        SESSION_ID                     open a live VNC view; prints vnc://HOST:PORT
+vmette desktop view        SESSION_ID                     open a live VNC view; prints vnc://127.0.0.1:PORT
 vmette desktop stop        SESSION_ID                     tear the session down
 ```
 
@@ -125,7 +125,7 @@ session model and the MCP-facing tools.
 ## CA certificates
 
 To let a guest trust an enterprise root or a TLS-inspecting proxy, vmette can
-attach a host directory of `.crt` / `.pem` certificates as a `certs` virtio-fs
+attach a host directory of `.crt` / `.pem` / `.cer` certificates as a `certs` virtio-fs
 share. The guest's PID-1 init installs them into the system trust store before
 running the workload (the desktop image additionally writes Chromium's managed
 `CACertificates` policy). The directory is resolved highest-priority first:
@@ -156,10 +156,10 @@ Run `vmette providers` to print the live registry.
 The `dir`/`tar`/`oci` providers deliver a host **directory** shared over
 virtio-fs. The `squashfs` provider instead returns a **block image** attached
 read-only as virtio-blk slot 0 (`/dev/vda`) under a tmpfs overlay, so the
-rootfs is immutable and the same base can back many concurrent sessions, so
-`--rootfs-ro` is a silent no-op for it. Because a block rootfs has no host-writable surface,
-exit-code propagation rides a small auto-attached `ctl` virtio-fs share instead
-of `/.vmette-exit` on the rootfs.
+rootfs is immutable and the same base can back many concurrent sessions.
+Because a block rootfs has no host-writable surface, exit-code propagation
+rides a small auto-attached `ctl` virtio-fs share instead of `/.vmette-exit`
+on the rootfs.
 
 ### Provider caches
 

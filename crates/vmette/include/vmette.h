@@ -177,7 +177,8 @@ typedef struct vmette_run_output_t {
 
 /**
  * Path to a snapshot file to write after the guest signals ready.
- * Apple Silicon only — see VmetteStatus::SnapshotUnsupported.
+ * Not yet implemented: returns VmetteStatus::SnapshotUnsupported on every
+ * architecture (including Apple Silicon).
  *
  * # Safety
  * See the module-level safety contract.
@@ -185,7 +186,8 @@ typedef struct vmette_run_output_t {
  void vmette_config_set_build_snapshot(struct vmette_config_t *cfg, const char *path);
 
 /**
- * Path to a previously-saved snapshot to restore. Apple Silicon only.
+ * Path to a previously-saved snapshot to restore. Not yet implemented:
+ * returns VmetteStatus::SnapshotUnsupported on every architecture.
  *
  * # Safety
  * See the module-level safety contract.
