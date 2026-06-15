@@ -5,10 +5,10 @@ Any MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose
 custom clients) gets a set of tools — `execute`, `fetch_url`, `workspace_*`,
 `desktop_*` — whose every effect lands inside a Linux microVM, never on your
 host: a real shell, filesystem, and (optionally) network that are *not* your
-machine. Work the agent routes through these tools can't touch your real
-filesystem (unless you share a directory in) or reach the network (unless you
-start the server with `--allow-network`). Most tools boot a fresh VM per call;
-the `desktop_*` family drives a persistent graphical desktop session.
+machine. Host filesystem and network are default-deny — the agent gets them only
+where you opt in (see [Security model](#security-model)). Most tools boot a fresh
+VM per call; the `desktop_*` family drives a persistent graphical desktop
+session.
 
 > **What this does — and doesn't — contain.** Adding `vmette-mcp` *adds* a
 > sandbox to the agent's toolbox; it does **not** replace the host's own tools.
@@ -44,21 +44,17 @@ ls target/release/vmette-mcp
 
 ## Client configuration
 
-Every client launches the same `vmette-mcp` binary over stdio. First install it
-so it's on your `PATH`:
-
-```sh
-curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
-vmette-mcp --help          # confirm it's on PATH
-```
+Every client launches the same `vmette-mcp` binary over stdio. Install it first
+(see [Install](#install) above) so it's on your `PATH`.
 
 The kernel + initramfs ship with the install and are auto-discovered — no asset
 flags needed. Common flags (all optional):
 
 - `--allow-network` — permit guest egress; omit for default-deny (then
   `network: true` calls are refused, not silently run offline).
-- `--default-image <ref>` — image used by `execute` / `workspace_*` when a call
-  doesn't name one (e.g. `python:3.12-alpine`).
+- `--default-image <ref>` — image used by `workspace_create` (and thus
+  `workspace_run`) when a call doesn't name one (e.g. `python:3.12-alpine`).
+  Does **not** affect `execute`, which always picks its image from `language`.
 - `--workspace-cap <n>` — max concurrent live workspaces (default 8).
 
 ### Claude Code (CLI)
@@ -157,8 +153,8 @@ binary path as `command` and the flags as `args`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--default-image REF` | `alpine:3.20` | Rootfs used when `execute` or `workspace_create` doesn't specify one. |
-| `--allow-network` | off | Permits tool calls with `network=true`. Without it, `fetch_url` always fails and any `execute`/`workspace_create` call requesting `network=true` is rejected with an error (the field is not silently ignored). |
+| `--default-image REF` | `alpine:3.20` | Rootfs used when `workspace_create` doesn't name one. `execute` is unaffected — it always maps `language` to a fixed image (see the `execute` table). |
+| `--allow-network` | off | Permits tool calls with `network=true` (the project's only default-deny network/filesystem gate — see also [Security model](#security-model)). Without it, `fetch_url` always fails and any `execute`/`workspace_create` call requesting `network=true` is rejected with an error (the field is not silently ignored). |
 | `--workspace-cap N` | `8` | Maximum concurrent workspaces per MCP session. Prevents an agent from spamming `workspace_create` and exhausting disk. |
 | `--kernel PATH` | autodiscovered | Override vmlinuz path. Default: `vmlinuz-virt` discovered from `$VMETTE_ASSETS_DIR`, `./assets`, or `<install-prefix>/assets` (the same search the `vmette` CLI uses). |
 | `--initramfs PATH` | autodiscovered | Override initramfs path. Default: `initramfs-vmette` discovered from the same locations as `--kernel`. |
@@ -182,7 +178,7 @@ persists between calls.
 
 | Input | Type | Notes |
 |-------|------|-------|
-| `language` | string | `python`, `node`, or `shell`. Maps to `python:3.12-alpine`, `node:20-alpine`, `alpine:3.20`. |
+| `language` | string | `python`, `node`, or `shell`. Maps to `python:3.12-alpine`, `node:20-alpine`, `alpine:3.20`. This mapping is fixed; `--default-image` does **not** apply to `execute` (it only sets the `workspace_create` default). |
 | `code` | string | Source — quoting is handled, embedded `'`, `$`, backticks all safe. |
 | `network` | bool, default false | Requires `--allow-network` server-side. |
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
@@ -192,7 +188,8 @@ Returns: `exit: N\n\nstdout:\n...\n\nstderr:\n...`
 
 ### `fetch_url`
 
-HTTP(S) GET via a Python urllib script inside a microVM. Requires
+HTTP(S) GET via a Python urllib script inside a microVM. Always runs in
+`python:3.12-alpine` (not affected by `--default-image`). Requires
 `--allow-network`.
 
 | Input | Type | Notes |
@@ -205,7 +202,7 @@ Returns: `exit: 0\n\nstdout:\n{"status": 200, "body": "..."}\n`
 ### `workspace_create`
 
 Allocate a per-task scratch directory on the host. The server creates
-it under `$TMPDIR/vmette-mcp-<pid>/<uuid>/` and tracks it for the
+it under `$TMPDIR/vmette-mcp-<pid>-<nonce>/<uuid>/` and tracks it for the
 session lifetime.
 
 | Input | Type | Notes |
@@ -278,7 +275,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_set_clipboard` | `session_id`, `text` | status — put `text` on the clipboard (CLIPBOARD + PRIMARY) |
 | `desktop_paste` | `session_id`, `text` | status — set the clipboard then Ctrl+V; fast, lossless input vs `desktop_type` |
 | `desktop_scroll` | `session_id`, `x`, `y`, `direction`, `amount` | status |
-| `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status |
+| `desktop_exec` | `session_id`, `command` (e.g. `xterm &`) | status — fire-and-forget; no output captured (see [tips](#computer-use-tips--limitations) for `exec` vs `exec_capture`) |
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
 | `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` | note + PNG of the app's first settled frame |
@@ -356,7 +353,7 @@ the agent is granted host filesystem access and network only where you say so.
 What the server **does** isolate:
 
 - The agent cannot read or write outside a workspace it created. The
-  workspace dir is under `$TMPDIR/vmette-mcp-<pid>/` and is removed
+  workspace dir is under `$TMPDIR/vmette-mcp-<pid>-<nonce>/` and is removed
   when the MCP session ends gracefully. Ungraceful exits (SIGKILL,
   panic-abort) leave the dir on disk; the next `vmette-mcp` startup
   reaps orphans whose owning PID is dead (and the dir is at least 60s

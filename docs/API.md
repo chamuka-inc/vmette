@@ -17,18 +17,18 @@ mechanical shim over the Rust one, defined in
 
 ```toml
 [dependencies]
-vmette = "0.2"
+vmette = "0.10"   # not on crates.io — depend on the git repo or a checkout
 ```
 
 ```rust
-use vmette::{Config, RootfsShare, ShareMount, VsockPort};
+use vmette::{Config, Rootfs, RootfsShare, ShareMount, VsockPort};
 
 fn main() -> Result<(), vmette::Error> {
     let mut cfg = Config::new("./vmlinuz", "./initramfs");
-    cfg.rootfs_share = Some(RootfsShare {
+    cfg.rootfs = Some(Rootfs::Share(RootfsShare {
         path: "./alpine-rootfs".into(),
         read_only: false,
-    });
+    }));
     cfg.shares.push(ShareMount {
         tag: "host".into(),
         path: "/tmp/scratch".into(),
@@ -37,12 +37,13 @@ fn main() -> Result<(), vmette::Error> {
     cfg.vsock_port = VsockPort::Auto;
     cfg.timeout_seconds = Some(30);
 
-    // run() blocks until guest poweroff, then calls process::exit
-    // with the guest's exit code via the VM lifecycle delegate. The
-    // Result return is for the synchronous error paths (snapshot
-    // unsupported, config invalid, etc).
-    let _ = vmette::run(&cfg)?;
-    Ok(())
+    // run() blocks until guest poweroff, then returns Ok(RunOutput)
+    // carrying the guest's exit code (124 on timeout, 0 on a requested
+    // stop, 1 on a guest error). It never exits the process — the caller
+    // chooses the process exit code. Err is for setup failures (snapshot
+    // unsupported, config invalid, VM failed to start).
+    let out = vmette::run(&cfg)?;
+    std::process::exit(out.exit_code);
 }
 ```
 
@@ -51,19 +52,15 @@ fn main() -> Result<(), vmette::Error> {
 `Config::new(kernel, initramfs)` takes paths to a Linux kernel
 (`vmlinuz-virt`) and vmette's repacked initramfs (`initramfs-vmette`).
 These are **not distributed on crates.io** — the crate is the code, not the
-~10 MB boot blobs. A library consumer obtains them one of two ways:
+~10 MB boot blobs. They live under `assets/<arch>/` (Apple Silicon uses
+`aarch64`, Intel `x86_64`). Obtain them either from a
+[GitHub release](https://github.com/chamuka-inc/vmette/releases) tarball or
+from a checkout (`git clone https://github.com/chamuka-inc/vmette && make assets init`).
 
-- **From a release:** download `vmlinuz-virt` + `initramfs-vmette` from a
-  [GitHub release](https://github.com/chamuka-inc/vmette/releases) tarball
-  (they live under `assets/<arch>/`), and pass their paths to `Config::new`.
-- **From a checkout:** `git clone https://github.com/chamuka-inc/vmette && make assets init`
-  writes `assets/<arch>/vmlinuz-virt` + `assets/<arch>/initramfs-vmette`.
-
-If you place them in a conventional location, the `vmette-assets` crate can
-discover them for you — `vmette_assets::find("vmlinuz-virt")` searches
-`$VMETTE_ASSETS_DIR/<arch>`, then `./assets/<arch>`, then the install prefix —
-so you can feed `Config::new` without hard-coding
-paths. Apple Silicon uses `aarch64`; Intel uses `x86_64`.
+Rather than hard-coding paths, let the `vmette-assets` crate find them —
+`vmette_assets::find("vmlinuz-virt")` searches `$VMETTE_ASSETS_DIR/<arch>`,
+then `./assets/<arch>`, then the install prefix — and feed the results to
+`Config::new`.
 
 ### Types
 
@@ -75,11 +72,13 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
   carries guest env vars (the CLI's `--env`), applied *after* any OCI image
   `Env` so they override the image's values.
 - `VsockPort` — `Disabled` | `Auto` | `Fixed(u32)`.
+- `Rootfs` — `Share(RootfsShare)` | `Block(RootfsBlock)`; the type of
+  `Config.rootfs: Option<Rootfs>`. The two forms are mutually exclusive *by
+  construction*.
 - `RootfsShare { path, read_only }` — a host directory shared over
-  virtio-fs; held in `Config.rootfs_share`.
+  virtio-fs; the payload of `Rootfs::Share`.
 - `RootfsBlock { path, fstype }` — a filesystem image attached read-only as
-  `/dev/vda` with a tmpfs overlay; held in `Config.rootfs_block`, mutually
-  exclusive with `rootfs_share`.
+  `/dev/vda` with a tmpfs overlay; the payload of `Rootfs::Block`.
 - `RootfsArtifact` — what a provider's `provide()` produces:
   `Directory { path, read_only }` (virtio-fs share) or
   `BlockImage { path, fstype }` (read-only block device + tmpfs overlay).
@@ -87,16 +86,19 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
 - `ShareMount { tag, path }`.
 - `Error` (thiserror): `InvalidConfig`, `StartFailed`, `RestoreFailed`,
   `SaveFailed`, `SnapshotUnsupported`, `Timeout`, `Vsock`, `Io`.
-- `RunOutput { exit_code: i32 }` — populated only by snapshot paths
-  (which return synchronously). For normal `run()`, the process exits
-  before this type is observed.
+- `RunOutput { exit_code: i32, output: String }` — returned by `run()` (and
+  `Session::wait_captured`). `output` carries the guest's captured combined
+  stdout+stderr when the session ran with `Config::capture_output` (empty for
+  the interactive `run()` path, which streams to the terminal; truncated past
+  ~1 MiB with a marker).
 
 ### Rootfs providers
 
-For a fixed directory you can set `Config.rootfs_share` directly. For the
-same `--rootfs SPEC` ergonomics the CLI offers — which may resolve to a
-directory *or* a block image — the `vmette::provider` module exposes a
-trait + registry, and `resolve()` returns a `RootfsArtifact`:
+For a fixed directory you can set `Config.rootfs` to `Rootfs::Share(..)`
+directly. For the same `--rootfs SPEC` ergonomics the CLI offers — which may
+resolve to a directory *or* a block image — the `vmette::provider` module
+exposes a trait + registry; the registry's `resolve()` dispatches to the first
+matching provider's `provide()`, returning a `RootfsArtifact`:
 
 ```rust
 use vmette::provider::{Context, DirProvider, Registry};
@@ -159,9 +161,9 @@ int main(int argc, char **argv) {
 
     vmette_run_output_t *out = NULL;
     VmetteStatus rc = vmette_run(cfg, &out);
-    /* vmette_run normally never returns — the VM delegate calls
-     * process_exit with the guest's exit code. Only snapshot paths
-     * return here. */
+    /* vmette_run blocks until the guest powers off, then returns
+     * normally — it does not exit the host process. On Ok it writes a
+     * run-output handle to *out; read the guest's exit code from it. */
     if (rc != Ok) {
         fprintf(stderr, "vmette_run: status %d\n", (int)rc);
         return 1;
@@ -211,7 +213,7 @@ dylib's.
 | `void vmette_config_set_scratch_mib(cfg, uint64_t);` | ephemeral ext4 scratch disk (MiB) for the writable overlay upper; `0` disables (RAM-backed tmpfs). No effect with a read-only rootfs. |
 | `void vmette_config_set_build_snapshot(cfg, path);` | Apple Silicon only; see snapshot section. |
 | `void vmette_config_set_resume_snapshot(cfg, path);` | Apple Silicon only; requires an exec command. |
-| `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Normally never returns; see above. |
+| `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Blocks until poweroff, then returns normally (does not exit the host process); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
 | `int32_t vmette_run_output_exit_code(out);` | |
 | `void vmette_run_output_free(out);` | |
 | `const char *vmette_version(void);` | Static; do not free. |

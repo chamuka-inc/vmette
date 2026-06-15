@@ -67,9 +67,9 @@ sessions left untouched for longer than the idle TTL (30 min).
    automatically on first use (the image is public). The first `desktop start`
    extracts it and caches it under `~/Library/Caches/vmette/oci/`; later starts
    are cache hits. That image is a convenience default (Xvfb + openbox + chromium
-   + fonts) — **this repo no longer builds it**; the agent is host-injected (see
-   [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs)), so any GUI
-   image works and you customize by bringing your own, not by rebuilding ours.
+   + fonts) — **this repo no longer builds it**. You customize by bringing your
+   own GUI image, not by rebuilding ours; see
+   [Bring your own desktop rootfs](#bring-your-own-desktop-rootfs).
 
    **Resolution order** (client-side, in `vmette` and `vmette-mcp`, mirroring how
    kernel/initramfs are resolved):
@@ -81,7 +81,7 @@ sessions left untouched for longer than the idle TTL (30 min).
    4. `ghcr.io/chamuka-inc/vmette-desktop:latest` — the published default when no
       local asset is present
 
-   Because resolution is client-side, `$VMETTE_DESKTOP_IMAGE` is read from the
+   Resolution is client-side, so `$VMETTE_DESKTOP_IMAGE` is read from the
    **client** process (your shell for `vmette desktop start`, the `vmette-mcp`
    server for `desktop_start`) — not the daemon.
 
@@ -216,6 +216,7 @@ to be running; the MCP server connects to its socket. Override the socket with
 | Tool | Input | Returns |
 |------|-------|---------|
 | `desktop_start` | `image?`, `size?`, `network?`, `ca_certs?` | session id (text) |
+| `desktop_view` | `session_id` | `vnc://host:port` loopback address for a VNC client (see [Live view](#live-view-watch--drive-the-desktop)) |
 | `desktop_screenshot` | `session_id` | a **framebuffer note** (`framebuffer WxH; …`) **plus a PNG image content block** |
 | `desktop_screenshot_when_settled` | `session_id`, `timeout_ms?` | note + framebuffer note + **PNG image content block** (once the screen stops changing) |
 | `desktop_what_changed` | `session_id` | a note describing the changed region since the last capture + framebuffer note **plus a PNG image content block** of the fresh frame |
@@ -320,10 +321,13 @@ Errors come back as `{ "kind": "error", "message": "..." }`.
 Between the host `Session` and the in-guest agent the wire format is binary:
 
 ```text
-[u32 LE header_len][header JSON][optional binary payload]
+[u32 LE req_id][u32 LE header_len][header JSON][optional binary payload]
 ```
 
-The request header is an `Action`; the response header is a `ResponseHeader`
+The host assigns a monotonically increasing `req_id` per request that the guest
+echoes verbatim in the matching response frame, so the host demultiplexes
+responses back to the right waiting caller. The request header is an `Action`;
+the response header is a `ResponseHeader`
 (`ok`, `error?`, `x?`, `y?`, `payload_len`). `x`/`y` carry the pointer position:
 `cursor_position` reports it, and every pointer action echoes the *resulting*
 position. Screenshots travel as a raw PNG payload after the header (its pixel
@@ -351,7 +355,9 @@ JSON shape is `{"action": "<name>", ...fields}`.
 | `set_clipboard` | `text` | Own the `CLIPBOARD` + `PRIMARY` selections with `text`. |
 | `get_clipboard` | — | Read clipboard text; returned as the response payload (UTF-8). |
 | `wait` | `ms` | Sleep guest-side to let the UI settle. |
-| `exec` | `command` | Launch a shell command (e.g. `"chromium &"`). |
+| `exec` | `command` | Launch a shell command (e.g. `"chromium &"`); fire-and-forget. |
+| `exec_capture` | `command`, `timeout_ms?` | Run `command` (via `/bin/sh -c`) to completion **synchronously**; returns combined stdout/stderr as the payload (UTF-8) and the exit status in the header's `exit_code` (absent ⇒ killed by the timeout guard or a signal). Blocks every other action until it returns. |
+| `navigate` | `url` | Hand `url` to the browser's `vmette-open` launcher with **no shell** (never word-split or interpreted). Fire-and-forget: returns once the launcher spawns, not when the page loads. |
 
 ## Live view (watch / drive the desktop)
 

@@ -18,8 +18,10 @@ follow.
 
 ## Workspace at a glance
 
-vmette is a Cargo workspace of ten crates (full layout in [HACKING.md](HACKING.md)):
+vmette is a Cargo workspace of eleven crates (full layout in [HACKING.md](HACKING.md)):
 the wire contracts live in `vmette-proto`, the VZ wrapper and public API in
 `vmette`, and the rootfs providers in the `vmette-provider-*` crates, aggregated
 by `vmette-providers`. The `vmette`, `vmetted`, and `vmette-mcp` binaries come
-from `vmette-cli`, `vmette-daemon`, and `vmette-mcp` respectively.
+from `vmette-cli`, `vmette-daemon`, and `vmette-mcp` respectively, with
+`vmette-daemon-client` shared between the CLI and MCP server for talking to
+`vmetted`.

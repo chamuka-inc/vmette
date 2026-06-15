@@ -8,15 +8,20 @@
   ```sh
   rustup target add x86_64-apple-darwin aarch64-apple-darwin
   ```
-- musl-cross for the guest helpers:
+- Prebuilt Linux musl cross toolchains for the guest helpers and the static
+  desktop agent (its X client stack is built from source against them — no
+  Docker):
   ```sh
-  brew install FiloSottile/musl-cross/musl-cross
+  brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl
+  brew install messense/macos-cross-toolchains/aarch64-unknown-linux-musl
   ```
+  (messense ships prebuilt tarballs that install in seconds; the older
+  `FiloSottile/musl-cross` compiles GCC from source, which is far slower.)
 
 ## First build
 
 ```sh
-make build                  # cargo build --release + codesign vmette
+make build                  # cargo build --release + codesign vmette/vmetted/vmette-mcp
 make assets init guest-bin  # pull alpine kernel/initramfs/rootfs + repack
 make test                   # cargo tests + end-to-end VM smoke
 ```
@@ -70,6 +75,7 @@ crates/vmette-providers/         aggregator exposing default_registry() (Dir→S
 crates/vmette-assets/            shared boot-asset (kernel + initramfs) discovery
 crates/vmette-cli/               `vmette` CLI binary
 crates/vmette-daemon/            `vmetted` UNIX-socket daemon + stateful desktop registry + live VNC view (RFB)
+crates/vmette-daemon-client/     sync transport for the `vmetted` desktop socket (shared by the CLI + MCP server)
 crates/vmette-mcp/               `vmette-mcp` MCP server for AI agents
 crates/vmette-provider-oci/      OCI/Docker image rootfs provider
 crates/vmette-provider-squashfs/ squashfs block-image rootfs provider
@@ -98,7 +104,9 @@ cargo build --release -p vmette
 make universal              # cargo build for both targets + lipo + codesign
 ```
 
-Output at `target/universal/release/{vmette,vmetted,libvmette.dylib}`.
+Output at `target/universal/release/{vmette,vmetted,vmette-mcp,libvmette.dylib}`.
+The three binaries (`vmette`, `vmetted`, `vmette-mcp`) are all codesigned with
+the virtualization entitlement.
 
 ## Distribution tarball
 
@@ -190,11 +198,21 @@ After editing `scripts/custom-init.sh`, rebuild the initramfs
 
 ## CI
 
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests
+(macos-14 runner — vmette is macOS-only):
+1. `cargo fmt --all --check`
+2. `cargo clippy --workspace --all-targets -- -D warnings`
+3. `cargo test --workspace`
+4. **C header is up to date** — rebuilds `crates/vmette/include/vmette.h` under
+   the `regenerate-header` feature and fails on any `git diff`
+
 `.github/workflows/release.yml` runs on tag push (`v*`):
-1. macos-14 runner, Rust stable + both cross targets, musl-cross
+1. macos-14 runner, Rust stable + both cross targets, plus the prebuilt messense
+   `x86_64-`/`aarch64-unknown-linux-musl` toolchains (for the static guest
+   helpers + desktop agent — no Docker)
 2. `make universal` → fat binaries
 3. `make dist` → tarball + SHA256SUMS
 4. `softprops/action-gh-release` uploads artifacts + `scripts/install.sh`
 
-This pipeline is live: tags through `v0.2.0` have been pushed and their
-release artifacts published (the library crates are also on crates.io).
+This pipeline is live: releases are cut through `scripts/release.sh` (latest
+`v0.10.0`), with the library crates also published to crates.io.

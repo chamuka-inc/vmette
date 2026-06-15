@@ -17,10 +17,8 @@ device.
 </p>
 
 It's built on Apple's `Virtualization.framework`: the boundary is a hypervisor with
-its own kernel, not a container sharing yours. Default-deny — no host filesystem and
-no network until you explicitly grant them. Ephemeral — each run is a fresh guest, so
-nothing persists. And it's a Model Context Protocol server, so any MCP-aware agent
-host gets a sandboxed machine with one line of config.
+its own kernel, not a container sharing yours. And it's a Model Context Protocol
+server, so any MCP-aware agent host gets a sandboxed machine with one line of config.
 
 ## Why on-device
 
@@ -125,11 +123,9 @@ agent share one display. The same capability is exposed to agents through the MC
 > `ghcr.io/chamuka-inc/vmette-desktop` automatically on first use (then cached under
 > `~/Library/Caches/vmette/oci/`), so the MCP and CLI desktop paths work out of the
 > box — no Docker needed. The computer-use agent is host-injected (a static binary
-> vmette ships), so any GUI image works: bring your own with `--image <ref>` /
-> `$VMETTE_DESKTOP_IMAGE`, or drop a `vmette-desktop-rootfs.tar` in `assets/<arch>/`.
-> Resolution order: `--image` → `$VMETTE_DESKTOP_IMAGE` → local
-> `assets/<arch>/vmette-desktop-rootfs.tar` → the published
-> `ghcr.io/chamuka-inc/vmette-desktop` image. See `docs/DESKTOP.md`.
+> vmette ships), so any GUI image works. Resolution order: `--image` →
+> `$VMETTE_DESKTOP_IMAGE` → local `assets/<arch>/vmette-desktop-rootfs.tar` → the
+> published `ghcr.io/chamuka-inc/vmette-desktop` image. See `docs/DESKTOP.md`.
 
 See [`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol, action
 reference, and image build.
@@ -181,10 +177,13 @@ vmette --rootfs rust:1.80 --net --mem-mib 1024 --scratch 8G \
 
 1. `vmette` builds a `VZVirtualMachineConfiguration` (kernel, initramfs, virtio
    devices, vsock).
-2. The kernel command line carries `vmette.exec=<base64(cmd)>` plus `vmette.*` flags.
-   The guest's `/init` ([`scripts/custom-init.sh`](scripts/custom-init.sh)) parses
-   them in pure shell, mounts virtio-fs shares, brings up the network if requested,
-   then `chroot` / `switch_root` into the rootfs and runs the command.
+2. The kernel command line carries only `vmette.boot=ctl` (plus `vmette.vsock_port`
+   when vsock is on). Everything per-invocation — exec (base64 as `VMETTE_EXEC_B64`),
+   env, rootfs mode, shares, scratch device, switch-root, and net — travels in a typed
+   `boot.env` envelope written to a `ctl` virtio-fs share. The guest's `/init`
+   ([`scripts/custom-init.sh`](scripts/custom-init.sh)) sources that envelope in pure
+   shell, mounts virtio-fs shares, brings up the network if requested, then `chroot` /
+   `switch_root` into the rootfs and runs the command.
 3. After the command exits, the guest writes the code to `.vmette-exit`, syncs, and
    `poweroff -f`. VZ fires the lifecycle delegate; the host reads the file and exits
    with that code.

@@ -88,13 +88,15 @@ Newline-delimited JSON frames. Three kinds:
 
 ```json
 {"kind":"stdout","data":"hello world\n"}
-{"kind":"stderr","data":"[vmette] guest stopped (exit 17)\r\n"}
 {"kind":"exit","code":17}
+{"kind":"error","message":"…"}
 ```
 
-`stdout` carries the guest's process stdout, `stderr` carries vmette's
-banner + delegate messages + guest stderr. The final frame is always
-`exit` (or `error` on a daemon-side failure).
+The in-process run lane captures the guest's combined output on one clean
+console and emits it as a stream of `stdout` frames, terminated by a single
+`exit` (or `error` on a daemon-side failure). Guest stderr is folded into
+`stdout`; the `stderr` frame remains in the protocol for compatibility but
+is **not** emitted for guest stderr by this lane.
 
 ### Client examples
 
@@ -154,24 +156,13 @@ Each request is still one JSON object per connection, tagged by `kind`:
 | `kind` | Key fields | Reply |
 |--------|-----------|-------|
 | `desktop_start` | `kernel`, `initramfs`, `image` (resolved client-side; required), `size?` (`"WxH"`), `net?`, `offline?`, `vcpus?`, `mem_mib?` | `{"kind":"session","session_id":"…"}` |
-| `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll/exec) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…"}` (`text` carries the clipboard for `get_clipboard`) |
+| `desktop_action` | `session_id`, `action` (a `vmette::Action`, e.g. `{"action":"screenshot"}`, mouse/key/type/scroll, `exec_capture`, `get_clipboard`) | `{"kind":"action_result","ok":true,"error?":"…","x?":…,"y?":…,"png_base64?":"…","text?":"…","exit_code?":…}` (the capture-returning variants encode their result differently: `get_clipboard` returns the clipboard in `text`; `exec_capture` returns the command's combined stdout/stderr in `text` and its status in `exit_code` — `None`/absent when it didn't exit cleanly, e.g. a timeout). See [`DESKTOP.md`](DESKTOP.md) for the full `Action` vocabulary. |
 | `desktop_screenshot_settled` | `session_id`, `timeout_ms?` (default 10000), `stable_hold_ms?` (confirmation hold; small default, larger for launches) | `{"kind":"settled","settled":bool,"moving":[…],"png_base64":"…"}` |
 | `desktop_what_changed` | `session_id` | `{"kind":"changed","changed?":{"x":…,"y":…,"w":…,"h":…},"png_base64":"…"}` (`changed` absent when nothing moved) |
 | `desktop_view` | `session_id` | `{"kind":"view","addr":"127.0.0.1:PORT"}` — opens (or returns) a live VNC view on a per-session loopback port; idempotent. See [`DESKTOP.md`](DESKTOP.md#live-view-watch--drive-the-desktop). |
 | `desktop_stop` | `session_id` | `{"kind":"stopped"}` |
 
 A daemon-side failure on any kind returns `{"kind":"error","message":"…"}`.
-
-## Today vs the warm-pool roadmap
-
-The stateless run path today boots a fresh microVM in-process per request
-(full cold boot). A warm-snapshot pool is a planned optimization, not
-yet shipped (aarch64 only, since snapshot/restore is Apple-Silicon-only):
-
-| Feature | Today | Warm-pool roadmap (aarch64 only) |
-|---------|-------|----------------------------------|
-| Per-request cost | ~1 s (full cold boot) | ~50 ms (snapshot resume) |
-| Implementation | in-process `Session` per request | in-process warm-snapshot pool |
 
 ## When to use vmetted vs vmette
 
@@ -181,4 +172,3 @@ yet shipped (aarch64 only, since snapshot/restore is Apple-Silicon-only):
 | Many short-lived invocations from a long-lived process | `vmetted` |
 | Persistent desktop / computer-use sessions | `vmetted` (`desktop_*`) |
 | Library embedding from Rust/C | link `libvmette` directly |
-| Future warm-VM pool (aarch64) | `vmetted` (roadmap) |

@@ -1,15 +1,21 @@
 # vmette CLI reference
 
-Not running an agent? `vmette` runs a one-off command inside a fresh,
-hardware-isolated microVM and propagates its exit code to the host — the same
-sandbox the MCP server hands to agents, as a one-liner.
+`vmette` runs a one-off command inside a fresh, hardware-isolated microVM and
+propagates its exit code to the host — the same sandbox the MCP server hands to
+agents.
 
 ```
 vmette --rootfs SPEC [--kernel PATH] [--initramfs PATH] [options]
+vmette quickstart                               # boot a hello-world VM to verify the install
 vmette providers                                # list registered providers
 vmette desktop <command> [options]              # drive a persistent desktop session
 vmette --version                                # print version (also -V)
 ```
+
+`quickstart` boots `alpine:3.20` (pulling it on first run), runs a hello-world
+command `--quiet`, and on success prints next steps (MCP setup, a one-off run, a
+desktop). It returns the guest's exit code, or 1 if boot assets are missing or
+the VM fails to boot — a fast end-to-end check that the install works.
 
 ## Required
 
@@ -38,17 +44,25 @@ install boots with no asset flags.
 | `--rootfs-ro` | — | Mount the rootfs share read-only. Disables exit-code propagation (guest can't write `/.vmette-exit`). |
 | `--offline` | — | Forbid network access. Cache miss surfaces as an immediate failure; useful on flaky networks or air-gapped environments. Applied to whichever provider resolves the spec. |
 
+`--rootfs-ro` is a silent no-op for block-image rootfs (e.g. squashfs): they are
+always mounted read-only with a tmpfs overlay, so vmette only prints a note.
+
 ## Workload
 
 | Flag | Argument | Description |
 |------|----------|-------------|
 | `--share` | TAG=PATH | Extra virtio-fs mount at `/mnt/<TAG>` in the guest. Repeatable. |
 | `--disk` | PATH | Raw block image attached as virtio-blk. Repeatable. |
-| `--scratch` | SIZE | Ephemeral ext4 **scratch disk** used as the guest's writable overlay upper, so the writable root and `/tmp` are bounded by this disk instead of `--mem-mib`. Sizes accept `G`/`g` (GiB), `M`/`m` (MiB), or a bare number of MiB: `8G`, `512M`, `2048`. vmette materializes a sparse image per run and deletes it on teardown (nothing persists). No effect with `--rootfs-ro` (no writable overlay). Without this flag the overlay is a RAM-backed tmpfs — fine for light work, but a big build/extract that exceeds RAM will `No space left on device`. |
+| `--scratch` | SIZE | Ephemeral ext4 **scratch disk** used as the guest's writable overlay upper, so the writable root and `/tmp` are bounded by this disk instead of `--mem-mib`. Sizes accept `G`/`g` (GiB), `M`/`m` (MiB), or a bare number of MiB: `8G`, `512M`, `2048`. vmette materializes a sparse image per run and deletes it on teardown (nothing persists). |
 | `--env` | KEY=VALUE | Export an env var in the guest before `--exec`. Repeatable. Applied **after** any OCI image `Env`, so it overrides the image's value (like `docker run -e`). |
 | `--exec` | CMD | Shell command to run in the guest, then `poweroff -f`. Delivered to the guest in the typed `boot.env` envelope on the `ctl` virtio-fs share (no length limit). |
 | `--net` | — | Attach virtio-net with NAT. `/init` runs `udhcpc` on eth0. |
 | `--switch-root` | — | Use `switch_root` instead of `chroot` for the exec environment. Cleaner PID-1 (useful for systemd-style workloads). |
+
+Without `--scratch` the writable overlay is a RAM-backed tmpfs — fine for light
+work, but a big build/extract that exceeds RAM will fail with `No space left on
+device`. `--scratch` is rejected with `--rootfs-ro` (a read-only rootfs has no
+writable overlay to back).
 
 ## Runtime
 
@@ -69,8 +83,8 @@ install boots with no asset flags.
 | `--resume-snapshot` | PATH | Restore from PATH, send `--exec` via vsock, drain output. Requires `--exec`. |
 | `--guest-vsock-port` | N | Port the guest's vsock-runner listens on (default 1025). |
 
-On Intel, snapshot flags exit 1 with a clear error pointing at Apple's
-`#if defined(__arm64__)` gate.
+On Intel, snapshot flags exit 1 with the error `snapshot/restore is not
+supported on this architecture (Apple Silicon only)`.
 
 ## Desktop sessions (`vmette desktop`)
 
@@ -79,7 +93,7 @@ held by `vmetted` — it talks to the daemon's UNIX socket, so `vmetted` must be
 running first. It exists for manual end-to-end testing without an MCP host.
 
 ```
-vmette desktop start [--image REF] [--size WxH] [--net] [--offline]
+vmette desktop start [--image REF] [--size WxH] [--net] [--offline] [--ca-certs DIR]
                      [--kernel PATH] [--initramfs PATH]   boot a desktop; prints SESSION_ID
 vmette desktop screenshot SESSION_ID --out FILE [--settle]   capture the framebuffer to a PNG
                           [--timeout-ms N] [--stable-hold-ms N]   (--settle waits for the screen to quiesce)
@@ -88,6 +102,7 @@ vmette desktop move        SESSION_ID X Y                 move the pointer
 vmette desktop click       SESSION_ID X Y                 left-click at X Y
 vmette desktop double-click SESSION_ID X Y                double left-click at X Y
 vmette desktop right-click SESSION_ID X Y                 right-click at X Y
+vmette desktop drag        SESSION_ID FX FY TX TY          press at (FX,FY), drag to (TX,TY), release
 vmette desktop type        SESSION_ID TEXT                type a string
 vmette desktop key         SESSION_ID CHORD              press a chord, e.g. 'ctrl+c'
 vmette desktop set-clipboard SESSION_ID TEXT             put TEXT on the clipboard
@@ -110,6 +125,25 @@ its own ephemeral port) and idempotent. See
 Global: `--socket PATH` overrides the daemon socket (default
 `~/Library/Caches/vmette/vmette.sock`). See [`DESKTOP.md`](DESKTOP.md) for the
 session model and the MCP-facing tools.
+
+## CA certificates
+
+To let a guest trust an enterprise root or a TLS-inspecting proxy, vmette can
+attach a host directory of `.crt` / `.pem` certificates as a `certs` virtio-fs
+share. The guest's PID-1 init installs them into the system trust store before
+running the workload (the desktop image additionally writes Chromium's managed
+`CACertificates` policy). The directory is resolved highest-priority first:
+
+1. `vmette desktop start --ca-certs DIR` (desktop sessions only)
+2. `$VMETTE_CA_CERTS`
+3. `~/.config/vmette/certs` (used only when it exists and is a directory)
+
+When none apply, no share is attached (the common case — trusting an extra CA is
+opt-in and weakens isolation). For **one-off runs** the env-var/default-dir
+source is consulted automatically on every `vmette --rootfs … --exec …`, so a
+configured machine-wide CA is trusted with no flag; an explicit `--share certs=…`
+takes precedence. This mirrors how [`DESKTOP.md`](DESKTOP.md) describes
+`--ca-certs`.
 
 ## Rootfs providers
 
