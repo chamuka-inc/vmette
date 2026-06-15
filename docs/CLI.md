@@ -50,7 +50,7 @@ install boots with no asset flags.
 |------|----------|-------------|
 | `--share` | TAG=PATH | Extra virtio-fs mount at `/mnt/<TAG>` in the guest. Repeatable. |
 | `--disk` | PATH | Raw block image attached as virtio-blk. Repeatable. |
-| `--scratch` | SIZE | Ephemeral ext4 **scratch disk** used as the guest's writable overlay upper, so the writable root and `/tmp` are bounded by this disk instead of `--mem-mib`. Sizes accept `G`/`g` (GiB), `M`/`m` (MiB), or a bare number of MiB: `8G`, `512M`, `2048`. vmette materializes a sparse image per run and deletes it on teardown (nothing persists). |
+| `--scratch` | SIZE | Ephemeral ext4 **scratch disk** for the guest's writable overlay. Sizes accept `G`/`g` (GiB), `M`/`m` (MiB), or a bare number of MiB: `8G`, `512M`, `2048`. Materialized as a sparse image per run, deleted on teardown (nothing persists). |
 | `--env` | KEY=VALUE | Export an env var in the guest before `--exec`. Repeatable. Applied **after** any OCI image `Env`, so it overrides the image's value (like `docker run -e`). |
 | `--exec` | CMD | Shell command to run in the guest, then `poweroff -f`. Delivered to the guest in the typed `boot.env` envelope on the `ctl` virtio-fs share (no length limit). |
 | `--net` | — | Attach virtio-net with NAT. `/init` runs `udhcpc` on eth0. |
@@ -174,8 +174,9 @@ The OCI provider keeps a 1-hour soft TTL on `refs/<ref>.digest` mtime; a
 fresh ref entry skips the registry roundtrip entirely. `--offline` forbids the
 network for every fetching provider — no registry roundtrip, no digest
 verification, no remote download. Remote fetches are size-capped: squashfs and
-tar stream under `VMETTE_SQUASHFS_MAX_BYTES` (default 4 GiB) and
-`VMETTE_TAR_MAX_BYTES` respectively.
+tar each default to a 4 GiB cap (`VMETTE_SQUASHFS_MAX_BYTES` /
+`VMETTE_TAR_MAX_BYTES`) — squashfs on the downloaded image, tar on the
+decompressed/extracted bytes.
 
 ### Private OCI registries
 

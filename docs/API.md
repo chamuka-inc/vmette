@@ -90,10 +90,10 @@ See [`crates/vmette/src/lib.rs`](../crates/vmette/src/lib.rs).
   `Ok(RunOutput)` carrying the guest's exit code (124 on timeout, 0 on a
   requested stop, 1 on a guest error); it never exits the process — the caller
   chooses the process exit code. `Err` is for setup failures (snapshot
-  unsupported, config invalid, VM failed to start). `output` carries the guest's
-  captured combined stdout+stderr when the session ran with
-  `Config::capture_output` (empty for the interactive `run()` path, which streams
-  to the terminal; truncated past 1 MiB with a marker).
+  unsupported, config invalid, VM failed to start).
+- `output` carries the guest's captured combined stdout+stderr when the session
+  ran with `Config::capture_output` (empty for the interactive `run()` path,
+  which streams to the terminal; truncated past 1 MiB with a marker).
 
 ### Rootfs providers
 
@@ -126,8 +126,9 @@ cfg.set_rootfs_artifact(artifact, /*force_read_only=*/ false);
 To pull from a private OCI registry, inject credentials programmatically
 with `OciProvider::with_auth(Arc::new(resolver))` (it takes
 `Arc<dyn AuthResolver>`), or rely on the default resolver
-(per-host `VMETTE_OCI_AUTH_<HOST>` → `VMETTE_OCI_TOKEN` → `~/.docker/config.json`
-→ anonymous).
+(per-registry override via `with_registry` → `VMETTE_OCI_AUTH_<HOST>` →
+`VMETTE_OCI_TOKEN` (+ optional `VMETTE_OCI_USER`, default `vmette`) →
+`~/.docker/config.json` → anonymous).
 
 `RootfsProvider` is the trait third-party code implements to teach
 vmette about new rootfs sources (S3 buckets, internal artifactories,
@@ -209,8 +210,8 @@ dylib's.
 | `void vmette_config_set_vcpus(cfg, uint8_t);` | not clamped; a value VZ rejects (e.g. 0) surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_mem_mib(cfg, uint64_t);` | not clamped; a value VZ rejects surfaces as `InvalidConfig` from `vmette_run` |
 | `void vmette_config_set_scratch_mib(cfg, uint64_t);` | ephemeral ext4 scratch disk (MiB) for the writable overlay upper; `0` disables (RAM-backed tmpfs). No effect with a read-only rootfs. |
-| `void vmette_config_set_build_snapshot(cfg, path);` | Not yet implemented (see Snapshot section); with either snapshot field set, `vmette_run` returns `SnapshotUnsupported` before validating the config. |
-| `void vmette_config_set_resume_snapshot(cfg, path);` | Not yet implemented (see Snapshot section); same `SnapshotUnsupported` behavior as `set_build_snapshot`. |
+| `void vmette_config_set_build_snapshot(cfg, path);` | Not yet implemented (see Snapshot section). |
+| `void vmette_config_set_resume_snapshot(cfg, path);` | Not yet implemented (see Snapshot section). |
 | `VmetteStatus vmette_run(cfg, vmette_run_output_t **out);` | Same blocking contract as Rust `run()` (see the `RunOutput` reference above); on `Ok` writes `*out` — read the exit code via `vmette_run_output_exit_code`. |
 | `int32_t vmette_run_output_exit_code(out);` | |
 | `void vmette_run_output_free(out);` | |

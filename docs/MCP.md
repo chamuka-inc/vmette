@@ -3,23 +3,17 @@
 `vmette-mcp` gives an agent a hardware-isolated sandbox to run untrusted work in.
 Any MCP-aware agent host (Claude Code, Claude Desktop, Cursor, Cline, Zed, Goose,
 custom clients) gets a set of tools — `execute`, `fetch_url`, `workspace_*`,
-`desktop_*` — whose every effect lands inside a Linux microVM, never on your
-host: a real shell, filesystem, and (optionally) network that are *not* your
-machine. The VM runs on Apple's `Virtualization.framework`, so the boundary is
-the hypervisor — not a container or a `chroot` — and all host access is
-default-deny (see [Security model](#security-model)). Most tools boot a fresh VM
-per call; the `desktop_*` family drives a persistent graphical desktop session.
+`desktop_*` — whose every effect lands inside a Linux microVM on Apple's
+`Virtualization.framework`, never on your host, with all host access default-deny
+(see [Security model](#security-model)). Most tools boot a fresh VM per call; the
+`desktop_*` family drives a persistent graphical desktop session.
 
-> **What this does — and doesn't — contain.** `vmette-mcp` *adds* a sandbox to
-> the agent's toolbox; it doesn't replace the host's own tools (in Claude Code,
-> native Bash / Read / Write still run on your Mac), and the model chooses which
-> tool to call, so it's where you put risky work rather than an automatic cage.
-> To make the VM the agent's **only** way to execute code, restrict the host
-> tools too — e.g. disable Claude Code's Bash tool via permissions, or use a host
-> that exposes only vmette.
-
-The MCP server itself is long-lived — it dies when the client closes its stdio
-connection.
+Adding the sandbox doesn't replace the host's own tools — in Claude Code, native
+Bash / Read / Write still run on your Mac, and the model chooses which tool to
+call. To make the VM the agent's **only** way to execute code, restrict the host
+tools too — e.g. disable Claude Code's Bash tool via permissions, or use a host
+that exposes only vmette. The MCP server is long-lived — it dies when the client
+closes its stdio connection.
 
 ## Install
 
@@ -46,8 +40,8 @@ Every client launches the same `vmette-mcp` binary over stdio. Install it first
 The kernel + initramfs ship with the install and are auto-discovered — no asset
 flags needed. Common flags (all optional):
 
-- `--allow-network` — permit guest egress; omit for default-deny (then
-  `network: true` calls are refused, not silently run offline).
+- `--allow-network` — permit guest egress (see the [CLI flags](#cli-flags)
+  table for the full rule).
 - `--default-image <ref>` — image used by `workspace_create` (and thus
   `workspace_run`) when a call doesn't name one (default `alpine:3.20`).
 - `--workspace-cap <n>` — max concurrent live workspaces (default 8).
@@ -175,7 +169,7 @@ persists between calls.
 |-------|------|-------|
 | `language` | string | `python`, `node`, or `shell`. Maps to `python:3.12-alpine`, `node:20-alpine`, `alpine:3.20`. This mapping is fixed; `--default-image` does **not** apply (see the [CLI flags](#cli-flags) table). |
 | `code` | string | Source — quoting is handled, embedded `'`, `$`, backticks all safe. |
-| `network` | bool, default false | Requires `--allow-network` server-side. |
+| `network` | bool, default false | Requires `--allow-network` (see [flags table](#cli-flags)). |
 | `timeout` | int, default 30 | Seconds. Exceeded → guest force-stopped, exit 124. |
 | `scratch_mib` | int, optional | Ephemeral ext4 scratch disk size in MiB backing the writable root + `/tmp`. Set this when a build/extract would exceed the RAM-backed overlay (`No space left on device`); created sparse per call, discarded when the call returns. Omit for light work. |
 
@@ -184,7 +178,7 @@ Returns: `exit: N\n\nstdout:\n...` — the guest's stdout and stderr arrive fold
 ### `fetch_url`
 
 HTTP(S) GET via a Python urllib script inside a microVM. Always runs in
-`python:3.12-alpine`. Requires `--allow-network`.
+`python:3.12-alpine`. Requires `--allow-network` (see [flags table](#cli-flags)).
 
 | Input | Type | Notes |
 |-------|------|-------|
@@ -202,7 +196,7 @@ session lifetime.
 | Input | Type | Notes |
 |-------|------|-------|
 | `image` | string, default `--default-image` | OCI ref used by subsequent `workspace_run` calls. |
-| `network` | bool, default false | Network policy for `workspace_run` calls (requires `--allow-network`). |
+| `network` | bool, default false | Network policy for `workspace_run` calls (requires `--allow-network`; see [flags table](#cli-flags)). |
 
 Returns (structured): `{"workspace_id": "...", "image": "..."}`. The host
 path is deliberately **not** returned — the agent operates on the workspace
@@ -273,7 +267,7 @@ scale of a downscaled rendering. Full reference, protocol, and image build in
 | `desktop_exec_capture` | `session_id`, `command`, `timeout_ms?` (forwarded verbatim; the guest applies a ~15s default, clamped to ~25s) | the command's combined stdout/stderr + exit code — run a short command to completion and read its output |
 | `desktop_navigate` | `session_id`, `url` | status — open `url` in the browser with no shell and no synthetic keystrokes (deterministic; pair with `desktop_screenshot_when_settled`) |
 | `desktop_launch` | `session_id`, `command`, `wait_ms?` (first-paint budget, default 60000 ms) | note + PNG of the app's first settled frame |
-| `desktop_stop` | `session_id` | status |
+| `desktop_stop` | `session_id` | status — errors if the id is unknown or already stopped (unlike the idempotent `workspace_destroy`) |
 
 `desktop_launch` is the one-call "start an app and see it" tool: it backgrounds
 the command, waits for the window to paint, then for the screen to **settle and

@@ -30,8 +30,8 @@ server, so any MCP-aware agent host gets a sandboxed machine with one line of co
 | Cost                 | usage-metered (per-second / CPU)    | free                   | **free, on-device**                 |
 | Boot time            | sub-second + a network round-trip   | ~sub-second            | **~1 second, local**                |
 
-The cloud sandboxes are just as well-isolated — vmette's difference is keeping that
-isolation on-device, without the network round-trip or the usage meter.
+The cloud sandboxes are just as well-isolated — the difference is keeping that
+isolation on-device: no round-trip, no meter.
 
 ## Install
 
@@ -113,14 +113,10 @@ agent share one display. The same capability is exposed to agents through the MC
 `desktop_*` tools (`desktop_screenshot` returns a PNG image block).
 
 > **The desktop rootfs.** The desktop needs a GUI rootfs — an X server (Xvfb) and a
-> window manager — separate from the headless paths. You don't have to build anything:
-> `vmette desktop start` pulls the published default image from
-> `ghcr.io/chamuka-inc/vmette-desktop:latest` automatically on first use (then cached under
-> `~/Library/Caches/vmette/oci/`), so the MCP and CLI desktop paths work out of the
-> box — no Docker needed. The computer-use agent is host-injected (a static binary
-> vmette ships), so any GUI image works. Resolution order: `--image` →
-> `$VMETTE_DESKTOP_IMAGE` → local `assets/<arch>/vmette-desktop-rootfs.tar` → that
-> published default. See `docs/DESKTOP.md`.
+> window manager. You don't have to build one: `vmette desktop start` auto-pulls the
+> published default on first use (no Docker), and the computer-use agent is
+> host-injected (a static binary vmette ships), so any GUI image works. See
+> [`docs/DESKTOP.md`](docs/DESKTOP.md) for the resolution order and bring-your-own recipe.
 
 See [`docs/DESKTOP.md`](docs/DESKTOP.md) for the session lifecycle, protocol, action
 reference, and image build.

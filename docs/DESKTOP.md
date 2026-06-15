@@ -9,9 +9,9 @@ stop it.
 A computer-use agent gets its own real desktop that is *not* your machine: the
 desktop rootfs is mounted read-only and overlaid with a per-session tmpfs in the
 guest, so everything a session writes is discarded when it stops. The boundary is
-the hypervisor. The sole host grant on the desktop path is the read-only
-`--ca-certs` mount (with a machine-wide fallback, also read-only); there is no
-`--share` flag for desktop sessions.
+the hypervisor. The CLI and MCP expose no `--share` for desktop sessions; the
+only host grant they wire in is the read-only `--ca-certs` mount (with a
+machine-wide fallback, also read-only).
 
 There is no Apple graphics window involved. The guest runs a headless X server
 (`Xvfb :99`) plus a lightweight window manager (`openbox`), and a C agent
@@ -42,9 +42,9 @@ strategy; desktop is purely additive and never touches the headless fast path.
 Sessions are owned by **vmetted**, not by the client connection that created
 them (each connection is one request). A session therefore outlives its creating
 connection and is freed only by `desktop_stop`, idle eviction, or daemon
-shutdown. The daemon caps concurrent sessions (each is a live VM with **2 GB RAM
-(2048 MiB) and 2 vCPUs** by default) and evicts sessions left untouched for
-longer than the idle TTL (30 min).
+shutdown. The daemon caps concurrent sessions (each is a live VM — see
+[Constraints](#constraints) for the default size) and evicts sessions left
+untouched for longer than the idle TTL (30 min).
 
 ## Prerequisites
 
@@ -86,12 +86,11 @@ longer than the idle TTL (30 min).
 
 ## Bring your own desktop rootfs
 
-The computer-use agent is **not** part of the rootfs image — vmette ships it and
-injects it at boot. So a desktop session runs on **any** rootfs that provides an
-**X server (`Xvfb`)** and a **window manager**; that is the entire contract. The
-bundled `vmette-desktop` image is just one convenient such rootfs (it also adds
-Chromium + fonts); you can equally point `--image` at a stock `debian + xvfb +
-openbox` image, your own GUI image, or an OCI ref:
+Because the agent is host-injected (see [Prerequisites](#prerequisites) #2), the
+entire contract a desktop rootfs must satisfy is an **X server (`Xvfb`)** and a
+**window manager**. So you can point `--image` at a stock `debian + xvfb +
+openbox` image, your own GUI image, or an OCI ref rather than rebuild the bundled
+`vmette-desktop` image:
 
 ```sh
 vmette desktop start --image tar+file:///path/to/my-gui-rootfs.tar
@@ -160,6 +159,11 @@ vmette desktop type  "$SID" 'echo hello'
 vmette desktop key   "$SID" 'Return'
 vmette desktop scroll "$SID" 640 400 down 3
 vmette desktop cursor "$SID"                 # prints "X Y"
+
+vmette desktop set-clipboard "$SID" 'hello'  # own CLIPBOARD + PRIMARY
+vmette desktop get-clipboard "$SID"          # print the clipboard text
+vmette desktop paste "$SID" 'hello'          # set clipboard, then Ctrl+V
+vmette desktop view "$SID"                    # start a VNC live view, prints vnc://…
 
 vmette desktop stop "$SID"                   # tear it down
 ```
