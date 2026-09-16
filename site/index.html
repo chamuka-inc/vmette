@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>vmette — a headless Linux microVM sandbox for macOS</title>
+<meta name="description" content="Run your coding agent on your Mac without the anxiety. vmette boots a hardware-isolated Linux microVM in ~1s via Apple's Virtualization.framework — a CLI, a Rust/C library, a daemon, and an MCP server.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+<meta property="og:title" content="vmette — a headless Linux microVM sandbox for macOS">
+<meta property="og:description" content="Run your coding agent on your Mac without the anxiety. Hardware-isolated microVMs that boot in ~1 second.">
+<meta property="og:image" content="vmette-demo.gif">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <div class="brand"><span class="dot"></span>vmette</div>
+    <div class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#use-cases">Use cases</a>
+      <a href="#business">For teams</a>
+      <a href="#how-it-works">How it works</a>
+      <a href="#docs">Docs</a>
+      <a class="cta" href="https://github.com/chamuka-inc/vmette">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">macOS · Apple Virtualization.framework · MIT</div>
+    <h1>Run your coding agent on your Mac —<br>without the anxiety.</h1>
+    <p class="sub">
+      Claude Code, Cursor, Cline, and friends <code>pip install</code> whatever a README
+      names, execute model output, and act on web pages that can carry prompt injection.
+      vmette gives that work somewhere safe to happen: a real, hardware-isolated Linux VM
+      that boots in ~1 second, sees only what you share in, and disappears when it's done.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#install">Install</a>
+      <a class="btn btn-ghost" href="https://github.com/chamuka-inc/vmette">View on GitHub</a>
+    </div>
+
+    <div class="install-cmd" id="install">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <pre><span class="comment"># macOS only — installs to ~/.local/share/vmette</span>
+curl -fsSL <span class="str">https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh</span> | bash</pre>
+    </div>
+
+    <div class="demo-frame">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="vmette-demo.gif" alt="vmette booting a Linux guest, propagating its exit code to the host, and enforcing default-deny networking until --net is passed" loading="lazy">
+    </div>
+  </div>
+</header>
+
+<section id="why">
+  <div class="wrap">
+    <h2>Why on-device</h2>
+    <p class="lede">
+      Cloud sandboxes are just as well-isolated — the difference is keeping that
+      isolation on-device: no round-trip, no meter, nothing leaves the laptop.
+    </p>
+    <table class="compare">
+      <thead>
+        <tr><th></th><th>Cloud sandbox</th><th>Container (Docker)</th><th>vmette</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Isolation boundary</td><td>microVM / gVisor (varies)</td><td>shared host kernel</td><td class="win">hardware VM, its own kernel</td></tr>
+        <tr><td>Where it runs</td><td>someone else's cloud</td><td>your machine</td><td class="win">your Mac</td></tr>
+        <tr><td>Code & secrets</td><td>leave the device</td><td>stay local</td><td class="win">stay local</td></tr>
+        <tr><td>Network egress</td><td>on by default</td><td>on by default</td><td class="win">off until you pass <code>--net</code></td></tr>
+        <tr><td>Cost</td><td>usage-metered</td><td>free</td><td class="win">free, on-device</td></tr>
+        <tr><td>Boot time</td><td>sub-second + network round-trip</td><td>~sub-second</td><td class="win">~1 second, local</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="use-cases">
+  <div class="wrap">
+    <h2>Three ways in</h2>
+    <p class="lede">
+      One VM primitive, three surfaces: hand it to an agent over MCP, drive a full
+      graphical desktop for computer use, or run a one-off command from the CLI.
+    </p>
+    <div class="features">
+      <div class="card">
+        <h3>Agent sandbox (MCP)</h3>
+        <p>
+          <code>vmette-mcp</code> hands any MCP-aware agent host a sandboxed machine as
+          tools: <code>execute</code>, <code>fetch_url</code>, <code>workspace_*</code>.
+          Work the agent runs through these tools is confined to the VM.
+        </p>
+        <pre>claude mcp add vmette --scope user \
+  -- vmette-mcp --allow-network</pre>
+        <a class="more" href="https://github.com/chamuka-inc/vmette/blob/main/docs/MCP.md">docs/MCP.md →</a>
+      </div>
+      <div class="card">
+        <h3>Computer use (desktop)</h3>
+        <p>
+          A persistent graphical Linux desktop inside a microVM — screenshot, click,
+          type — driven by an in-guest agent over vsock. Watch and take over any
+          session live over VNC.
+        </p>
+        <pre>vmetted &amp;
+SID=$(vmette desktop start)
+vmette desktop click "$SID" 640 400
+open "$(vmette desktop view "$SID")"</pre>
+        <a class="more" href="https://github.com/chamuka-inc/vmette/blob/main/docs/DESKTOP.md">docs/DESKTOP.md →</a>
+      </div>
+      <div class="card">
+        <h3>One-off command (CLI)</h3>
+        <p>
+          Pull an OCI image, tarball, squashfs image, or local directory and run a
+          command in it. Exit code propagates to the host; network and shares are
+          opt-in.
+        </p>
+        <pre>vmette --rootfs python:3.12-alpine \
+  --exec 'python3 -c "print(2**32)"'</pre>
+        <a class="more" href="https://github.com/chamuka-inc/vmette/blob/main/docs/CLI.md">docs/CLI.md →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="business">
+  <div class="wrap">
+    <h2>For teams and products</h2>
+    <p class="lede">
+      Past the individual dev workflow, the same primitive is a building block
+      wherever untrusted code needs to run close to the data, without a per-run
+      cloud bill or a compliance review.
+    </p>
+    <div class="features">
+      <div class="card">
+        <h3>Agent fleets, controlled cost</h3>
+        <p>
+          Engineering orgs running many AI coding agents in parallel hit cloud
+          sandbox meters fast. On-device microVMs are free to spin up, so cost
+          scales with hardware you already own, not per-second billing.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Untrusted code in your product</h3>
+        <p>
+          SaaS products that let users submit code, scripts, or plugins need
+          isolation per request. Embed vmette as a Rust crate, C library, or
+          daemon and get a hardware-isolated run without standing up cloud
+          sandbox infrastructure.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Regulated environments</h3>
+        <p>
+          Finance, healthcare, and other regulated teams often can't send
+          proprietary code or customer data to a third-party cloud sandbox.
+          Because the VM is local and network-off by default, code and
+          secrets never leave the machine unless you explicitly allow it.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Hermetic CI, locally</h3>
+        <p>
+          Reproduce a CI job's isolation on a laptop — same default-deny
+          network, same disposable rootfs — for debugging flaky builds or
+          running client/consultant work without polluting the host.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Automate legacy, API-less software</h3>
+        <p>
+          Plenty of business-critical software — old ERPs, lab instrument
+          consoles, vendor tools with no scriptable interface — only exposes a
+          GUI. Computer-use agents can screenshot, click, and type against it
+          inside a disposable desktop VM, so automation doesn't need an API
+          that was never built.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Safer RPA on unmaintained systems</h3>
+        <p>
+          Process automation against unpatched legacy desktop apps carries
+          real risk if a scripted action misfires. Running it in a network-off
+          microVM that boots fresh each session contains the blast radius and
+          removes state drift between runs, instead of scripting against a
+          shared machine.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how-it-works">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <p><code>vmette</code> builds a <code>VZVirtualMachineConfiguration</code> (kernel, initramfs, virtio devices, vsock).</p>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <p>The kernel cmdline carries only a boot flag; everything per-invocation — exec, env, rootfs mode, shares, scratch device, net — travels in a typed envelope the guest's <code>/init</code> sources in pure shell before it chroots into the rootfs and runs the command.</p>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <p>The guest writes its exit code to a file, syncs, and powers off. The host reads the file and exits with that code.</p>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <p>An immutable squashfs rootfs attaches read-only as virtio-blk with a tmpfs overlay, so the base stays content-addressable and shareable across sessions.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="embed">
+  <div class="wrap">
+    <h2>Embed it</h2>
+    <p class="lede">
+      The same VM primitive is also a Rust crate, a C-ABI dynamic library, and a
+      long-lived daemon, for building your own agent host or sandbox tooling on top.
+    </p>
+    <div class="embed-row">
+      <div class="embed-pill"><div class="lang">Rust</div><p><code>vmette::run(&amp;cfg)</code> blocks until guest poweroff, returns the guest's exit code.</p></div>
+      <div class="embed-pill"><div class="lang">C ABI</div><p>Opaque handles, cbindgen-generated <code>vmette.h</code>, paired <code>*_new</code>/<code>*_free</code>.</p></div>
+      <div class="embed-pill"><div class="lang">Daemon</div><p><code>vmetted</code> speaks line-delimited JSON over a UNIX socket; amortizes per-run cost.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="docs">
+  <div class="wrap">
+    <h2>Docs</h2>
+    <div class="docs-grid">
+      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/MCP.md"><span class="name">MCP.md</span><span class="desc">vmette-mcp tool reference + client configs</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/DESKTOP.md"><span class="name">DESKTOP.md</span><span class="desc">Desktop sessions, protocol, image build</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/CLI.md"><span class="name">CLI.md</span><span class="desc">Full flag reference</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/API.md"><span class="name">API.md</span><span class="desc">Rust + C library API</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/DAEMON.md"><span class="name">DAEMON.md</span><span class="desc">vmetted protocol spec</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/HACKING.md"><span class="name">HACKING.md</span><span class="desc">Build, test, debug, repo layout</span></a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    MIT licensed · <a href="https://github.com/chamuka-inc/vmette">github.com/chamuka-inc/vmette</a> · <a href="https://github.com/chamuka-inc/vmette/blob/main/CHANGELOG.md">Changelog</a>
+  </div>
+</footer>
+
+</body>
+</html>
