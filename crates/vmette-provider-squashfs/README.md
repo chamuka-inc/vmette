@@ -12,4 +12,4 @@ Remote images are cached with a TTL and downloaded under a streaming size cap
 [`vmette-providers`](https://crates.io/crates/vmette-providers) rather than
 directly.
 
-> macOS-only (depends on `vmette`). Part of the vmette project. MIT licensed.
+> macOS-only (depends on `vmette`). Part of the vmette project. Apache-2.0 licensed.
