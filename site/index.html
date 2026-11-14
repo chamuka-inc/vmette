@@ -22,7 +22,7 @@
       <a href="#business">For teams</a>
       <a href="#how-it-works">How it works</a>
       <a href="#docs">Docs</a>
-      <a class="cta" href="https://github.com/chamuka-inc/vmette">GitHub</a>
+      <a class="cta" href="https://github.com/chamuka-labs/vmette">GitHub</a>
     </div>
   </div>
 </nav>
@@ -39,13 +39,13 @@
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="#install">Install</a>
-      <a class="btn btn-ghost" href="https://github.com/chamuka-inc/vmette">View on GitHub</a>
+      <a class="btn btn-ghost" href="https://github.com/chamuka-labs/vmette">View on GitHub</a>
     </div>
 
     <div class="install-cmd" id="install">
       <div class="bar"><span></span><span></span><span></span></div>
       <pre><span class="comment"># macOS only — installs to ~/.local/share/vmette</span>
-curl -fsSL <span class="str">https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh</span> | bash</pre>
+curl -fsSL <span class="str">https://github.com/chamuka-labs/vmette/releases/latest/download/install.sh</span> | bash</pre>
     </div>
 
     <div class="demo-frame">
@@ -95,7 +95,7 @@ curl -fsSL <span class="str">https://github.com/chamuka-inc/vmette/releases/late
         </p>
         <pre>claude mcp add vmette --scope user \
   -- vmette-mcp --allow-network</pre>
-        <a class="more" href="https://github.com/chamuka-inc/vmette/blob/main/docs/MCP.md">docs/MCP.md →</a>
+        <a class="more" href="https://github.com/chamuka-labs/vmette/blob/main/docs/MCP.md">docs/MCP.md →</a>
       </div>
       <div class="card">
         <h3>Computer use (desktop)</h3>
@@ -108,7 +108,7 @@ curl -fsSL <span class="str">https://github.com/chamuka-inc/vmette/releases/late
 SID=$(vmette desktop start)
 vmette desktop click "$SID" 640 400
 open "$(vmette desktop view "$SID")"</pre>
-        <a class="more" href="https://github.com/chamuka-inc/vmette/blob/main/docs/DESKTOP.md">docs/DESKTOP.md →</a>
+        <a class="more" href="https://github.com/chamuka-labs/vmette/blob/main/docs/DESKTOP.md">docs/DESKTOP.md →</a>
       </div>
       <div class="card">
         <h3>One-off command (CLI)</h3>
@@ -119,7 +119,7 @@ open "$(vmette desktop view "$SID")"</pre>
         </p>
         <pre>vmette --rootfs python:3.12-alpine \
   --exec 'python3 -c "print(2**32)"'</pre>
-        <a class="more" href="https://github.com/chamuka-inc/vmette/blob/main/docs/CLI.md">docs/CLI.md →</a>
+        <a class="more" href="https://github.com/chamuka-labs/vmette/blob/main/docs/CLI.md">docs/CLI.md →</a>
       </div>
     </div>
   </div>
@@ -235,19 +235,19 @@ open "$(vmette desktop view "$SID")"</pre>
   <div class="wrap">
     <h2>Docs</h2>
     <div class="docs-grid">
-      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/MCP.md"><span class="name">MCP.md</span><span class="desc">vmette-mcp tool reference + client configs</span></a>
-      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/DESKTOP.md"><span class="name">DESKTOP.md</span><span class="desc">Desktop sessions, protocol, image build</span></a>
-      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/CLI.md"><span class="name">CLI.md</span><span class="desc">Full flag reference</span></a>
-      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/API.md"><span class="name">API.md</span><span class="desc">Rust + C library API</span></a>
-      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/DAEMON.md"><span class="name">DAEMON.md</span><span class="desc">vmetted protocol spec</span></a>
-      <a class="doc-link" href="https://github.com/chamuka-inc/vmette/blob/main/docs/HACKING.md"><span class="name">HACKING.md</span><span class="desc">Build, test, debug, repo layout</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-labs/vmette/blob/main/docs/MCP.md"><span class="name">MCP.md</span><span class="desc">vmette-mcp tool reference + client configs</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-labs/vmette/blob/main/docs/DESKTOP.md"><span class="name">DESKTOP.md</span><span class="desc">Desktop sessions, protocol, image build</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-labs/vmette/blob/main/docs/CLI.md"><span class="name">CLI.md</span><span class="desc">Full flag reference</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-labs/vmette/blob/main/docs/API.md"><span class="name">API.md</span><span class="desc">Rust + C library API</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-labs/vmette/blob/main/docs/DAEMON.md"><span class="name">DAEMON.md</span><span class="desc">vmetted protocol spec</span></a>
+      <a class="doc-link" href="https://github.com/chamuka-labs/vmette/blob/main/docs/HACKING.md"><span class="name">HACKING.md</span><span class="desc">Build, test, debug, repo layout</span></a>
     </div>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
-    Apache-2.0 licensed · <a href="https://github.com/chamuka-inc/vmette">github.com/chamuka-inc/vmette</a> · <a href="https://github.com/chamuka-inc/vmette/blob/main/CHANGELOG.md">Changelog</a>
+    Apache-2.0 licensed · <a href="https://github.com/chamuka-labs/vmette">github.com/chamuka-labs/vmette</a> · <a href="https://github.com/chamuka-labs/vmette/blob/main/CHANGELOG.md">Changelog</a>
   </div>
 </footer>
 

@@ -80,7 +80,7 @@ fn usage() -> ! {
            --rootfs tar+https://h/r.tar.gz       tarball download (gzip/zstd auto-detected)\n\
            --rootfs tar+file:///tmp/r.tar        local tarball\n\
          \n\
-         docs: https://github.com/chamuka-inc/vmette/tree/main/docs  (CLI.md · MCP.md · DESKTOP.md)\n\
+         docs: https://github.com/chamuka-labs/vmette/tree/main/docs  (CLI.md · MCP.md · DESKTOP.md)\n\
          \n\
          examples:\n\
            vmette quickstart                                                # verify your install\n\
@@ -522,7 +522,7 @@ fn quickstart() -> ExitCode {
             println!("      vmette --rootfs alpine:3.20 --exec 'uname -a'");
             println!("  • Boot a GUI desktop for computer use:");
             println!("      vmette desktop start");
-            println!("  • Docs: https://github.com/chamuka-inc/vmette/tree/main/docs");
+            println!("  • Docs: https://github.com/chamuka-labs/vmette/tree/main/docs");
             ExitCode::SUCCESS
         }
         Ok(s) => {
@@ -531,7 +531,7 @@ fn quickstart() -> ExitCode {
             eprintln!(
                 "  If you're offline, the first run needs network to pull alpine:3.20 — retry\n  \
                  online, or boot a local rootfs instead: vmette --rootfs /path/to/dir --exec true\n  \
-                 See https://github.com/chamuka-inc/vmette/tree/main/docs/CLI.md"
+                 See https://github.com/chamuka-labs/vmette/tree/main/docs/CLI.md"
             );
             ExitCode::from(code as u8)
         }

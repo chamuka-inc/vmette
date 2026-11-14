@@ -1,7 +1,7 @@
 # vmette-providers
 
 The default rootfs-provider registry for
-[vmette](https://github.com/chamuka-inc/vmette). Exposes `default_registry()`,
+[vmette](https://github.com/chamuka-labs/vmette). Exposes `default_registry()`,
 which wires the built-in providers in the single load-bearing resolution order:
 
 ```

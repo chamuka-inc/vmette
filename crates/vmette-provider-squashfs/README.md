@@ -1,7 +1,7 @@
 # vmette-provider-squashfs
 
 Squashfs block-image rootfs provider for
-[vmette](https://github.com/chamuka-inc/vmette). Resolves
+[vmette](https://github.com/chamuka-labs/vmette). Resolves
 `squashfs+file://`, `squashfs+https://`, and `squashfs+http://` specs to a
 `.sqfs` image and returns a `BlockImage` artifact — attached read-only as
 virtio-blk with a tmpfs overlay in the guest, so the base is immutable and

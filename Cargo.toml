@@ -19,7 +19,7 @@ version = "0.11.0"
 edition = "2021"
 rust-version = "1.80"
 license = "Apache-2.0"
-repository = "https://github.com/chamuka-inc/vmette"
+repository = "https://github.com/chamuka-labs/vmette"
 
 [workspace.dependencies]
 objc2                = "0.6"
