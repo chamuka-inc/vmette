@@ -1,5 +1,7 @@
 # vmette
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Run your coding agent on your Mac — without the anxiety.**
 
 Claude Code, Cursor, Cline, and friends `pip install` whatever a README names,
@@ -314,6 +316,4 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-</content>
-</invoke>
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

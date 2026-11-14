@@ -7,4 +7,4 @@ layouts — a release tarball's `$PREFIX/assets`, a repo checkout's `./assets`, 
 a `$VMETTE_ASSETS_DIR` override — so the CLI, daemon, and MCP server all resolve
 them identically.
 
-Part of the vmette project. MIT licensed.
+Part of the vmette project. Apache-2.0 licensed.
