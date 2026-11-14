@@ -1,8 +1,9 @@
-# vmette
+# Chamuka Vmette
 
+[![CI](https://github.com/chamuka-inc/chamuka-vmette/actions/workflows/ci.yml/badge.svg)](https://github.com/chamuka-inc/chamuka-vmette/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Run your coding agent on your Mac — without the anxiety.**
+Hardware-isolated microVM sandbox for running local AI agents on macOS.
 
 Claude Code, Cursor, Cline, and friends `pip install` whatever a README names,
 execute model output, and act on web pages that can carry prompt injection. Run
@@ -38,7 +39,7 @@ isolation on-device: no round-trip, no meter.
 ## Install
 
 ```sh
-curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/chamuka-inc/chamuka-vmette/releases/latest/download/install.sh | bash
 ```
 
 Installs to `~/.local/share/vmette/` (the C ABI lands at `lib/libvmette.dylib` +
@@ -49,8 +50,8 @@ macOS-only (requires Apple's Virtualization.framework).
 <summary>Or build from source</summary>
 
 ```sh
-git clone https://github.com/chamuka-inc/vmette
-cd vmette
+git clone https://github.com/chamuka-inc/chamuka-vmette
+cd chamuka-vmette
 make build              # cargo build + codesign
 make test               # cargo unit + end-to-end VM smoke
 ```
@@ -314,6 +315,18 @@ See [`docs/DAEMON.md`](docs/DAEMON.md).
 - [`docs/HACKING.md`](docs/HACKING.md) — build, test, debug, repo layout
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 
+## Contributing
+
+Issues and pull requests are welcome.
+
+## Security
+
+Report vulnerabilities to [security@chamuka.ai](mailto:security@chamuka.ai).
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+---
+
+Part of [Chamuka Labs](https://chamuka.ai), an applied AI lab.
