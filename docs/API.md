@@ -51,8 +51,8 @@ fn main() -> Result<(), vmette::Error> {
 These are **not distributed on crates.io** — the crate is the code, not the
 ~10 MB boot blobs. They live under `assets/<arch>/` (Apple Silicon uses
 `aarch64`, Intel `x86_64`). Obtain them either from a
-[GitHub release](https://github.com/chamuka-inc/vmette/releases) tarball or
-from a checkout (`git clone https://github.com/chamuka-inc/vmette && make init`).
+[GitHub release](https://github.com/chamuka-labs/vmette/releases) tarball or
+from a checkout (`git clone https://github.com/chamuka-labs/vmette && make init`).
 
 Rather than hard-coding paths, let the `vmette-assets` crate find them —
 `vmette_assets::find("vmlinuz-virt")` searches `$VMETTE_ASSETS_DIR/<arch>`,

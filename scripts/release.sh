@@ -199,5 +199,5 @@ echo
 
 bold "✓ released $TAG"
 echo "  crates.io:      https://crates.io/crates/vmette/$NEW"
-echo "  github release: https://github.com/chamuka-inc/vmette/releases/tag/$TAG (built by CI)"
+echo "  github release: https://github.com/chamuka-labs/vmette/releases/tag/$TAG (built by CI)"
 echo "  watch CI:       gh run list --limit 3"

@@ -39,13 +39,13 @@ tarball, or prebuilt squashfs block image); the default registry lives in the
 `Config::new` needs a Linux kernel (`vmlinuz-virt`) and vmette's repacked
 initramfs (`initramfs-vmette`). These ~10 MB blobs are **not shipped on
 crates.io** — get them from a
-[GitHub release](https://github.com/chamuka-inc/vmette/releases) tarball
+[GitHub release](https://github.com/chamuka-labs/vmette/releases) tarball
 (under `assets/<arch>/`) or build them with
 `git clone … && make assets init`, then pass their paths to `Config::new`
 (or let the [`vmette-assets`](https://crates.io/crates/vmette-assets) crate
 discover them via `$VMETTE_ASSETS_DIR/<arch>` / `./assets/<arch>`). Apple Silicon
 uses `aarch64`; Intel uses `x86_64`. See
-[`docs/API.md`](https://github.com/chamuka-inc/vmette/blob/main/docs/API.md).
+[`docs/API.md`](https://github.com/chamuka-labs/vmette/blob/main/docs/API.md).
 
 ## Platform
 
@@ -65,6 +65,6 @@ cargo build -p vmette --features regenerate-header   # or: make header
 Without that feature, `cbindgen` is not part of the build — consumers compile
 neither it nor `syn`.
 
-See the [project README](https://github.com/chamuka-inc/vmette) and
-[`docs/`](https://github.com/chamuka-inc/vmette/tree/main/docs) for the full
+See the [project README](https://github.com/chamuka-labs/vmette) and
+[`docs/`](https://github.com/chamuka-labs/vmette/tree/main/docs) for the full
 CLI, API, daemon, and MCP documentation. MIT licensed.

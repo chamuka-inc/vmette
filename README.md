@@ -1,6 +1,6 @@
 # Chamuka Vmette
 
-[![CI](https://github.com/chamuka-inc/chamuka-vmette/actions/workflows/ci.yml/badge.svg)](https://github.com/chamuka-inc/chamuka-vmette/actions/workflows/ci.yml)
+[![CI](https://github.com/chamuka-labs/chamuka-vmette/actions/workflows/ci.yml/badge.svg)](https://github.com/chamuka-labs/chamuka-vmette/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Hardware-isolated microVM sandbox for running local AI agents on macOS.
@@ -39,7 +39,7 @@ isolation on-device: no round-trip, no meter.
 ## Install
 
 ```sh
-curl -fsSL https://github.com/chamuka-inc/chamuka-vmette/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/chamuka-labs/chamuka-vmette/releases/latest/download/install.sh | bash
 ```
 
 Installs to `~/.local/share/vmette/` (the C ABI lands at `lib/libvmette.dylib` +
@@ -50,7 +50,7 @@ macOS-only (requires Apple's Virtualization.framework).
 <summary>Or build from source</summary>
 
 ```sh
-git clone https://github.com/chamuka-inc/chamuka-vmette
+git clone https://github.com/chamuka-labs/chamuka-vmette
 cd chamuka-vmette
 make build              # cargo build + codesign
 make test               # cargo unit + end-to-end VM smoke

@@ -1,6 +1,6 @@
 # vmette-proto
 
-Wire contracts shared across the [vmette](https://github.com/chamuka-inc/vmette)
+Wire contracts shared across the [vmette](https://github.com/chamuka-labs/vmette)
 workspace. The **leaf** crate — serde only, no workspace dependencies — so a
 protocol change is a compile error everywhere at once.
 

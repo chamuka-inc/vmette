@@ -21,7 +21,7 @@ closes its stdio connection.
 running the install script you'll have `vmette-mcp` on your `PATH`:
 
 ```sh
-curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/chamuka-labs/vmette/releases/latest/download/install.sh | bash
 vmette-mcp --help
 ```
 

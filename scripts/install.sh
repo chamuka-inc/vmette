@@ -7,18 +7,18 @@
 # and symlinks into ~/.local/bin.
 #
 # Usage:
-#   curl -fsSL https://github.com/chamuka-inc/vmette/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/chamuka-labs/vmette/releases/latest/download/install.sh | bash
 #   curl -fsSL https://.../install.sh | VERSION=v0.1.0 bash    # pinned version
 #
 # Env overrides:
 #   VERSION      tag to install (default: latest)
 #   PREFIX       install root  (default: $HOME/.local/share/vmette)
 #   BIN_DIR      symlink dir   (default: $HOME/.local/bin)
-#   REPO         github org/repo (default: chamuka-inc/vmette)
+#   REPO         github org/repo (default: chamuka-labs/vmette)
 
 set -euo pipefail
 
-REPO="${REPO:-chamuka-inc/vmette}"
+REPO="${REPO:-chamuka-labs/vmette}"
 PREFIX="${PREFIX:-$HOME/.local/share/vmette}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-latest}"

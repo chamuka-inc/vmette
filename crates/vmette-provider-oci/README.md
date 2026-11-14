@@ -1,7 +1,7 @@
 # vmette-provider-oci
 
 OCI/Docker image rootfs provider for
-[vmette](https://github.com/chamuka-inc/vmette). The catch-all for bare image
+[vmette](https://github.com/chamuka-labs/vmette). The catch-all for bare image
 references (`alpine:3.20`, `ghcr.io/...`) and explicit `oci://` specs: pulls the
 image, unpacks its layers into a cached directory rootfs, and hands it to the
 boot path.
